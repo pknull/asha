@@ -1,6 +1,6 @@
 # Security Plugin
 
-**Version**: 1.0.0
+**Version**: 1.0.1
 
 Security review patterns, OWASP guidelines, and defensive coding practices for web applications.
 

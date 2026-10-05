@@ -1,6 +1,6 @@
 ---
 name: session-project-memory
-description: Read and verify project Memory v2 at worker startup, then publish authorized durable findings or attest no durable update before finishing a Control project assignment.
+description: Read and verify project Memory v2, then publish authorized durable findings or attest no durable update. Use at worker startup and before finishing a Control project assignment.
 ---
 
 # Project memory

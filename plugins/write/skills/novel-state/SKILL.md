@@ -1,6 +1,6 @@
 ---
 name: write-novel-state
-description: "Set up novel manuscript state: bible/state/timeline directory structure, chapter snapshots, immutable style references, and timeline tracking across sessions."
+description: "Set up novel manuscript state: bible/state/timeline directory structure, chapter snapshots, immutable style references, and timeline tracking across sessions. Use when starting a novel project, organizing existing manuscript state, setting up chapter state snapshots, or establishing immutable style references."
 license: MIT
 ---
 

@@ -65,6 +65,27 @@ if extra:
 PY
 }
 
+skill_description_says_when() {
+    python3 - "$1" <<'PY'
+import pathlib
+import re
+import sys
+import yaml
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+end = text.find("\n---\n", 4)
+data = yaml.safe_load(text[4:end]) or {}
+description = data.get("description") if isinstance(data, dict) else None
+if not isinstance(description, str):
+    print(f"description is a {type(description).__name__}, not a string")
+    raise SystemExit(1)
+if not re.search(r"(?:^|[.;!?]\s+)(?:Use|Triggers on)\b", description):
+    print("description has no when-clause sentence (Use when ..., Use for ..., Triggers on ...)")
+    raise SystemExit(1)
+PY
+}
+
 echo "=== Plugin Structure Validator ==="
 echo "Repository: $REPO_ROOT"
 echo ""
@@ -324,8 +345,9 @@ else
     FAILED=$((FAILED + 1))
 fi
 
-# Test 2f: Prove both validators reject one deliberately broken fixture.
-echo -n "Test 2f: Skill name and key validators fail closed... "
+# Test 2f: Prove the name, key and description validators reject one
+# deliberately broken fixture.
+echo -n "Test 2f: Skill name, key and description validators fail closed... "
 BROKEN_FIXTURE_ROOT="$(mktemp -d)"
 mkdir -p "$BROKEN_FIXTURE_ROOT/broken/skills/example"
 cat > "$BROKEN_FIXTURE_ROOT/broken/skills/example/SKILL.md" <<'EOF'
@@ -339,16 +361,19 @@ EOF
 BROKEN_FIXTURE="$BROKEN_FIXTURE_ROOT/broken/skills/example/SKILL.md"
 name_failed=0
 keys_failed=0
+description_failed=0
 skill_name_matches_destination "$BROKEN_FIXTURE" broken >/dev/null 2>&1 || name_failed=1
 skill_frontmatter_keys_allowed "$BROKEN_FIXTURE" >/dev/null 2>&1 || keys_failed=1
+skill_description_says_when "$BROKEN_FIXTURE" >/dev/null 2>&1 || description_failed=1
 rm -rf "$BROKEN_FIXTURE_ROOT"
-if [[ $name_failed -eq 1 && $keys_failed -eq 1 ]]; then
+if [[ $name_failed -eq 1 && $keys_failed -eq 1 && $description_failed -eq 1 ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
 else
     echo -e "${RED}FAIL${NC}"
     [[ $name_failed -eq 1 ]] || echo "  broken name fixture was accepted"
     [[ $keys_failed -eq 1 ]] || echo "  broken key fixture was accepted"
+    [[ $description_failed -eq 1 ]] || echo "  broken description fixture was accepted"
     FAILED=$((FAILED + 1))
 fi
 
@@ -377,6 +402,25 @@ if [[ ${#REVIEW_PATH_ERRORS[@]} -eq 0 ]]; then
 else
     echo -e "${RED}FAIL${NC}"
     for m in "${REVIEW_PATH_ERRORS[@]}"; do echo "  $m"; done
+    FAILED=$((FAILED + 1))
+fi
+
+# Test 2h: A skill description says what the skill does and when to use it,
+# in a sentence an agent can match (#119).
+echo -n "Test 2h: Skill descriptions say when to use the skill... "
+SKILL_WHEN_ERRORS=()
+while IFS= read -r skill_file; do
+    [[ -f "$skill_file" ]] || continue
+    if ! error="$(skill_description_says_when "$skill_file")"; then
+        SKILL_WHEN_ERRORS+=("$skill_file ($error)")
+    fi
+done < <(find "$REPO_ROOT/plugins" -path '*/skills/*/SKILL.md' -type f | sort)
+if [[ ${#SKILL_WHEN_ERRORS[@]} -eq 0 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    for m in "${SKILL_WHEN_ERRORS[@]}"; do echo "  $m"; done
     FAILED=$((FAILED + 1))
 fi
 
