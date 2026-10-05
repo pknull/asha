@@ -113,7 +113,7 @@ class AssignmentPreviewTests(CoordinatorEnvelope, ExecutionFixture, unittest.Tes
         with mock.patch.object(SQLiteInitiativeStore, "write_assignment", side_effect=AssertionError("preview write")):
             value = preview.assignment_preview(self.config, self.initiative_id, "implementation-a", tmux=self.tmux)
         path = sql.assignment_path(self.initiative_id, preview.PREVIEW_ATTEMPT_ID)
-        self.assertEqual(value["capacity"]["goal_characters"], len(scheduler._goal(sql.peek(self.initiative_id), {}, path)))
+        self.assertEqual(value["capacity"]["goal_characters"], len(scheduler._goal(sql.peek(self.initiative_id), {}, path, asha_home=self.config.asha_home)))
         self.assertFalse(sql.artifacts.root.exists())
 
     def test_review_layout_is_exact_seal_target(self):

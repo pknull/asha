@@ -861,19 +861,55 @@ def _resolved_attempt_base(
     return base
 
 
-def _goal(initiative: dict[str, Any], node: dict[str, Any], path: Path) -> str:
-    del node
-    if not path.is_absolute():
-        raise SchedulerError("Control assignment path must be absolute")
-    tail = f"{path.stem} {path}"
+def _render_goal(initiative: dict[str, Any], attempt_id: str, reference: str) -> str:
+    tail = f"{attempt_id} {reference}"
     minimum = f"orch {tail}"
     if len(minimum) > 200:
         raise SchedulerError(
-            "absolute assignment path and attempt identity exceed Control's 200-character goal limit"
+            "assignment reference and attempt identity exceed Control's 200-character goal limit"
         )
     available = 200 - len(minimum) - 1
     slug = initiative["slug"][:min(24, max(0, available))].rstrip("-")
     return f"orch {slug} {tail}" if slug else minimum
+
+
+def _goal(
+    initiative: dict[str, Any], node: dict[str, Any], path: Path, *, asha_home: Path,
+) -> str:
+    """Name the assignment as `$ASHA_HOME/...`, never by absolute path.
+
+    The goal becomes the Control task label and so the description of the
+    worker's change, which reaches commit subjects. Every Control worker's
+    environment carries ASHA_HOME, which resolves the reference (#117).
+    """
+    del node
+    if not path.is_absolute() or not asha_home.is_absolute():
+        raise SchedulerError("Control assignment path must be absolute")
+    try:
+        relative = path.relative_to(asha_home)
+    except ValueError as exc:
+        raise SchedulerError("Control assignment path is outside ASHA_HOME") from exc
+    return _render_goal(initiative, path.stem, f"$ASHA_HOME/{relative.as_posix()}")
+
+
+def _replay_goal(
+    config: OrchestrationConfig, initiative: dict[str, Any], attempt: dict[str, Any],
+    path: Path, goal: str,
+) -> str:
+    """Reissue the label of a task Control registered before #117.
+
+    Control refuses an idempotent start whose label differs from the stored
+    one, and goals then named the absolute assignment path. Only that exact
+    legacy rendering for this attempt is adopted; anything else keeps `goal`.
+    A failed probe keeps `goal` too: Control then refuses the replay and the
+    action stays indeterminate, never launch-failed.
+    """
+    try:
+        legacy = _render_goal(initiative, path.stem, str(path))
+        task = TaskStore(config.control).peek(attempt["task_id"])
+    except (SchedulerError, StoreError, OSError, ValueError):
+        return goal
+    return legacy if task.get("label") == legacy else goal
 
 
 def validate_goal_capacity(
@@ -910,7 +946,7 @@ def validate_goal_capacity(
         "base_seal_ids": [str(uuid.UUID(int=i + 1)) for i in range(MAX_SEAL_INPUTS)],
     } for index in range(MAX_SEAL_INPUTS)]
     for node in plan["nodes"] if nodes is None else nodes:
-        _goal(initiative, node, path)
+        _goal(initiative, node, path, asha_home=config.asha_home)
         if node["type"] in {"verify", "decision"}:
             continue  # Controller gates never receive worker assignments.
         base = _attempt_base(probe_plan, node)
@@ -1384,7 +1420,9 @@ def dispatch(
                 salvage_recovery=salvage_recovery,
             )
             asha = _asha_executable()
-            goal = _goal(initiative, node, assignment_path)
+            goal = _goal(initiative, node, assignment_path, asha_home=config.asha_home)
+            if action["state"] == "indeterminate":
+                goal = _replay_goal(config, initiative, attempt, assignment_path, goal)
             repository_root = _node_repository(initiative, node)["root"]
             argv = [
                 str(asha), "task", "start",

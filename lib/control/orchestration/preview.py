@@ -303,7 +303,7 @@ def assignment_preview(config, initiative_id, node_id, *, salvage_request_id=Non
     rendered = scheduler.assignment_bytes(initiative, plan, node, attempt, exact_base,
                                           evidence, findings, salvage_recovery=recovery)
     path = snapshot.store.assignment_path(iid, PREVIEW_ATTEMPT_ID)
-    goal = scheduler._goal(initiative, node, path)
+    goal = scheduler._goal(initiative, node, path, asha_home=config.asha_home)
     result = {
         "contract": CONTRACT, "authority": "none; dispatch must independently revalidate",
         "initiative_id": iid, "node_id": node_id,

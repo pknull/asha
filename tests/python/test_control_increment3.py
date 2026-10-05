@@ -1053,6 +1053,10 @@ class LaunchFixtureTests(unittest.TestCase):
             )
         launched = create.call_args.kwargs
         self.assertNotIn("ASHA_CONTROL_RESULT_TOKEN", launched["environment"])
+        # Orchestration goals name the assignment as `$ASHA_HOME/...` (#117).
+        self.assertEqual(
+            launched["environment"]["ASHA_HOME"], str(self.config.asha_home),
+        )
         self.assertEqual(
             adapter.result_staging_token_updates,
             [(task["tmux"]["session"], token)],

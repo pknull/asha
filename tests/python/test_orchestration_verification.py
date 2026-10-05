@@ -58,8 +58,9 @@ def _outside_tmp_parent(test: unittest.TestCase) -> str:
 
     Containment mounts a private tmpfs over /tmp, so a fixture root under /tmp
     turns the materialization's parent into writable scratch instead of the
-    read-only root bind. The root must also stay short enough for Control's
-    200-character assignment goal and pass the writable-ancestor check.
+    read-only root bind. The root must also pass the writable-ancestor check,
+    and its assignment goal must fit Control's 200 characters (the goal names
+    the assignment relative to ASHA_HOME, so the root's length is free).
     """
     reasons = []
     candidates = (
@@ -90,7 +91,7 @@ def _outside_tmp_parent(test: unittest.TestCase) -> str:
         try:
             _goal({"slug": ""}, {}, (
                 config.initiatives_dir / identity / "assignments" / f"{identity}.md"
-            ))
+            ), asha_home=config.asha_home)
         except SchedulerError:
             reasons.append(f"{label} {base} is too long for the assignment goal")
             continue

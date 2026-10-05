@@ -166,6 +166,10 @@ assignment=""
 for argument in "$@"; do
   case "$argument" in *"/assignments/"*.md) assignment="${argument##* }" ;; esac
 done
+# The goal names the assignment as `$ASHA_HOME/...`; the pane environment
+# carries ASHA_HOME (#117).
+[[ "$assignment" == '$ASHA_HOME/'* ]]
+assignment="$ASHA_HOME/${assignment#'$ASHA_HOME/'}"
 [[ -n "$assignment" && -f "$assignment" ]]
 mode="$(awk '/^## Node goal/{seen=1; next} seen && NF {print; exit}' "$assignment")"
 initiative="$(sed -n 's/^- Initiative: .* (\([0-9a-f-]*\))$/\1/p' "$assignment")"
@@ -536,6 +540,15 @@ RESULTPY
         self.assertRegex(seal["jj_commit_id"], r"^[0-9a-f]{40,64}$")
         self.assertRegex(seal["tree_digest"], r"^[0-9a-f]{64}$")
         self.assertIn("scope/inside.txt", seal["changed_paths"])
+        # The worker change carries the goal as its description, which reaches
+        # commit subjects: it names ASHA_HOME, never the absolute path (#117).
+        description = self._run_command(
+            ["jj", "--ignore-working-copy", "log", "-r", seal["jj_commit_id"],
+             "--no-graph", "-T", "description"],
+            cwd=self.repo,
+        ).stdout
+        self.assertIn(" $ASHA_HOME/", description)
+        self.assertNotIn(str(self.config.asha_home), description)
 
         _, outside_node, outside = self._dispatch_and_wait_for_seal("OUT_SCOPE")
         self.assertEqual(outside["outcome"], "failure")

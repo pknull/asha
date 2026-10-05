@@ -289,6 +289,123 @@ print(json.dumps({
         self.assertEqual(link["action_id"], action["action_id"])
         self.assertEqual(link["expected_initiative_revision"], document["expected_state_revision"])
 
+    def test_dispatch_goal_names_no_absolute_path_and_resolves_the_assignment(self) -> None:
+        # The goal becomes the Control task label and so the jj description of
+        # the worker's change, which reaches commit subjects (#117).
+        calls: list[list[str]] = []
+        tasks: list[dict] = []
+        document = build_action_document(
+            self.initiative(), "dispatch-node", {"node_id": "implementation-a"},
+        )
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes",
+            side_effect=self.fake_capture(calls, tasks),
+        ):
+            action = submit_action(self.store, self.initiative_id, document)
+        self.assertEqual(action["state"], "completed", action["outcome"])
+        goal = calls[0][calls[0].index("--goal") + 1]
+        attempt = self.store.list_attempts_snapshot(self.initiative_id)[0]
+        self.assertLessEqual(len(goal), 200)
+        self.assertEqual(
+            [token for token in goal.split(" ") if token.startswith("/")], [], goal,
+        )
+        self.assertNotIn(str(self.config.asha_home), goal)
+        self.assertNotIn(str(self.root), goal)
+        # Reconciliation finds nested Control tasks by the attempt ID in the label.
+        self.assertIn(attempt["attempt_id"], goal)
+        # The worker's environment carries ASHA_HOME, which resolves the reference.
+        reference = goal.rsplit(" ", 1)[1]
+        self.assertTrue(reference.startswith("$ASHA_HOME/"), goal)
+        with mock.patch.dict(os.environ, {"ASHA_HOME": str(self.config.asha_home)}):
+            resolved = Path(os.path.expandvars(reference))
+        self.assertEqual(
+            resolved, self.store.assignment_path(self.initiative_id, attempt["attempt_id"]),
+        )
+        self.assertIn(attempt["attempt_id"], resolved.read_text())
+
+    def _replay_against_existing_control_label(self, label_for) -> tuple[str, str, dict]:
+        """Leave a dispatch indeterminate, then reconcile it against a Control
+        task that already carries `label_for(attempt, assignment_path)`."""
+        calls: list[list[str]] = []
+        document = build_action_document(
+            self.initiative(), "dispatch-node", {"node_id": "implementation-a"},
+        )
+
+        def lost_response(argv, **_kwargs):
+            calls.append(list(argv))
+            raise SchedulerError("command timed out")
+
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes", side_effect=lost_response,
+        ):
+            action = submit_action(self.store, self.initiative_id, document)
+        self.assertEqual(action["state"], "indeterminate", action["outcome"])
+        attempt = self.store.list_attempts_snapshot(self.initiative_id)[0]
+        path = self.store.assignment_path(self.initiative_id, attempt["attempt_id"])
+        existing = self.control_payload(calls[0], existing=True)["task"]
+        existing["task_id"] = attempt["task_id"]
+        existing["label"] = label_for(attempt, path)
+        control = mock.Mock()
+        control.peek.return_value = existing
+
+        def replay(argv, **_kwargs):
+            calls.append(list(argv))
+            payload = self.control_payload(argv, existing=True)
+            payload["task"] = existing
+            payload["run"] = existing["runs"][0]
+            return 0, json.dumps(payload, sort_keys=True).encode(), b""
+
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes", side_effect=replay,
+        ), mock.patch(
+            "lib.control.orchestration.actions.TaskStore", return_value=control,
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.TaskStore", return_value=control,
+        ):
+            reconciled = reconcile_actions(self.store, self.initiative_id)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            calls[0][calls[0].index("--task-id") + 1],
+            calls[1][calls[1].index("--task-id") + 1],
+        )
+        return (
+            calls[1][calls[1].index("--goal") + 1], existing["label"],
+            reconciled["actions"][0],
+        )
+
+    def test_replay_keeps_a_pre_117_absolute_path_label(self) -> None:
+        # A task Control registered before #117 keeps its absolute-path label;
+        # Control refuses an idempotent start whose label differs, so the
+        # replay must reissue that exact label or the action never settles.
+        def pre_117_goal(attempt, path):
+            tail = f"{path.stem} {path}"
+            available = 200 - len(f"orch {tail}") - 1
+            slug = self.initiative()["slug"][:min(24, max(0, available))].rstrip("-")
+            return f"orch {slug} {tail}" if slug else f"orch {tail}"
+
+        goal, label, action = self._replay_against_existing_control_label(pre_117_goal)
+        self.assertEqual(goal, label)
+        self.assertEqual(action["state"], "completed", action["outcome"])
+        self.assertTrue(json.loads(action["outcome"])["existing"])
+
+    def test_replay_never_adopts_an_unrelated_existing_label(self) -> None:
+        goal, label, _action = self._replay_against_existing_control_label(
+            lambda attempt, path: f"orch other {attempt['attempt_id']} {path.parent}",
+        )
+        self.assertNotEqual(goal, label)
+        self.assertEqual(
+            [token for token in goal.split(" ") if token.startswith("/")], [], goal,
+        )
+
     def test_dispatch_mints_token_only_in_environment_and_reserves_its_digest(self) -> None:
         token = "3c" * 32
         captured: dict[str, object] = {}
