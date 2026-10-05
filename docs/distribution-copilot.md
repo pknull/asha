@@ -34,6 +34,11 @@ plugins/asha-<ns>/
 └── modules/ recipes/ ... # content dirs verbatim; hooks NEVER packaged
 ```
 
+From a git checkout the build copies only files `git ls-files` lists, so
+ignored and untracked files (`__pycache__/`, work in progress) never reach the
+dist and the README's source commit describes what ships. A non-git source,
+such as a tarball export, is copied as it stands.
+
 Hooks are never packaged: the source `hooks/hooks.json` files are
 Claude-schema, and plugin-delivered hooks don't fire anyway
 (github/copilot-cli#2540). Guardrails remain a user-scope install

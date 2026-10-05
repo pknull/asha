@@ -16,6 +16,10 @@
 #       ├── agents/<a>.agent.md   # converted via _copilot_emit_agent_md
 #       └── <other content dirs>  # modules/recipes/templates/tools/... verbatim
 #
+# From a git source tree only files `git ls-files` lists are copied, so the
+# dist matches the commit its provenance names; a non-git source (tarball
+# export) copies the filesystem.
+#
 # NEVER packaged: hooks/ (Claude-schema mismatch + plugin hooks don't fire —
 # github/copilot-cli#2540), .claude-plugin/ (Claude-era manifest).
 #
@@ -189,6 +193,39 @@ _build_emit_plugin_json() { # ns dest_root version
     | _build_write "$dest/plugin.json"
 }
 
+# True when the source is a git work tree that tracks this checkout. A
+# tarball unpacked inside some unrelated repository does not qualify.
+_build_source_is_git() {
+  git -C "$MARKET_ROOT" ls-files --error-unmatch -- namespaces.json >/dev/null 2>&1
+}
+
+_build_git_ls() { # path [-z] -> tracked paths under it, relative to MARKET_ROOT
+  git -C "$MARKET_ROOT" --literal-pathspecs ls-files ${2:+"$2"} -- "${1#"$MARKET_ROOT"/}"
+}
+
+# True unless the build copies tracked files only and PATH holds none.
+_build_has_tracked() { # path
+  [[ ${BUILD_TRACKED_ONLY:-0} -eq 1 ]] || return 0
+  [[ -n "$(_build_git_ls "$1")" ]]
+}
+
+_build_copy_tree() { # src dest ; cp -R, or tracked files only
+  local src="$1" dest="$2"
+  if [[ ${BUILD_TRACKED_ONLY:-0} -ne 1 ]]; then
+    cp -R "$src" "$dest"
+    return
+  fi
+  local rel="${src#"$MARKET_ROOT"/}" path target
+  while IFS= read -r -d '' path; do
+    # Tracked but deleted in the work tree: nothing to copy.
+    [[ -e "$MARKET_ROOT/$path" || -L "$MARKET_ROOT/$path" ]] || continue
+    target="$dest"
+    [[ "$path" == "$rel" ]] || target="$dest/${path#"$rel"/}"
+    mkdir -p "$(dirname "$target")"
+    cp -R "$MARKET_ROOT/$path" "$target"
+  done < <(_build_git_ls "$src" -z)
+}
+
 _build_copy_skills() { # ns dest_root
   local ns="$1" dest="$2"
   local src_dir="$PLUGINS_DIR/$ns/skills"
@@ -198,6 +235,7 @@ _build_copy_skills() { # ns dest_root
     [[ -d "$skill" ]] || continue
     local skill_name; skill_name="$(basename "$skill")"
     [[ -f "$skill/SKILL.md" ]] || { info "WARN: [$ns] skill without SKILL.md skipped: $skill_name"; continue; }
+    _build_has_tracked "$skill/SKILL.md" || { log "[$ns] untracked skill skipped: $skill_name"; continue; }
     local namespace dest_name
     namespace="$(jq -r --arg k "$ns" '.[$k] // $k' "$NAMESPACES_FILE")"
     if ! dest_name="$(plugin_skill_destination_name "${skill%/}" "$namespace")"; then
@@ -207,7 +245,7 @@ _build_copy_skills() { # ns dest_root
       say "  COPY  skills/$dest_name/ (from plugins/$ns/skills/$skill_name)"
     else
       ensure_dir "$dest/skills"
-      cp -R "${skill%/}" "$dest/skills/$dest_name"
+      _build_copy_tree "${skill%/}" "$dest/skills/$dest_name"
     fi
   done
 }
@@ -310,10 +348,11 @@ _build_copy_content() { # ns dest_root
       hooks|hooks.json) continue ;;               # EXCLUDED: Claude schema + copilot-cli#2540
       .claude-plugin) continue ;;                 # Claude-era manifest
     esac
+    _build_has_tracked "$entry" || { log "[$ns] untracked entry skipped: $base"; continue; }
     if [[ $DRY_RUN -eq 1 ]]; then
       say "  COPY  $base"
     else
-      cp -R "$entry" "$dest/$base"
+      _build_copy_tree "$entry" "$dest/$base"
     fi
   done
 }
@@ -429,6 +468,8 @@ build_copilot() {
       die "output dir not empty: $OUT (use --force to replace the build-owned subtrees)" 2
     fi
   fi
+
+  if _build_source_is_git; then BUILD_TRACKED_ONLY=1; else BUILD_TRACKED_ONLY=0; fi
 
   local built_file="${TMPDIR:-/tmp}/.asha-build-manifest.$$"
   printf '%s' "$manifest" > "$built_file"

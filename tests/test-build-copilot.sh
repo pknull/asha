@@ -217,6 +217,68 @@ else
   fail "tarball-export build: no false '(+ uncommitted changes)' provenance"
 fi
 
+# ---------------------------------------------------------------------------
+echo "--- test 12: a git source tree ships only tracked files ---"
+# Own git tree: the checkout under test may be a jj workspace without .git.
+GITSRC="$WORK/gitsrc"
+mkdir -p "$GITSRC"
+cp -a "$EXPORT"/. "$GITSRC"/ 2>/dev/null
+rm -rf "$GITSRC/.jj"
+gitsrc_git() {
+  git -C "$GITSRC" -c user.name=asha-test -c user.email=asha-test@example.invalid \
+    -c commit.gpgsign=false "$@"
+}
+if gitsrc_git init -q >/dev/null 2>&1 && gitsrc_git add -A >/dev/null 2>&1 \
+   && gitsrc_git commit -qm "test source" >/dev/null 2>&1; then
+  ok "test git source tree committed"
+else
+  fail "test git source tree committed"
+fi
+bash "$GITSRC/bin/asha" build copilot --out "$WORK/git-clean" >/dev/null 2>&1 \
+  || fail "git-source build before planting exits 0"
+# Plant ignored and untracked bytes at both copy sites: plugin content and skills.
+mkdir -p "$GITSRC/plugins/code/tools/__pycache__" "$GITSRC/plugins/code/skills/postgres/__pycache__" \
+         "$GITSRC/plugins/code/stray-untracked" "$GITSRC/plugins/code/skills/wip-planted"
+echo ignored > "$GITSRC/plugins/code/tools/__pycache__/planted.cpython-312.pyc"
+echo ignored > "$GITSRC/plugins/code/skills/postgres/__pycache__/planted.cpython-312.pyc"
+echo untracked > "$GITSRC/plugins/code/tools/untracked-planted.txt"
+echo untracked > "$GITSRC/plugins/code/stray-untracked/note.txt"
+printf -- '---\nname: code-wip-planted\ndescription: d\n---\nwip\n' \
+  > "$GITSRC/plugins/code/skills/wip-planted/SKILL.md"
+if gitsrc_git check-ignore -q plugins/code/tools/__pycache__/planted.cpython-312.pyc; then
+  ok "planted __pycache__ file is git-ignored"
+else
+  fail "planted __pycache__ file is git-ignored"
+fi
+if bash "$GITSRC/bin/asha" build copilot --out "$WORK/git-dist" >/dev/null 2>&1; then
+  ok "git-source build exits 0"
+else
+  fail "git-source build exits 0"
+fi
+planted="$(find "$WORK/git-dist" \( -name '*planted*' -o -name 'stray-untracked' -o -name '__pycache__' \) \
+  -print 2>/dev/null || true)"
+assert_eq "no ignored or untracked file reaches the dist" "" "$planted"
+[[ -f "$WORK/git-dist/plugins/asha-code/tools/verify.py" \
+   && -f "$WORK/git-dist/plugins/asha-code/skills/code-postgres/SKILL.md" ]] \
+  && ok "tracked content and skills still ship" \
+  || fail "tracked content and skills still ship"
+if diff -r "$WORK/git-clean" "$WORK/git-dist" >/dev/null 2>&1; then
+  ok "planted bytes change nothing in the dist"
+else
+  fail "planted bytes change nothing in the dist"
+fi
+if grep -q "uncommitted changes" "$WORK/git-dist/README.md"; then
+  fail "untracked files do not mark tracked provenance dirty"
+else
+  ok "untracked files do not mark tracked provenance dirty"
+fi
+dry="$(bash "$GITSRC/bin/asha" build copilot --dry-run --out "$WORK/git-dry" 2>&1 || true)"
+if [[ "$dry" == *"COPY  tools"* && "$dry" != *stray-untracked* && "$dry" != *wip-planted* ]]; then
+  ok "--dry-run lists only entries with tracked files"
+else
+  fail "--dry-run lists only entries with tracked files"
+fi
+
 echo ""
 echo "test-build-copilot: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
