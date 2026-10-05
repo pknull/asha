@@ -460,6 +460,33 @@ with patch("lib.control.database.os.link",side_effect=publish_then_die):
             self.assertTrue(sidecar.exists(), suffix)
             self.assertEqual(_mode(sidecar), 0o600, suffix)
 
+    def test_sidecar_unlinked_during_inspection_is_absent(self) -> None:
+        # The last connection's close unlinks WAL/SHM; a concurrent opener's
+        # path stat can land on that dying inode and read st_nlink 0 (#116).
+        db = ControlDatabase(self.config, create=True)
+        self.addCleanup(db.close)
+        with db.transaction(write=True) as tx:
+            tx.execute("CREATE TABLE items(x INTEGER)")
+        real_stat = os.stat
+        def dying(name, *args, **kwargs):
+            result = real_stat(name, *args, **kwargs)
+            if str(name).endswith(("-wal", "-shm")):
+                return os.stat_result(tuple(result)[:3] + (0,) + tuple(result)[4:])
+            return result
+        with patch("lib.control.database.os.stat", side_effect=dying):
+            ControlDatabase(self.config).close()
+
+    def test_hard_linked_sidecar_is_refused(self) -> None:
+        db = ControlDatabase(self.config, create=True)
+        self.addCleanup(db.close)
+        with db.transaction(write=True) as tx:
+            tx.execute("CREATE TABLE items(x INTEGER)")
+        extra = self.control / "linked-wal"
+        os.link(self.control / (DATABASE_NAME + "-wal"), extra)
+        with self.assertRaises(DatabaseError) as linked:
+            ControlDatabase(self.config)
+        self.assertIn("link count", str(linked.exception))
+
     def test_closed_database_refuses_use_and_close_is_idempotent(self) -> None:
         db = ControlDatabase(self.config, create=True)
         db.close()

@@ -9,6 +9,7 @@ the domain stores built on top of it.
 """
 from __future__ import annotations
 
+import errno
 import os
 import hashlib
 import json
@@ -204,7 +205,7 @@ class ControlDatabase:
         return metadata.st_dev, metadata.st_ino
 
     @staticmethod
-    def _inspect_file(directory_fd: int, name: str, label: str):
+    def _inspect_file(directory_fd: int, name: str, label: str, *, unlinked_is_absent: bool = False):
         # Closing ANY ordinary descriptor for a SQLite database or SHM inode
         # drops this process's POSIX locks, including other live connections.
         # Inspect through the validated directory without opening that inode.
@@ -214,6 +215,10 @@ class ControlDatabase:
             raise
         except OSError as exc:
             raise DatabaseError(f"cannot inspect {label}: {exc}") from exc
+        if unlinked_is_absent and metadata.st_nlink == 0:
+            # The stat resolved the name, then a concurrent unlink (the last
+            # connection's close removing WAL/SHM) dropped the inode: absent.
+            raise FileNotFoundError(errno.ENOENT, "unlinked during inspection", name)
         if stat.S_ISLNK(metadata.st_mode):
             raise DatabaseError(f"symlinked {label} rejected: {name}")
         if not stat.S_ISREG(metadata.st_mode):
@@ -255,6 +260,7 @@ class ControlDatabase:
             try:
                 ControlDatabase._inspect_file(
                     directory_fd, DATABASE_NAME + suffix, "Control database sidecar",
+                    unlinked_is_absent=True,
                 )
             except FileNotFoundError:
                 continue
