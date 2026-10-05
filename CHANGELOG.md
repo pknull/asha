@@ -13,6 +13,28 @@
   stored absolute-path label on replay, because Control refuses a replay whose
   label differs.
 
+## Unreleased — one secret-pattern set for session redaction (session 2.3.2, #118)
+
+- `plugins/session/tools/secret_patterns.py` holds the credential patterns
+  that recovery snapshots, workspace knowledge and workspace work items now all
+  use. Before, the two workspace modules recognised only `gh[opusr]_`, `sk-`
+  and `AKIA` tokens and Bearer credentials, so `github_pat_`, `glpat-`, `npm_`,
+  Slack `xox[abprs]-` and Google `AIza` tokens, JWTs, `Basic` credentials and
+  encrypted PEM keys passed their scrubbers and knowledge lint.
+- The set is the union of the three modules' old patterns, so it is at least
+  as broad as recovery_state's was. A Bearer or Basic credential may also
+  contain `~` (RFC 6750), and a PEM block matches its markers in any case and
+  runs to the end of the text when it has no END line.
+- Each module keeps its replacement text and codes. Recovery labels are
+  unchanged. The workspace modules write `[REDACTED_TOKEN]` for every bare
+  token family, `Bearer [REDACTED]` as before, and `Basic [REDACTED]` for the
+  newly covered scheme; knowledge still refuses to promote private-key
+  material.
+- Recovery's 12-character token minimum and its Bearer/Basic shape come with
+  the set: identifiers such as `npm_package_version` and prose such as "basic
+  configuration" now redact in the workspace modules too, and block knowledge
+  lint. Tightening those shapes is left as a follow-up.
+
 ## Unreleased — image 2.1.0: paid fal.ai generation beside local ComfyUI
 
 - New `image-fal` skill (`plugins/image/skills/fal/`) for hosted fal.ai

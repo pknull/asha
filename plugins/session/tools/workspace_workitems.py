@@ -18,12 +18,13 @@ import sys
 import tempfile
 from datetime import date, datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import project_root  # noqa: E402
+from secret_patterns import AUTH_SCHEME_RE, PRIVATE_KEY_RE, TOKEN_RE  # noqa: E402
 
 
 SCHEMA_VERSION = 1
@@ -48,16 +49,6 @@ _EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\w
 _HOME_RE = re.compile(r"(?<![\w.-])/(?:home|Users)/[^/\s]+")
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[-. ]?)?\(?\d{3}\)?[-. ]\d{3}[-. ]\d{4}(?!\d)")
 _SSN_RE = re.compile(r"(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)")
-_PRIVATE_KEY_RE = re.compile(
-    r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----.*?"
-    r"(?:-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|\Z)",
-    re.I | re.S,
-)
-_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
-_TOKEN_RE = re.compile(
-    r"\b(?:gh[opusr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|"
-    r"AKIA[0-9A-Z]{16})\b"
-)
 _SECRET_ASSIGN_RE = re.compile(
     r"(?i)\b(api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|"
     r"client[_-]?secret|password|passwd|secret|token)\s*[:=]\s*[^\s,;]+"
@@ -461,16 +452,21 @@ def link_item(start: Path | str, item_id: str, target_id: str, *,
     return report
 
 
+def _auth_scheme_redacted(match: re.Match[str]) -> str:
+    return f"{match.group(1).capitalize()} [REDACTED]"
+
+
 def _scrub_string(value: str, redactions: list[str]) -> str:
-    def replace(pattern: re.Pattern[str], replacement: str, code: str, text: str) -> str:
+    def replace(pattern: re.Pattern[str], replacement: str | Callable[[re.Match[str]], str],
+                code: str, text: str) -> str:
         changed, count = pattern.subn(replacement, text)
         if count:
             redactions.append(code)
         return changed
 
-    value = replace(_PRIVATE_KEY_RE, "[REDACTED_SECRET_MATERIAL]", "private_key", value)
-    value = replace(_BEARER_RE, "Bearer [REDACTED]", "bearer_credential", value)
-    value = replace(_TOKEN_RE, "[REDACTED_TOKEN]", "credential_token", value)
+    value = replace(PRIVATE_KEY_RE, "[REDACTED_SECRET_MATERIAL]", "private_key", value)
+    value = replace(AUTH_SCHEME_RE, _auth_scheme_redacted, "bearer_credential", value)
+    value = replace(TOKEN_RE, "[REDACTED_TOKEN]", "credential_token", value)
     value = replace(_SECRET_ASSIGN_RE, r"\1=[REDACTED]", "credential_assignment", value)
     value = replace(_CREDENTIAL_URL_RE, r"\1[REDACTED]@", "credential_url", value)
     value = replace(_EMAIL_RE, "[REDACTED_EMAIL]", "email", value)

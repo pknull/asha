@@ -17,6 +17,7 @@ TOOLS_DIR = Path(__file__).parent.parent.parent / "plugins" / "session" / "tools
 sys.path.insert(0, str(TOOLS_DIR))
 
 import workspace_knowledge as wk  # type: ignore[reportMissingImports]  # noqa: E402
+from tests.python.secret_specimens import PROSE, SPECIMENS  # noqa: E402
 
 
 class KnowledgeFixture(unittest.TestCase):
@@ -199,6 +200,30 @@ class LintCases(KnowledgeFixture):
         codes = {item["code"] for item in report["blocking"]}
         self.assertIn("document_escape", codes)
         self.assertNotIn("secret_pattern", codes)
+
+
+class SharedSecretPatternCases(unittest.TestCase):
+    def test_each_shared_secret_family_is_scrubbed_and_blocks_lint(self):
+        labels = {"bearer": "Bearer [REDACTED]", "basic": "Basic [REDACTED]"}
+        for family, specimen in SPECIMENS.items():
+            with self.subTest(family=family):
+                text = f"before {specimen.text} after\n"
+                findings = {item["code"] for item in wk._privacy_findings(text, "doc.md")}
+                content, _, errors = wk.scrub_candidate(text)
+                if specimen.kind == "private_key":
+                    self.assertIn("unscrubbable_secret", findings)
+                    self.assertIsNone(content)
+                    self.assertEqual("unscrubbable_secret", errors[0]["code"])
+                    continue
+                self.assertIn("secret_pattern", findings)
+                self.assertEqual([], errors)
+                self.assertNotIn(specimen.secret, content)
+                label = labels.get(family, "[REDACTED_TOKEN]")
+                self.assertEqual(f"before {label} after\n", content)
+
+    def test_ordinary_prose_and_hex_commit_ids_are_not_redacted(self):
+        self.assertEqual([], wk._privacy_findings(PROSE, "doc.md"))
+        self.assertEqual((PROSE, [], []), wk.scrub_candidate(PROSE))
 
 
 class PromotionCases(KnowledgeFixture):

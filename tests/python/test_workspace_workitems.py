@@ -16,6 +16,7 @@ TOOLS = Path(__file__).resolve().parents[2] / "plugins" / "session" / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import workspace_workitems as wi  # type: ignore[reportMissingImports]  # noqa: E402
+from tests.python.secret_specimens import PROSE, SPECIMENS  # noqa: E402
 
 
 class WorkItemFixture(unittest.TestCase):
@@ -209,6 +210,33 @@ class AdapterPrivacyCases(WorkItemFixture):
         self.assertNotIn("BEGIN PRIVATE KEY", serialized)
         self.assertNotIn("MIIEvQIBADAN", serialized)
         self.assertIn("private_key", report["redactions"])
+
+    def preview_objective(self, objective):
+        report = wi.preview_file_candidate(self.ws, self.candidate({
+            "external_id": "EXT-118", "title": "Credential scrub", "status": "Open",
+            "repositories": ["service"], "objective": objective,
+            "provider": "file-fixture", "freshness": "2026-10-05T10:00:00Z",
+            "source_url": "https://tickets.example.test/118",
+        }))
+        self.assertTrue(report["ok"], report)
+        return report["candidate"]["objective"], report["redactions"]
+
+    def test_each_shared_secret_family_is_scrubbed_with_its_workitem_label(self):
+        labels = {
+            "bearer": ("Bearer [REDACTED]", "bearer_credential"),
+            "basic": ("Basic [REDACTED]", "bearer_credential"),
+            "private_key": ("[REDACTED_SECRET_MATERIAL]", "private_key"),
+        }
+        for family, specimen in SPECIMENS.items():
+            with self.subTest(family=family):
+                objective, redactions = self.preview_objective(f"before {specimen.text} after")
+                label, code = labels.get(family, ("[REDACTED_TOKEN]", "credential_token"))
+                self.assertNotIn(specimen.secret, objective)
+                self.assertEqual(f"before {label} after", objective)
+                self.assertEqual([code], redactions)
+
+    def test_ordinary_prose_and_hex_commit_ids_are_not_redacted(self):
+        self.assertEqual((PROSE, []), self.preview_objective(PROSE))
 
     def test_import_requires_matching_preview_and_never_executes_content(self):
         marker, data = self.malicious_candidate()
