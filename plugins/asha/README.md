@@ -1,6 +1,6 @@
 # Asha
 
-**Version**: 3.1.0
+**Version**: 3.1.1
 
 Asha is the optional identity layer for Claude Code, OpenAI Codex, GitHub
 Copilot CLI, and OpenCode. It keeps ordinary launches small: three compact hot

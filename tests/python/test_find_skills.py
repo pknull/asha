@@ -501,6 +501,87 @@ class InspectionTests(unittest.TestCase):
                 with self.assertRaisesRegex(find_skills.ValidationError, r"tree\[0\]"):
                     consumer()
 
+
+class SafetyPatternTests(unittest.TestCase):
+    """Each text pattern flags the command and leaves nearby prose alone.
+
+    One row per pattern: (label, category, commands, prose). Findings are
+    Keeper evidence, never import blockers, so a pattern stays broad where
+    narrowing it would miss real commands.
+    """
+
+    CASES = (
+        ("uv tool install", "package_installation",
+         ("uv tool install ruff",),
+         ("uv is a fast tool; install it from your distribution.",)),
+        ("uvx", "package_installation",
+         ("uvx ruff check .",),
+         ("Install uv first; its tool runner keeps environments isolated.",)),
+        ("pipx install", "package_installation",
+         ("pipx install mod-manager",),
+         ("pipx keeps each tool isolated; install it once per machine.",)),
+        ("dotnet tool install", "package_installation",
+         ("dotnet tool install -g ilspycmd",
+          "dotnet tool install --global dotnet-ef"),
+         ("Use the dotnet CLI; tool installs are covered in the next section.",)),
+        ("cargo install", "package_installation",
+         ("cargo install ripgrep",),
+         ("cargo builds the crate; install the binary by hand.",)),
+        ("go install module@version", "package_installation",
+         ("go install golang.org/x/tools/gopls@latest",
+          "go install -v github.com/acme/tool@v1.2.3"),
+         ("Go install the mod manager before you start.",
+          "go install the mod manager before you start.")),
+        ("winget/choco/scoop install", "package_installation",
+         ("winget install Git.Git", "choco install git -y", "scoop install git"),
+         ("Scoop the logs into one folder, then install nothing new.",)),
+        ("asdf install / plugin add", "package_installation",
+         ("asdf install nodejs 24.4.0", "asdf plugin add nodejs",
+          "asdf plugin-add golang"),
+         ("asdf reads .tool-versions; install the plugin it names.",)),
+        # "brew install the deps first" stays flagged: "the" is a valid
+        # formula name, so no regex can drop that prose without also
+        # dropping "brew install jq" in a sentence.
+        ("brew install / tap", "package_installation",
+         ("brew install jq", "brew tap homebrew/cask-fonts",
+          "brew install the deps first"),
+         ("Homebrew taps add third-party formulae to the catalogue.",)),
+        ("apt / apt-get install", "package_installation",
+         ("apt install jq", "apt-get install jq", "sudo apt install jq",
+          "sudo apt-get install -y jq", "sudo apt-get -y install jq",
+          "sudo -E apt-get -qq install jq"),
+         ("Debian's apt resolver handles dependencies; install only what you need.",)),
+        (".ps1 script", "shell_out",
+         ("Run scripts/setup.ps1 on Windows.", "& .\\Install.PS1"),
+         ("Set PS1 to change your prompt.",)),
+        ("powershell invocation", "shell_out",
+         ("powershell -ExecutionPolicy Bypass -File setup",
+          "powershell.exe -NoProfile -Command Get-ChildItem"),
+         ("PowerShell - the Windows shell - is preinstalled.",)),
+        ("gh pr create / gh repo fork", "network_calls",
+         ("gh pr create --fill", "gh repo fork --clone"),
+         ("Use gh to review the PR, then create a release note by hand.",)),
+    )
+
+    @staticmethod
+    def _categories(text):
+        return {
+            item["category"]
+            for item in find_skills_common._pattern_findings("SKILL.md", text)
+        }
+
+    def test_commands_are_flagged_in_their_category(self):
+        for label, category, commands, _prose in self.CASES:
+            for text in commands:
+                with self.subTest(pattern=label, text=text):
+                    self.assertIn(category, self._categories(text))
+
+    def test_prose_is_not_flagged_in_that_category(self):
+        for label, category, _commands, prose in self.CASES:
+            for text in prose:
+                with self.subTest(pattern=label, text=text):
+                    self.assertNotIn(category, self._categories(text))
+
 class HttpClientTests(unittest.TestCase):
     def test_json_responses_have_bounded_structure_and_integer_conversion(self):
         client = find_skills.HttpClient()
