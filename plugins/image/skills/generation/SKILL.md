@@ -35,6 +35,11 @@ Core tasks:
 - General image editing unrelated to SD generation (use appropriate image tools)
 - Simple file operations on existing prompts (Read/Write directly)
 
+**Backend choice:** this skill is the local ComfyUI route and the default for
+placeholder art, alpha art and quick iteration. Paid hosted generation on
+fal.ai (finished-quality assets, 3D, rigging, audio, video) belongs to the
+`image-fal` skill, which holds the routing rule and its price gate.
+
 Prompt templates for **other generators** (DALL-E 3, Midjourney, Runway Gen-3, Sora) live in [templates/](templates/) alongside this skill: `dalle.md`, `midjourney.md`, `runway.md`, `sora.md`.
 
 ## Reference

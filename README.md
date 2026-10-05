@@ -308,7 +308,7 @@ lifecycle callback into a semantic save.
 | **Development** | `code` | Code review, orchestration patterns, TDD, and guarded issue processing |
 | **Creative** | `write` | Fiction writing, prose craft, continuity, and style analysis |
 | **Creative** | `rp` | Live roleplay lifecycle, continuity gating, and canon ratification |
-| **Image** | `image` | Stable Diffusion prompts and ComfyUI workflows |
+| **Image** | `image` | Local ComfyUI workflows and on-demand paid fal.ai generation |
 | **Integrations** | `admin` | Todoist, grounded search, computation, knowledge, and mail integrations |
 | **Security** | `security` | Web-application security review patterns |
 | **Tooling** | `test` | Installer canary primitives |
@@ -324,7 +324,7 @@ The owning guide below is the catalogue for each plugin.
 | `code` | `/code:*` or rendered `code-*` skills | Implementation orchestration, debugging, review, verification, PostgreSQL work | [Code guide](plugins/code/README.md) |
 | `write` | `/write:*` or rendered `write-*` skills | Fiction state, drafting workflows, editorial review, style analysis, export | [Write guide](plugins/write/README.md) |
 | `rp` | `/rp:*` or rendered `rp-*` skills | Live roleplay lifecycle, continuity gates, canon ratification | [RP guide](plugins/rp/README.md) |
-| `image` | `image-generation` skill | Stable Diffusion prompts and ComfyUI workflows | [Image guide](plugins/image/README.md) |
+| `image` | `image-generation` or `image-fal` skill | Stable Diffusion prompts and ComfyUI workflows (local first); priced, user-approved fal.ai images, sprites, textures, 3D, rigging, audio and video | [Image guide](plugins/image/README.md) |
 | `admin` | Name the required skill | Todoist, Gemini, Wolfram, BookStack, and Proton Mail operations | [Admin guide](plugins/admin/README.md) |
 | `security` | `security-review` skill | Security-sensitive implementation and review | [Security guide](plugins/security/README.md) |
 | `asha` | `asha <harness>`; `asha-reference` when needed | Compact identity and task-selected private reference material | [Identity guide](plugins/asha/README.md) |
@@ -496,7 +496,7 @@ asha/
 │   ├── admin/                    # skills/ (bookstack, gemini, proton-mail, todoist, wolfram)
 │   ├── asha/                     # compact identity templates + on-demand reference skill
 │   ├── code/                     # development workflows and specialists
-│   ├── image/                    # skills/ (generation)
+│   ├── image/                    # skills/ (fal, generation)
 │   ├── panel/                    # panel workflows, characters, and templates
 │   ├── rp/                       # live-roleplay lifecycle and continuity gates
 │   ├── security/                 # skills/ (security-review)
