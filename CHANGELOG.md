@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — Copilot build ships only source-controlled files
+
+- `asha build copilot` from a git checkout copies only the files `git
+  ls-files` lists, at both copy sites (plugin skills and other plugin content).
+  Before, ignored and untracked files such as `plugins/code/tools/__pycache__/`
+  reached the dist while its README named a clean source commit. Skills whose
+  `SKILL.md` is untracked and plugin entries with no tracked files are skipped,
+  and `--dry-run` no longer lists them.
+- A non-git source (tarball export), or one unpacked inside an unrelated git
+  repository, is copied as it stands, as before.
+- Command and agent sources are still read from the filesystem, so an untracked
+  `commands/*.md` or `agents/*.md` is still converted into the dist.
+
 ## Unreleased — find-skills flags more installers and publishers (asha 3.1.1)
 
 - Inspection evidence now flags, under `package_installation`: `uv tool
