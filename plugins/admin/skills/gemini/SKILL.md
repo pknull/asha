@@ -109,7 +109,7 @@ Use pro when: question requires synthesizing multiple sources, comparing options
 
 ## When NOT to use this skill
 
-- **Claude already has WebSearch** — for simple lookups, the built-in `WebSearch` tool is faster and integrates directly. Reach for Gemini when you specifically want grounded citations or a different model's perspective.
+- **The harness has its own web search** — where the running harness has a built-in web search tool, such as Claude Code's `WebSearch`, prefer it for simple lookups: it is faster and integrates directly. Reach for Gemini when you specifically want grounded citations or a different model's perspective.
 - **Multi-turn research with follow-ups** — make successive grounded queries, carrying forward the relevant sources and unresolved question. This skill is single-shot per invocation.
 - **Bulk queries** — looping this skill across many questions burns API quota fast. Batch via the SDK or use `responseSchema` for structured extraction in a single call.
 

@@ -43,6 +43,8 @@ skill-name/
 
 **Metadata Quality:** The `name` and `description` in YAML frontmatter determine when Claude will use the skill. Be specific about what the skill does and when to use it. Use the third-person (e.g. "This skill should be used when..." instead of "Use this skill when...").
 
+**Harness neutrality (asha addition):** Asha installs skills into Claude Code, Codex, Copilot CLI and OpenCode, so read "Claude" in this text as the running agent, and name a harness in a skill only where its behaviour differs, with the exact tested harness qualifier.
+
 #### Bundled Resources (optional)
 
 ##### Scripts (`scripts/`)

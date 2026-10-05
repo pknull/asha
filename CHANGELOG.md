@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — harness-neutral skill wording (admin 0.3.1, session 2.3.1)
+
+- The `admin-gemini` skill no longer says "Claude already has WebSearch" to
+  every harness that mounts it. It now prefers the running harness's built-in
+  web search where one exists, naming Claude Code's `WebSearch` as the example,
+  and makes no claim about the other harnesses.
+- `session-skill-creator` gains one marked sentence beside its metadata
+  guidance: read "Claude" in the vendored text as the running agent, and name a
+  harness in a skill only where behaviour differs, with the tested qualifier.
+  The vendored Apache-2.0 body is otherwise unchanged.
+
 ## Unreleased — a later turn without a report keeps finished (#114)
 
 - A finished worker woken for another turn without new work (a background
