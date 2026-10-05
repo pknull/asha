@@ -11,12 +11,20 @@ from __future__ import annotations
 import re
 
 
-# An Authorization scheme and its credential. Group 1 is the scheme word.
-AUTH_SCHEME_RE = re.compile(r"(?i)\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}")
+_CREDENTIAL = r"[A-Za-z0-9._~+/=-]"
+# An Authorization scheme and its credential. Group 1 is the scheme word. So
+# that prose such as "basic configuration" passes, the credential needs a digit,
+# one of + ~ =, two lower-to-upper case changes as base64 has, or 24 characters.
+AUTH_SCHEME_RE = re.compile(
+    rf"\b((?i:Bearer|Basic))\s+"
+    rf"(?:(?={_CREDENTIAL}*?(?:[0-9+~=]|[a-z][A-Z]{_CREDENTIAL}*?[a-z][A-Z]))"
+    rf"{_CREDENTIAL}{{8,}}|{_CREDENTIAL}{{24,}})"
+)
 
+# npm tokens are npm_ plus 36 alphanumerics; npm_config_* names never get close.
 _PREFIXED_TOKEN = (
-    r"\b(?:gh[opsur]_|github_pat_|glpat-|npm_|sk-|xox[abprs]-|AIza)"
-    r"[A-Za-z0-9_-]{12,}"
+    r"\b(?:gh[opsur]_|github_pat_|glpat-|sk-|xox[abprs]-|AIza)[A-Za-z0-9_-]{12,}"
+    r"|\bnpm_[A-Za-z0-9]{32,}"
 )
 _JWT = r"\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"
 _AWS_ACCESS_KEY = r"\bAKIA[A-Z0-9]{16}\b"

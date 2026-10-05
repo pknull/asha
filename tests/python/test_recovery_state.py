@@ -15,7 +15,7 @@ TOOLS = Path(__file__).resolve().parents[2] / "plugins" / "session" / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import recovery_state  # noqa: E402
-from tests.python.secret_specimens import PROSE, SPECIMENS  # noqa: E402
+from tests.python.secret_specimens import PROSE, PROSE_NEAR_MISSES, SPECIMENS  # noqa: E402
 
 
 class RecoveryStateTests(unittest.TestCase):
@@ -123,10 +123,13 @@ class RecoveryStateTests(unittest.TestCase):
                          {pattern for pattern, _ in recovery_state._SECRET_PATTERNS})
 
     def test_ordinary_prose_and_hex_commit_ids_are_not_redacted(self):
-        path = recovery_state.update(self.root, {
-            "session_id": "prose", "harness": "codex", "event": "prompt", "prompt": PROSE,
-        })
-        self.assertEqual(PROSE, json.loads(path.read_text())["prompt"])
+        for text in (PROSE, *PROSE_NEAR_MISSES):
+            with self.subTest(text=text):
+                path = recovery_state.update(self.root, {
+                    "session_id": "prose", "harness": "codex", "event": "prompt",
+                    "prompt": text,
+                })
+                self.assertEqual(text, json.loads(path.read_text())["prompt"])
 
     def test_update_redacts_url_and_database_dsn_userinfo(self):
         path = recovery_state.update(self.root, {
