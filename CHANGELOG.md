@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — image 2.1.0: paid fal.ai generation beside local ComfyUI
+
+- New `image-fal` skill (`plugins/image/skills/fal/`) for hosted fal.ai
+  generation: finished-quality images, transparent sprites, seamless and PBR
+  textures, image-to-3D, rigging, sound effects, music, voice and video. The
+  image plugin now owns the backend choice: local ComfyUI (`image-generation`)
+  first for placeholder art and iteration; fal only on demand, for finished
+  quality and for what ComfyUI here cannot do. Every paid job needs a price
+  lookup, a stated estimate and the user's go-ahead.
+- `scripts/fal_api.py` is a stdlib REST helper (no SDK, no MCP server). It
+  re-prices each job by billing unit or by fal's historical per-call average
+  and refuses an estimate above the approved amount; an unlisted or zero price
+  and a zero-history estimate refuse rather than pass as free. It sends
+  `FAL_KEY` only over https to `queue.fal.run`, `api.fal.ai` and `rest.fal.ai`,
+  including the status and result URLs fal returns, with redirects refused;
+  downloads and presigned uploads carry no key. It uploads only files named
+  with `--file` (an input value that is a local path is sent verbatim), never
+  retries a paid submission, and logs model, request id, price and outputs to
+  `Work/fal/generations.jsonl` before waiting; `spend` totals the log.
+- `secrets.example` documents `FAL_KEY`. Reinstall a target to pick up the new
+  skill.
+
 ## Unreleased — Copilot build ships only source-controlled files
 
 - `asha build copilot` from a git checkout copies only the files `git
