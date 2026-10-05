@@ -80,6 +80,7 @@ class CodexProtocol:
         self.input_written = False
         self.turn_id = None
         self.requests, self.seen, self.pending, self.items = {}, {}, {}, {}
+        self.answer = None  # latest non-commentary agent message; text events are deltas
         self.item_sizes = {}
         self.item_bytes = self.seen_bytes = 0
         self.outbound = deque()
@@ -402,7 +403,11 @@ class CodexProtocol:
                 self._withdraw(key, allow_partial=True)
             self.terminal = True
             events = [] if success else [("provider-status", error_status(error, interrupted=turn["status"] == "interrupted"))]
-            events.append(("completed" if success else "failed", {"reason": turn["status"], "native_id": self.native_id}))
+            terminal = {"reason": turn["status"], "native_id": self.native_id}
+            if self.answer is not None:
+                # The same summary contract as Claude's result record.
+                terminal.update(summary=self.answer[:16000], summary_truncated=len(self.answer) > 16000)
+            events.append(("completed" if success else "failed", terminal))
             return events
         self._scope(params)
         if method == "item/agentMessage/delta":
@@ -454,6 +459,9 @@ class CodexProtocol:
                         else:
                             detail["output_unavailable"] = True
                 return [("tool", detail)]
+            if (kind == "agentMessage" and method == "item/completed" and item.get("phase") != "commentary"
+                    and isinstance(item.get("text"), str)):
+                self.answer = item["text"][:16001]
             if kind == "userMessage" and item.get("clientId") == self.message_id:
                 return [("progress", {"subtype": "native-input-acknowledged", "message_id": self.message_id})]
             return [("progress", {"subtype": kind})]

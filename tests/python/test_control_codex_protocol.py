@@ -218,6 +218,38 @@ class CodexProtocolTests(unittest.TestCase):
         with self.assertRaises(StoreError):
             self.notify(p, "item/agentMessage/delta", itemId="item-1", delta="late")
 
+    def complete(self, p):
+        return p.feed({"method": "turn/completed", "params": {"threadId": "thread-1",
+            "turn": {"id": "turn-1", "status": "completed", "items": []}}})
+
+    def test_completion_summary_is_the_final_answer_not_its_last_delta(self):
+        # #120: text events are per-token deltas, so without a summary the
+        # session result was the last token (".") instead of the answer.
+        p = self.protocol(); self.ready(p)
+        self.notify(p, "item/agentMessage/delta", itemId="m1", delta="Checking")
+        self.notify(p, "item/completed", item={"id": "m1", "type": "agentMessage",
+                                                "text": "Checking", "phase": "commentary"})
+        for delta in ("Step 4 published", "."):
+            self.notify(p, "item/agentMessage/delta", itemId="m2", delta=delta)
+        self.notify(p, "item/completed", item={"id": "m2", "type": "agentMessage",
+                                                "text": "Step 4 published.", "phase": "final_answer"})
+        self.notify(p, "item/completed", item={"id": "m3", "type": "agentMessage",
+                                                "text": "Trailing aside", "phase": "commentary"})
+        self.assertEqual(self.complete(p)[-1], ("completed", {
+            "reason": "completed", "native_id": "thread-1",
+            "summary": "Step 4 published.", "summary_truncated": False}))
+
+    def test_completion_summary_without_phase_is_bounded(self):
+        p = self.protocol(); self.ready(p)
+        self.notify(p, "item/completed", item={"id": "m1", "type": "agentMessage", "text": "x" * 16001})
+        payload = self.complete(p)[-1][1]
+        self.assertEqual(payload["summary"], "x" * 16000)
+        self.assertTrue(payload["summary_truncated"])
+
+    def test_completion_without_an_agent_message_has_no_summary(self):
+        p = self.protocol(); self.ready(p)
+        self.assertNotIn("summary", self.complete(p)[-1][1])
+
     def test_command_approval_is_bound_to_exact_rpc_id_and_written_before_receipt(self):
         opened, submitted, replies = [], [], []
         p = self.protocol(open_request=lambda key, payload: opened.append((key, payload)),
