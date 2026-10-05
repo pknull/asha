@@ -827,7 +827,8 @@ class SupervisorServiceTests(unittest.TestCase):
         stdout = b"Linger=yes\n" if Path(argv[0]).name == "loginctl" else b""
         return subprocess.CompletedProcess(argv, 0, stdout, b"")
 
-    def expected_unit(self, asha_home_line: str = "", jj_line: str = "") -> str:
+    def expected_unit(self, asha_home_line: str = "", jj_line: str = "",
+                      harness_lines: str = "") -> str:
         return (
             "[Unit]\n"
             f"{SUPERVISOR_SERVICE_MARKER}\n"
@@ -837,6 +838,7 @@ class SupervisorServiceTests(unittest.TestCase):
             "Type=simple\n"
             'Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"\n'
             f"{jj_line}"
+            f"{harness_lines}"
             f"{asha_home_line}"
             "ExecStart=/opt/asha/bin/asha control supervisor run\n"
             "Restart=on-failure\n"
@@ -899,6 +901,75 @@ class SupervisorServiceTests(unittest.TestCase):
                         self.env, self.asha_root,
                         which=lambda command, value=resolved: (
                             value if command == "jj" else self.which(command)
+                        ),
+                    ),
+                    self.expected_unit(),
+                )
+
+    def test_unit_pins_install_time_structured_harness_commands(self) -> None:
+        # #120: structured owners inherit the sanitized service PATH, where an
+        # asdf/npm codex is absent ("exec: codex: not found", exit 127).
+        versions = self.home / ".local" / "share" / "claude" / "versions"
+        versions.mkdir(parents=True)
+        (versions / "9.9.9").write_text("")
+        launcher = self.home / ".local" / "bin" / "claude"
+        launcher.parent.mkdir(parents=True)
+        launcher.symlink_to(versions / "9.9.9")
+        shim = self.home / ".asdf" / "shims" / "codex"
+
+        def which(command: str) -> str | None:
+            return {"claude": str(launcher), "codex": str(shim)}.get(
+                command, self.which(command))
+
+        # The stable launcher path, not its versioned target: Claude updates
+        # repoint the link and asdf shims select the version at exec time.
+        self.assertEqual(
+            render_supervisor_service(self.env, self.asha_root, which=which),
+            self.expected_unit(harness_lines=(
+                f'Environment="ASHA_CLAUDE_CMD={launcher}"\n'
+                f'Environment="ASHA_CODEX_CMD={shim}"\n'
+            )),
+        )
+
+    def test_harness_pin_resolves_its_directory_but_not_the_launcher(self) -> None:
+        # A PATH entry such as ~/.local/share/../bin must still pin, as jj's does.
+        share = self.home / ".local" / "share"
+        share.mkdir(parents=True)
+        (self.home / ".local" / "bin").mkdir()
+        found = str(share / ".." / "bin" / "claude")
+        self.assertEqual(
+            render_supervisor_service(
+                self.env, self.asha_root,
+                which=lambda command: found if command == "claude" else self.which(command),
+            ),
+            self.expected_unit(
+                harness_lines=f'Environment="ASHA_CLAUDE_CMD={self.home / ".local" / "bin" / "claude"}"\n',
+            ),
+        )
+
+    def test_unit_pin_honors_the_operators_harness_override(self) -> None:
+        env = dict(self.env, ASHA_CODEX_CMD="/opt/codex/bin/codex")
+        self.assertEqual(
+            render_supervisor_service(
+                env, self.asha_root,
+                which=lambda command: (
+                    command if command == "/opt/codex/bin/codex" else self.which(command)
+                ),
+            ),
+            self.expected_unit(
+                harness_lines='Environment="ASHA_CODEX_CMD=/opt/codex/bin/codex"\n',
+            ),
+        )
+
+    def test_unit_omits_harness_pin_for_unresolvable_or_unit_unsafe_paths(self) -> None:
+        for resolved in (None, "bin/codex", "../bin/codex", "/home/user name/codex",
+                         '/home/a"b/codex', "/home/%h/codex"):
+            with self.subTest(resolved=resolved):
+                self.assertEqual(
+                    render_supervisor_service(
+                        self.env, self.asha_root,
+                        which=lambda command, value=resolved: (
+                            value if command == "codex" else self.which(command)
                         ),
                     ),
                     self.expected_unit(),

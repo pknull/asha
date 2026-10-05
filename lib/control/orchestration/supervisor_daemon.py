@@ -117,6 +117,21 @@ def render_supervisor_service(
         resolved_jj = os.path.realpath(resolved_jj)
         if _unit_safe_path(resolved_jj):
             jj_line = f'Environment="ASHA_JJ={resolved_jj}"\n'
+    # Structured owners exec their harness from this service as well, so an
+    # npm/asdf harness outside the sanitized PATH failed with exit 127 (#120).
+    # Resolve the directory but keep the launcher entry itself: Claude's
+    # updater repoints its launcher link and an asdf shim picks the version.
+    from ..harness import HEADLESS_HARNESSES
+    from ..rooms import HARNESS_COMMAND_ENV
+    harness_lines = ""
+    for harness in sorted(HEADLESS_HARNESSES):
+        variable = HARNESS_COMMAND_ENV[harness]
+        resolved = _resolve_command(env.get(variable) or harness, env, which)
+        if resolved is not None and os.path.isabs(resolved):
+            resolved = os.path.join(os.path.realpath(os.path.dirname(resolved)),
+                                    os.path.basename(resolved))
+            if _unit_safe_path(resolved):
+                harness_lines += f'Environment="{variable}={resolved}"\n'
     return (
         "[Unit]\n"
         f"{SUPERVISOR_SERVICE_MARKER}\n"
@@ -126,6 +141,7 @@ def render_supervisor_service(
         "Type=simple\n"
         'Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"\n'
         f"{jj_line}"
+        f"{harness_lines}"
         f"{asha_home_line}"
         f"ExecStart={asha_root}/bin/asha control supervisor run\n"
         "Restart=on-failure\n"

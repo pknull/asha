@@ -803,6 +803,14 @@ supervisor, reloads the user manager, and enables and starts the service.
 `uninstall` to disable and remove only Asha's marked unit; both lifecycle
 commands accept `--dry-run` and `--json`.
 
+The unit's `PATH` is fixed to `~/.local/bin` and the system directories, so
+`install` resolves `jj`, `claude` and `codex` in the installing shell and pins
+them as `ASHA_JJ`, `ASHA_CLAUDE_CMD` and `ASHA_CODEX_CMD`. Structured session
+owners run under this service and use those pins; a harness installed through
+asdf or npm is otherwise not found. Harness pins keep the path as found on
+`PATH` (an asdf shim, Claude's launcher link) rather than its target, and an
+existing `ASHA_*_CMD` override wins. Rerun `install` after moving a harness.
+
 User lingering is advisory and is never changed: without lingering the service
 starts at login, while with lingering it starts at boot.
 
