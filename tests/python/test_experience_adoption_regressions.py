@@ -56,6 +56,7 @@ from unittest import mock
 
 from tests.python import test_experience_end_to_end as fixture
 from lib.control import experience_adoption as adoption
+from lib.control.database import ControlDatabase, MAX_BUSY_TIMEOUT_SECONDS
 lm = fixture.lm
 memory_v2 = fixture.memory_v2
 
@@ -76,15 +77,29 @@ class ReceiptRace(unittest.TestCase):
         decision = {'review_id': row['review_id'], 'observation_key': 'retry', 'finding_digest': finding['finding_digest'],
             'save_key': str(uuid.uuid4()), 'disposition': 'propose', 'reason': 'Inspected',
             'rule_id': 'receipt-race', 'trigger': 'When publishing', 'action': 'Compare baseline'}
+        # The second disposition waits out the first's adoption transaction, which
+        # spans learning-file writes. The hub's short busy timeout refuses that
+        # wait under suite load (#116); a refusal is not the receipt property here.
+        def patient(*, create=False):
+            return ControlDatabase(case.hub.config, create=create, busy_timeout=MAX_BUSY_TIMEOUT_SECONDS)
+        self.enterContext(mock.patch.object(case.hub, 'database', patient))
         barrier = threading.Barrier(2)
         original = adoption._complete
         def completing(*args):
-            barrier.wait(timeout=5)
+            barrier.wait(timeout=2 * MAX_BUSY_TIMEOUT_SECONDS)
             return original(*args)
         def execute():
-            return adoption.dispose(case.hub, str(case.project), decision, publication, save_session_id='chair')
+            try:
+                return adoption.dispose(case.hub, str(case.project), decision, publication, save_session_id='chair')
+            except BaseException:
+                barrier.abort()  # Release the partner now; its BrokenBarrierError must not hide this cause.
+                raise
         with mock.patch.object(adoption, '_complete', side_effect=completing), concurrent.futures.ThreadPoolExecutor(2) as pool:
             futures = [pool.submit(execute), pool.submit(execute)]
-            receipts = [future.result(timeout=10) for future in futures]
+        failures = sorted((f.exception() for f in futures if f.exception()),
+                          key=lambda exc: isinstance(exc, threading.BrokenBarrierError))
+        if failures:
+            raise failures[0]
+        receipts = [future.result() for future in futures]
         print('concurrent receipts', json.dumps(receipts))
         self.assertEqual(receipts[0], receipts[1], 'same disposition identity returned two different completed receipts')
