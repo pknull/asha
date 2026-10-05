@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — find-skills flags more installers and publishers (asha 3.1.1)
+
+- Inspection evidence now flags, under `package_installation`: `uv tool
+  install`, `uvx`, `pipx install`, `dotnet tool install`, `cargo install`,
+  `go install <module>@<version>` (case-sensitive and anchored on the `@`, so
+  the prose "Go install the mod manager" stays clean), `winget`/`choco`/`scoop
+  install`, `asdf install`, `asdf plugin add`, `brew tap`, and `apt`/`apt-get`,
+  `brew`, `dnf` or `yum` installs with flags before `install` (`sudo apt-get -y
+  install jq`). Under `shell_out`: `.ps1` scripts and `powershell` followed by
+  a flag. Under `network_calls`: `gh pr create` and `gh repo fork`.
+- `brew install the deps first` remains flagged: no pattern can drop that prose
+  without also dropping `brew install jq` written in a sentence.
+- Findings stay evidence for the Keeper and never block an import.
+
 ## Unreleased — harness-neutral skill wording (admin 0.3.1, session 2.3.1)
 
 - The `admin-gemini` skill no longer says "Claude already has WebSearch" to

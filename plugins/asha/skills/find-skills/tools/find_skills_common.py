@@ -445,17 +445,33 @@ SAFETY_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
             r"\b(?:curl|wget|urllib|requests\.|aiohttp|http\.client|socket\.(?:create_connection|socket)|fetch\s*\(|git\s+clone|gh\s+api)",
             re.I,
         ),
+        re.compile(r"\bgh\s+(?:pr\s+create|repo\s+fork)\b", re.I),
     ),
     "shell_out": (
         re.compile(r"\b(?:subprocess\.|os\.(?:system|popen)|child_process|shell\s*=\s*True)\b", re.I),
         re.compile(r"(?:^|\s)(?:bash|/bin/sh|sh\s+-c)(?:\s|$)", re.I | re.M),
+        re.compile(r"\.ps1\b", re.I),
+        # A flag after the name: "PowerShell - the shell" is prose.
+        re.compile(r"\bpowershell(?:\.exe)?\s+-\w", re.I),
     ),
     "package_installation": (
         re.compile(
             r"\b(?:(?:python(?:3)?\s+-m\s+|uv\s+)?pip(?:3)?\s+install|npm\s+install|npx\b|pnpm\b|yarn\b|bun\b)",
             re.I,
         ),
-        re.compile(r"\b(?:apt(?:-get)?|brew|dnf|yum)\s+install\b", re.I),
+        re.compile(
+            r"\b(?:apt(?:-get)?|brew|dnf|yum)(?:\s+-{1,2}[\w=-]+)*\s+install\b"
+            r"|\bbrew\s+tap\b"
+            r"|\b(?:winget|choco|scoop)\s+install\b"
+            r"|\basdf\s+(?:install|plugin[\s-]+add)\b",
+            re.I,
+        ),
+        re.compile(
+            r"\b(?:uv\s+tool\s+install|uvx|pipx\s+install|dotnet\s+tool\s+install|cargo\s+install)\b",
+            re.I,
+        ),
+        # Case-sensitive and anchored on the @: "Go install the mod manager" is prose.
+        re.compile(r"\bgo\s+install\s+(?:-\S+\s+)*[^\s@]+@\S"),
     ),
     "credential_access": (
         re.compile(r"(?:\.ssh/|\.aws/|\.config/gcloud|keychain|credential|api[_ -]?key|token|secret)", re.I),
