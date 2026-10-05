@@ -240,7 +240,18 @@ class JsonLineTransport:
             if protocol and not process.stdin.closed:
                 process.stdin.close()
             if not terminal:
-                raise StoreError("provider exited without a structured terminal result")
+                # The status alone is safe to retain (stderr may hold
+                # credentials); 127 is the launcher's missing executable.
+                how = ""
+                until = min(deadline, time.monotonic() + 2)
+                while time.monotonic() < until:
+                    exited = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                    if exited:
+                        how = (f" {exited.si_status}" if exited.si_code == os.CLD_EXITED
+                               else f" on signal {exited.si_status}")
+                        break
+                    time.sleep(0.05)
+                raise StoreError(f"provider exited{how} without a structured terminal result")
             while not os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT):
                 if cancelled() or time.monotonic() >= deadline:
                     raise StoreError("session cancelled or turn deadline exceeded")
