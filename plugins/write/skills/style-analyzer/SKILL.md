@@ -1,6 +1,6 @@
 ---
 name: write-style-analyzer
-description: Quantified prose analysis for voice.md generation. Extracts sentence metrics, dialogue profiles, vocabulary patterns, and forbidden word detection from exemplar texts.
+description: Quantified prose analysis for voice.md generation. Extracts sentence metrics, dialogue profiles, vocabulary patterns, and forbidden word detection from exemplar texts. Use when building voice.md from exemplar texts, analyzing an author's style for replication, creating benchmarks for manuscript validation, or comparing draft style against targets.
 metadata:
   model: sonnet
 ---

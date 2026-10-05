@@ -1,8 +1,6 @@
 ---
 name: security-security-review
-description: Security checklist and patterns for web applications
-metadata:
-  triggers: "Authentication implementation | Handling user input | API endpoint creation | Payment/sensitive features | Working with secrets"
+description: Security checklist and patterns for web applications. Use when implementing authentication, handling user input, creating API endpoints, building payment or other sensitive features, or working with secrets.
 ---
 
 # Security Review Patterns

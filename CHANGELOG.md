@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — skill authoring hygiene (security 1.0.1, session 2.3.2, write 1.11.1; #119)
+
+- Every asha skill description now says when to use the skill. Eight of the
+  24 lacked a "Use ..." sentence and gained one drawn from the description or
+  the skill's own "When to Use" list: `security-security-review`,
+  `session-skill-creator`, `session-project-memory`, `write-book-export`,
+  `write-inline-review`, `write-languagetool`, `write-novel-state` and
+  `write-style-analyzer`. No description changes meaning.
+- `security-security-review` moves its triggers from `metadata.triggers`,
+  which nothing reads, into its description.
+- `./tests/validate-plugins.sh` Test 2h rejects a skill whose description is
+  not a string or has no sentence starting "Use" or "Triggers on"; Test 2f
+  proves it fails closed.
+- `session-skill-creator` keeps its vendored Apache-2.0 body as written and
+  records asha practice in paragraphs marked "asha addition", which win where
+  they conflict: descriptions use "Use when ..."; second person is acceptable;
+  plugin skill names are `<namespace>-<directory>`; and asha installs skills by
+  symlink, so the zip-packaging step does not apply.
+- `init_skill.py --path plugins/<plugin>/skills` declares
+  `name: <namespace>-<skill-name>` from `namespaces.json`, and its template
+  description is a quoted string with a "Use when" placeholder (it was a YAML
+  flow sequence), so a new plugin skill passes `./tests/validate-plugins.sh`.
+  Outside a plugin it keeps the directory name, as before.
+
 ## Unreleased — orchestration goals name no home path (#117)
 
 - An orchestration dispatch now passes Control the goal `orch <slug>

@@ -1,6 +1,6 @@
 ---
 name: write-inline-review
-description: "This skill provides compact, prose-preserving review threads inside Markdown manuscripts when inline annotation, author replies, thread status, or clean scanner/export views are requested."
+description: "Compact, prose-preserving review threads inside Markdown manuscripts. Use when inline annotation, author replies, thread status, or clean scanner/export views are requested."
 ---
 
 # Inline Manuscript Review
