@@ -45,6 +45,12 @@ assert sys.stdin.read()==''
         with self.assertRaisesRegex(StoreError, "without a structured terminal"):
             self.run_fixture("sys.stdin.readline()\n")
 
+    def test_exit_without_native_terminal_names_the_exit_status(self):
+        # #120: the launcher's "exec: codex: not found" (127) read only as a
+        # missing terminal result; the status is the one safe diagnostic.
+        with self.assertRaisesRegex(StoreError, "^provider exited 127 without a structured terminal result$"):
+            self.run_fixture("sys.stdin.readline()\nsys.exit(127)\n")
+
     def test_malformed_protocol_is_not_terminal_text(self):
         with self.assertRaisesRegex(StoreError, "malformed structured"):
             self.run_fixture("sys.stdin.readline()\nprint('not JSON',flush=True)\n")
