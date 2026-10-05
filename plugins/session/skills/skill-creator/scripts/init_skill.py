@@ -9,15 +9,21 @@ Examples:
     init_skill.py my-new-skill --path skills/public
     init_skill.py my-api-helper --path skills/private
     init_skill.py custom-skill --path /custom/location
+
+Asha modification (#119): when --path is an asha plugin's skills directory
+(<repo>/plugins/<plugin>/skills beside <repo>/namespaces.json), the declared
+name is <namespace>-<skill-name>, as tests/validate-plugins.sh requires. The
+template description is a quoted string with a "Use when" clause.
 """
 
+import json
 import sys
 from pathlib import Path
 
 
 SKILL_TEMPLATE = """---
-name: {skill_name}
-description: [TODO: Complete and informative explanation of what the skill does and when to use it. Include WHEN to use this skill - specific scenarios, file types, or tasks that trigger it.]
+name: {declared_name}
+description: "TODO: say what the skill does. Use when TODO: name the specific scenarios, file types, or tasks that trigger it."
 ---
 
 # {skill_title}
@@ -191,6 +197,19 @@ def title_case_skill_name(skill_name):
     return ' '.join(word.capitalize() for word in skill_name.split('-'))
 
 
+def declared_skill_name(skill_name, path):
+    """Return the frontmatter name: <namespace>-<skill-name> inside an asha plugin."""
+    skills_dir = Path(path).resolve()
+    plugin_dir = skills_dir.parent
+    namespaces = plugin_dir.parent.parent / 'namespaces.json'
+    if skills_dir.name != 'skills' or plugin_dir.parent.name != 'plugins' or not namespaces.is_file():
+        return skill_name
+    mapping = json.loads(namespaces.read_text(encoding='utf-8'))
+    if not isinstance(mapping, dict):
+        raise ValueError(f"{namespaces} is not a JSON object")
+    return f"{mapping.get(plugin_dir.name, plugin_dir.name)}-{skill_name}"
+
+
 def init_skill(skill_name, path):
     """
     Initialize a new skill directory with template SKILL.md.
@@ -210,6 +229,12 @@ def init_skill(skill_name, path):
         print(f"❌ Error: Skill directory already exists: {skill_dir}")
         return None
 
+    try:
+        declared_name = declared_skill_name(skill_name, path)
+    except (OSError, ValueError) as e:
+        print(f"❌ Error reading namespaces.json: {e}")
+        return None
+
     # Create skill directory
     try:
         skill_dir.mkdir(parents=True, exist_ok=False)
@@ -221,7 +246,7 @@ def init_skill(skill_name, path):
     # Create SKILL.md from template
     skill_title = title_case_skill_name(skill_name)
     skill_content = SKILL_TEMPLATE.format(
-        skill_name=skill_name,
+        declared_name=declared_name,
         skill_title=skill_title
     )
 
@@ -278,6 +303,8 @@ def main():
         print("  - Lowercase letters, digits, and hyphens only")
         print("  - Max 40 characters")
         print("  - Must match directory name exactly")
+        print("  - In an asha plugin (--path plugins/<plugin>/skills), the declared")
+        print("    name becomes <namespace>-<skill-name> from namespaces.json")
         print("\nExamples:")
         print("  init_skill.py my-new-skill --path skills/public")
         print("  init_skill.py my-api-helper --path skills/private")
