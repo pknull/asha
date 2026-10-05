@@ -1,12 +1,17 @@
 ---
 name: session-skill-creator
-description: "Create or update a SKILL.md: write frontmatter, structure body with progressive disclosure, bundle resources, and validate against skill-creator quality criteria."
+description: "Create or update a SKILL.md: write frontmatter, structure body with progressive disclosure, bundle resources, and validate against skill-creator quality criteria. Use when creating a new skill or updating an existing one."
 license: Complete terms in LICENSE.txt
 ---
 
 # Skill Creator
 
 This skill provides guidance for creating effective skills.
+
+**Asha overrides (asha addition):** The body of this skill is vendored
+Apache-2.0 text (see `LICENSE.txt`). Asha leaves that text as written and puts
+its own practice in paragraphs marked "asha addition"; where an asha addition
+conflicts with the vendored text, follow the asha addition.
 
 ## About Skills
 
@@ -42,6 +47,8 @@ skill-name/
 #### SKILL.md (required)
 
 **Metadata Quality:** The `name` and `description` in YAML frontmatter determine when Claude will use the skill. Be specific about what the skill does and when to use it. Use the third-person (e.g. "This skill should be used when..." instead of "Use this skill when...").
+
+**Descriptions and names (asha addition):** An asha skill description says what the skill does, then when to use it in a sentence that starts "Use when ..." (or "Use for ..."), instead of the third-person form above; `./tests/validate-plugins.sh` rejects a description without such a sentence. Put trigger phrases in the description: asha's installer and validators do not read `metadata.triggers`. A plugin skill declares `name: <namespace>-<directory>`, with the namespace from `namespaces.json` (`panel` maps to `panel-system`), and uses only the frontmatter keys `name`, `description`, `license`, `allowed-tools`, `metadata` and `compatibility`.
 
 **Harness neutrality (asha addition):** Asha installs skills into Claude Code, Codex, Copilot CLI and OpenCode, so read "Claude" in this text as the running agent, and name a harness in a skill only where its behaviour differs, with the exact tested harness qualifier.
 
@@ -154,6 +161,8 @@ The script:
 
 After initialization, customize or remove the generated SKILL.md and example files as needed.
 
+**Plugin skills (asha addition):** For a skill in an asha plugin, pass `--path plugins/<plugin>/skills`. The script then declares `name: <namespace>-<skill-name>` and a quoted description with a "Use when" placeholder, so the new skill passes `./tests/validate-plugins.sh`.
+
 ### Step 4: Edit the Skill
 
 When editing the (newly-generated or existing) skill, remember that the skill is being created for another instance of Claude to use. Focus on including information that would be beneficial and non-obvious to Claude. Consider what procedural knowledge, domain-specific details, or reusable assets would help another Claude instance execute these tasks more effectively.
@@ -168,6 +177,8 @@ Also, delete any example files and directories not needed for the skill. The ini
 
 **Writing Style:** Write the entire skill using **imperative/infinitive form** (verb-first instructions), not second person. Use objective, instructional language (e.g., "To accomplish X, do Y" rather than "You should do X" or "If you need to do X"). This maintains consistency and clarity for AI consumption.
 
+**Second person (asha addition):** Second person is acceptable in asha skills, as in `session-operate-control` and `admin-todoist`.
+
 To complete SKILL.md, answer the following questions:
 
 1. What is the purpose of the skill, in a few sentences?
@@ -175,6 +186,8 @@ To complete SKILL.md, answer the following questions:
 3. In practice, how should Claude use the skill? All reusable skill contents developed above should be referenced so that Claude knows how to use them.
 
 ### Step 5: Packaging a Skill
+
+**Asha installs by symlink (asha addition):** Skip this step for an asha plugin skill; the packaging guidance below does not apply. The installer links each skill directory into each harness home rather than unpacking a zip, and the packaged Copilot distribution is built by `asha build copilot`. Run `./tests/validate-plugins.sh` instead, then reinstall a target (`asha install <target>`) for a new skill to appear; edits to an installed skill are live through its link.
 
 Once the skill is ready, it should be packaged into a distributable zip file that gets shared with the user. The packaging process automatically validates the skill first to ensure it meets all requirements:
 
