@@ -26,13 +26,14 @@ import sys
 import tempfile
 from datetime import date, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 from urllib.parse import quote, urlsplit
 
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import project_root  # noqa: E402
+from secret_patterns import AUTH_SCHEME_RE, PRIVATE_KEY_RE, TOKEN_RE  # noqa: E402
 
 
 SCHEMA_VERSION = 1
@@ -53,9 +54,6 @@ _LINK_RE = re.compile(r"!?\[[^]]*\]\(([^)]+)\)")
 _EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\w.-])")
 _HOME_RE = re.compile(r"(?<![\w.-])/(?:home|Users)/[^/\s]+")
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+?1[-. ]?)?\(?\d{3}\)?[-. ]\d{3}[-. ]\d{4}(?!\d)")
-_PRIVATE_KEY_RE = re.compile(
-    r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----", re.IGNORECASE
-)
 _TRANSCRIPT_RE = re.compile(
     r"(?im)^\s*(?:[\[{]\s*[\"']?role[\"']?\s*[:=]|role\s*:)\s*[\"']?"
     r"(?:user|assistant|system)\b"
@@ -69,11 +67,6 @@ _SECRET_ASSIGN_RE = re.compile(
     r"(?im)^(\s*(?:api[_-]?key|api[_-]?token|access[_-]?token|auth[_-]?token|"
     r"client[_-]?secret|password|passwd|secret|token)\s*[:=]\s*)"
     r"([^\s#][^\r\n#]*)"
-)
-_BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
-_KNOWN_TOKEN_RE = re.compile(
-    r"\b(?:gh[opusr]_[A-Za-z0-9]{20,}|sk-[A-Za-z0-9_-]{20,}|"
-    r"AKIA[0-9A-Z]{16})\b"
 )
 _CREDENTIAL_URL_RE = re.compile(r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@")
 
@@ -553,9 +546,9 @@ def _privacy_findings(text: str, rel: str) -> list[dict[str, Any]]:
             ))
             break
     patterns = (
-        ("unscrubbable_secret", _PRIVATE_KEY_RE, "private-key material is forbidden"),
-        ("secret_pattern", _BEARER_RE, "bearer credential is forbidden"),
-        ("secret_pattern", _KNOWN_TOKEN_RE, "known credential token is forbidden"),
+        ("unscrubbable_secret", PRIVATE_KEY_RE, "private-key material is forbidden"),
+        ("secret_pattern", AUTH_SCHEME_RE, "bearer credential is forbidden"),
+        ("secret_pattern", TOKEN_RE, "known credential token is forbidden"),
         ("secret_pattern", _CREDENTIAL_URL_RE, "credentials embedded in a URL are forbidden"),
         ("personal_email", _EMAIL_RE, "personal email address is forbidden"),
         ("personal_home_path", _HOME_RE, "machine-specific home path is forbidden"),
@@ -763,16 +756,21 @@ def _strip_frontmatter(text: str) -> str:
     return text[end + 4:].lstrip("\r\n")
 
 
+def _auth_scheme_redacted(match: re.Match[str]) -> str:
+    return f"{match.group(1).capitalize()} [REDACTED]"
+
+
 def scrub_candidate(text: str) -> tuple[Optional[str], list[dict[str, Any]], list[dict[str, Any]]]:
     """Deterministically scrub portable text; reject what cannot be made safe."""
-    if _PRIVATE_KEY_RE.search(text):
+    if PRIVATE_KEY_RE.search(text):
         return None, [], [_issue("unscrubbable_secret", "private-key material cannot be safely promoted")]
     if _TRANSCRIPT_RE.search(text):
         return None, [], [_issue("transcript_content_forbidden", "raw transcript-shaped content cannot be promoted")]
     text = _strip_frontmatter(text)
     scrubbed: list[dict[str, Any]] = []
 
-    def replace(pattern: re.Pattern[str], replacement: str, code: str) -> None:
+    def replace(pattern: re.Pattern[str],
+                replacement: str | Callable[[re.Match[str]], str], code: str) -> None:
         nonlocal text
         text, count = pattern.subn(replacement, text)
         if count:
@@ -797,8 +795,8 @@ def scrub_candidate(text: str) -> tuple[Optional[str], list[dict[str, Any]], lis
     text, count = _SECRET_ASSIGN_RE.subn(assignment, text)
     if count:
         scrubbed.append(_issue("credential_redacted", f"{count} credential assignment(s) redacted"))
-    replace(_BEARER_RE, "Bearer [REDACTED]", "credential_redacted")
-    replace(_KNOWN_TOKEN_RE, "[REDACTED_TOKEN]", "credential_redacted")
+    replace(AUTH_SCHEME_RE, _auth_scheme_redacted, "credential_redacted")
+    replace(TOKEN_RE, "[REDACTED_TOKEN]", "credential_redacted")
     replace(_CREDENTIAL_URL_RE, r"\1[REDACTED]@", "credential_url_redacted")
     replace(_EMAIL_RE, "[REDACTED_EMAIL]", "personal_email_redacted")
     replace(_HOME_RE, "~", "home_path_normalized")

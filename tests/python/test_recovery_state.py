@@ -15,6 +15,7 @@ TOOLS = Path(__file__).resolve().parents[2] / "plugins" / "session" / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import recovery_state  # noqa: E402
+from tests.python.secret_specimens import PROSE, SPECIMENS  # noqa: E402
 
 
 class RecoveryStateTests(unittest.TestCase):
@@ -101,6 +102,31 @@ class RecoveryStateTests(unittest.TestCase):
                        "dXNlcj", "c3Rhbm", "eyJhb", "AKIA", "secret material",
                        "github_pat_", "glpat-", "npm_", "AIza"):
             self.assertNotIn(secret, persisted)
+
+    def test_each_shared_secret_family_keeps_its_recovery_label(self):
+        labels = {"auth": "[REDACTED_AUTH]", "token": "[REDACTED]",
+                  "jwt": "[REDACTED_JWT]", "aws": "[REDACTED_AWS_KEY]",
+                  "private_key": "[REDACTED]"}
+        for family, specimen in SPECIMENS.items():
+            with self.subTest(family=family):
+                path = recovery_state.update(self.root, {
+                    "session_id": "families", "harness": "codex", "event": "prompt",
+                    "prompt": f"before {specimen.text} after",
+                })
+                self.assertNotIn(specimen.secret, path.read_text())
+                self.assertEqual(f"before {labels[specimen.kind]} after",
+                                 json.loads(path.read_text())["prompt"])
+
+    def test_recovery_table_uses_every_shared_secret_family(self):
+        import secret_patterns
+        self.assertEqual(set(secret_patterns.FAMILIES),
+                         {pattern for pattern, _ in recovery_state._SECRET_PATTERNS})
+
+    def test_ordinary_prose_and_hex_commit_ids_are_not_redacted(self):
+        path = recovery_state.update(self.root, {
+            "session_id": "prose", "harness": "codex", "event": "prompt", "prompt": PROSE,
+        })
+        self.assertEqual(PROSE, json.loads(path.read_text())["prompt"])
 
     def test_update_redacts_url_and_database_dsn_userinfo(self):
         path = recovery_state.update(self.root, {

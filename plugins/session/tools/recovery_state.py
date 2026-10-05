@@ -25,17 +25,20 @@ if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from path_safety import secure_path, secure_project_root
+from secret_patterns import (
+    AUTH_SCHEME_RE, AWS_ACCESS_KEY_RE, JWT_RE, PREFIXED_TOKEN_RE, PRIVATE_KEY_RE,
+)
 
 
 MAX_BYTES = 2048
 MAX_PATHS = 10
 TTL_DAYS = 7
 _SECRET_PATTERNS = (
-    (re.compile(r"(?i)\b(?:Bearer|Basic)\s+[A-Za-z0-9_./+=-]{8,}"), "[REDACTED_AUTH]"),
-    (re.compile(r"\b(?:gh[pousr]_|github_pat_|glpat-|npm_|sk-|xox[baprs]-|AIza)[A-Za-z0-9_-]{12,}"), "[REDACTED]"),
-    (re.compile(r"\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"), "[REDACTED_JWT]"),
-    (re.compile(r"\bAKIA[A-Z0-9]{16}\b"), "[REDACTED_AWS_KEY]"),
-    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL), "[REDACTED]"),
+    (AUTH_SCHEME_RE, "[REDACTED_AUTH]"),
+    (PREFIXED_TOKEN_RE, "[REDACTED]"),
+    (JWT_RE, "[REDACTED_JWT]"),
+    (AWS_ACCESS_KEY_RE, "[REDACTED_AWS_KEY]"),
+    (PRIVATE_KEY_RE, "[REDACTED]"),
 )
 
 
