@@ -108,8 +108,14 @@ with patch("lib.control.database.os.link",side_effect=publish_then_die):
 ''', str(self.home), str(interrupted.asha_home), str(backup)],
             cwd=Path(__file__).resolve().parents[2], capture_output=True, text=True, timeout=10)
         self.assertEqual(child.returncode, 77, child.stderr)
-        with self.assertRaises(DatabaseError):
-            ControlDatabase(interrupted, read_only=True)
+        # The link published a complete, validated database already paused for
+        # operator reconciliation; a retry refuses to publish over it.
+        with ControlDatabase(interrupted, read_only=True) as db:
+            self.assertEqual(db.get("fixture", "project", "one"), {"text": "retained"})
+            with db.transaction() as c:
+                self.assertEqual(c.execute("SELECT mode FROM control_runtime").fetchone()[0], "paused")
+        with self.assertRaisesRegex(DatabaseError, "empty Control state directory"):
+            ControlDatabase.restore(interrupted, backup)
         fresh = load_config({"HOME": str(self.home), "ASHA_HOME": str(self.root / "recovered")})
         ControlDatabase.restore(fresh, backup)
         with ControlDatabase(fresh, read_only=True) as db:
@@ -319,27 +325,23 @@ with patch("lib.control.database.os.link",side_effect=publish_then_die):
         self.assertEqual(probe.execute("PRAGMA application_id").fetchone()[0], 0)
         self.assertEqual(probe.execute("PRAGMA journal_mode").fetchone()[0], "delete")
 
-    def test_refuses_wrong_mode_and_symlinked_files(self) -> None:
-        ControlDatabase(self.config, create=True).close()
-        os.chmod(self.path, 0o644)
-        with self.assertRaises(StoreError) as mode:
-            ControlDatabase(self.config, create=True)
-        self.assertIn("0600", str(mode.exception))
-        os.chmod(self.path, 0o600)
+    def test_opens_whatever_mode_or_links_but_refuses_a_non_regular_database(self) -> None:
+        # Modes and link counts are the trusted local user's business (threat
+        # model, 2026-10-05); only a non-regular database name is refused.
+        with ControlDatabase(self.config, create=True) as db:
+            with db.transaction(write=True) as tx:
+                tx.execute("CREATE TABLE items(x INTEGER)")
+            os.chmod(self.path, 0o644)
+            os.link(self.control / (DATABASE_NAME + "-wal"), self.control / "linked-wal")
+            for create in (False, True):
+                ControlDatabase(self.config, create=create).close()
         real = self.control / "real.sqlite3"
         self.path.rename(real)
         self.path.symlink_to(real)
-        with self.assertRaises(StoreError) as linked:
+        with self.assertRaisesRegex(DatabaseError, "not a regular file"):
             ControlDatabase(self.config, create=True)
-        self.assertIn("symlink", str(linked.exception))
         self.path.unlink()
         real.rename(self.path)
-        sidecar = self.control / (DATABASE_NAME + "-wal")
-        sidecar.symlink_to(self.control / "elsewhere")
-        with self.assertRaises(StoreError) as tampered:
-            ControlDatabase(self.config)
-        self.assertIn("symlink", str(tampered.exception))
-        sidecar.unlink()
         ControlDatabase(self.config).close()
 
     def test_rejects_unbounded_busy_timeout(self) -> None:
@@ -459,33 +461,6 @@ with patch("lib.control.database.os.link",side_effect=publish_then_die):
             sidecar = self.control / (DATABASE_NAME + suffix)
             self.assertTrue(sidecar.exists(), suffix)
             self.assertEqual(_mode(sidecar), 0o600, suffix)
-
-    def test_sidecar_unlinked_during_inspection_is_absent(self) -> None:
-        # The last connection's close unlinks WAL/SHM; a concurrent opener's
-        # path stat can land on that dying inode and read st_nlink 0 (#116).
-        db = ControlDatabase(self.config, create=True)
-        self.addCleanup(db.close)
-        with db.transaction(write=True) as tx:
-            tx.execute("CREATE TABLE items(x INTEGER)")
-        real_stat = os.stat
-        def dying(name, *args, **kwargs):
-            result = real_stat(name, *args, **kwargs)
-            if str(name).endswith(("-wal", "-shm")):
-                return os.stat_result(tuple(result)[:3] + (0,) + tuple(result)[4:])
-            return result
-        with patch("lib.control.database.os.stat", side_effect=dying):
-            ControlDatabase(self.config).close()
-
-    def test_hard_linked_sidecar_is_refused(self) -> None:
-        db = ControlDatabase(self.config, create=True)
-        self.addCleanup(db.close)
-        with db.transaction(write=True) as tx:
-            tx.execute("CREATE TABLE items(x INTEGER)")
-        extra = self.control / "linked-wal"
-        os.link(self.control / (DATABASE_NAME + "-wal"), extra)
-        with self.assertRaises(DatabaseError) as linked:
-            ControlDatabase(self.config)
-        self.assertIn("link count", str(linked.exception))
 
     def test_closed_database_refuses_use_and_close_is_idempotent(self) -> None:
         db = ControlDatabase(self.config, create=True)

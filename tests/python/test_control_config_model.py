@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import stat
 import tempfile
 import unittest
 import uuid
@@ -12,8 +11,6 @@ from unittest import mock
 from lib.control.config import (
     ConfigError,
     load_config,
-    namespace_ancestor_problem,
-    namespace_safety_step,
     validate_workspace_root,
 )
 from lib.control.model import (
@@ -203,56 +200,6 @@ class ControlConfigTests(unittest.TestCase):
             self.assertEqual(config.config_path, config_parent / "config.json")
             self.assertEqual(config.default_harness, "codex")
 
-    def test_config_rejects_group_or_world_writable_opened_file_inode(self) -> None:
-        for topology in ("direct", "leaf-symlink"):
-            for unsafe_mode in (0o620, 0o602):
-                with (
-                    self.subTest(topology=topology, unsafe_mode=oct(unsafe_mode)),
-                    tempfile.TemporaryDirectory() as td,
-                ):
-                    root = Path(td)
-                    root.chmod(0o755)
-                    home = root / "home"
-                    config_parent = home / ".asha"
-                    target_parent = home / "dotfiles/asha/.asha"
-                    config_parent.mkdir(parents=True, mode=0o700)
-                    target_parent.mkdir(parents=True, mode=0o700)
-                    home.chmod(0o750)
-                    config_parent.chmod(0o775)
-                    target_parent.chmod(0o775)
-                    target = (
-                        config_parent / "config.json"
-                        if topology == "direct"
-                        else target_parent / "config.json"
-                    )
-                    write_config(target, "{}")
-                    target.chmod(unsafe_mode)
-                    config_path = config_parent / "config.json"
-                    if topology == "leaf-symlink":
-                        config_path.symlink_to("../dotfiles/asha/.asha/config.json")
-
-                    # Hide the unsafe bits from pathname inspection.  The
-                    # opened descriptor's fstat remains authoritative.
-                    real_lstat = Path.lstat
-                    target_inode = target.stat().st_ino
-
-                    def safe_path_metadata(path: Path):
-                        metadata = real_lstat(path)
-                        if metadata.st_ino == target_inode:
-                            fields = list(metadata)
-                            fields[0] = stat.S_IFREG | 0o600
-                            return os.stat_result(fields)
-                        return metadata
-
-                    with mock.patch("pathlib.Path.lstat", new=safe_path_metadata):
-                        with self.assertRaisesRegex(ConfigError, "group/world-writable"):
-                            load_config({
-                                "HOME": str(home),
-                                "ASHA_CONFIG": str(config_path),
-                                "ASHA_HOME": str(root / "asha"),
-                                "XDG_RUNTIME_DIR": str(root / "runtime"),
-                            })
-
     def test_config_allows_group_and_world_read_bits_on_owned_file(self) -> None:
         for topology in ("direct", "leaf-symlink"):
             with self.subTest(topology=topology), tempfile.TemporaryDirectory() as td:
@@ -285,35 +232,31 @@ class ControlConfigTests(unittest.TestCase):
                 })
                 self.assertEqual(config.default_harness, "codex")
 
-    def test_config_rejects_symlinked_input_parents_and_chained_or_foreign_targets(self) -> None:
+    def test_config_reads_through_symlinked_parents_and_chained_or_linked_targets(self) -> None:
+        # Where the Keeper keeps his config is his choice (threat model,
+        # 2026-10-05): a symlinked parent, a chained or aliased leaf and a
+        # hard-linked file all read the target. Only a dangling leaf refuses.
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             home = root / "home"
             home.mkdir(mode=0o700)
             real_parent = home / "real-config-parent"
             real_parent.mkdir(mode=0o700)
-            write_config(real_parent / "config.json", "{}")
+            write_config(real_parent / "config.json", '{"default_harness":"codex"}')
             (home / ".asha").symlink_to(real_parent, target_is_directory=True)
-            with self.assertRaisesRegex(ConfigError, "symlink"):
-                load_config({"HOME": str(home)})
+            config = load_config({"HOME": str(home), "XDG_RUNTIME_DIR": str(root / "runtime")})
+            self.assertEqual(config.default_harness, "codex")
 
-        for target_shape in (
-            "chained-leaf", "symlink-parent", "foreign-link", "foreign-parent",
-            "foreign-file", "hard-linked-file",
-        ):
+        for target_shape in ("chained-leaf", "symlink-parent", "hard-linked-file", "dangling-leaf"):
             with self.subTest(target_shape=target_shape), tempfile.TemporaryDirectory() as td:
                 root = Path(td)
-                root.chmod(0o755)
                 home = root / "home"
                 config_parent = home / ".asha"
                 target_parent = home / "dotfiles/asha/.asha"
-                config_parent.mkdir(parents=True, mode=0o700)
-                target_parent.mkdir(parents=True, mode=0o700)
-                home.chmod(0o750)
-                config_parent.chmod(0o775)
-                target_parent.chmod(0o775)
+                config_parent.mkdir(parents=True)
+                target_parent.mkdir(parents=True)
                 real_target = target_parent / "real-config.json"
-                write_config(real_target, "{}")
+                write_config(real_target, '{"default_harness":"codex"}')
                 config_link = config_parent / "config.json"
                 if target_shape == "chained-leaf":
                     chained = target_parent / "config.json"
@@ -323,75 +266,20 @@ class ControlConfigTests(unittest.TestCase):
                     alias = home / "dotfiles-alias"
                     alias.symlink_to(home / "dotfiles", target_is_directory=True)
                     config_link.symlink_to(alias / "asha/.asha/real-config.json")
-                else:
+                elif target_shape == "hard-linked-file":
                     config_link.symlink_to(real_target)
-                    if target_shape == "hard-linked-file":
-                        os.link(real_target, target_parent / "other-config.json")
+                    os.link(real_target, target_parent / "other-config.json")
+                else:
+                    config_link.symlink_to(target_parent / "absent.json")
 
-                env = {
-                    "HOME": str(home),
-                    "XDG_RUNTIME_DIR": str(root / "runtime"),
-                }
-                if target_shape in {"chained-leaf", "symlink-parent"}:
-                    with self.assertRaisesRegex(ConfigError, "symlink"):
+                env = {"HOME": str(home), "XDG_RUNTIME_DIR": str(root / "runtime")}
+                if target_shape == "dangling-leaf":
+                    with self.assertRaisesRegex(ConfigError, "symlink target does not exist"):
                         load_config(env)
                     continue
+                self.assertEqual(load_config(env).default_harness, "codex")
 
-                if target_shape == "foreign-link":
-                    real_lstat = Path.lstat
-                    link_inode = config_link.lstat().st_ino
-
-                    def foreign_link(path: Path):
-                        metadata = real_lstat(path)
-                        if metadata.st_ino == link_inode:
-                            fields = list(metadata)
-                            fields[4] = os.geteuid() + 1
-                            return os.stat_result(fields)
-                        return metadata
-
-                    with mock.patch("pathlib.Path.lstat", new=foreign_link):
-                        with self.assertRaisesRegex(ConfigError, "owned"):
-                            load_config(env)
-                    continue
-
-                if target_shape == "foreign-parent":
-                    real_fstat = os.fstat
-                    parent_inode = target_parent.stat().st_ino
-
-                    def foreign_parent(fd: int):
-                        metadata = real_fstat(fd)
-                        if metadata.st_ino == parent_inode:
-                            fields = list(metadata)
-                            fields[4] = os.geteuid() + 1
-                            return os.stat_result(fields)
-                        return metadata
-
-                    with mock.patch("lib.control.config.os.fstat", side_effect=foreign_parent):
-                        with self.assertRaisesRegex(ConfigError, "owned"):
-                            load_config(env)
-                    continue
-
-                if target_shape == "hard-linked-file":
-                    with self.assertRaisesRegex(ConfigError, "link count"):
-                        load_config(env)
-                    continue
-
-                real_fstat = os.fstat
-                target_inode = real_target.stat().st_ino
-
-                def foreign_target(fd: int):
-                    metadata = real_fstat(fd)
-                    if metadata.st_ino == target_inode:
-                        fields = list(metadata)
-                        fields[4] = os.geteuid() + 1
-                        return os.stat_result(fields)
-                    return metadata
-
-                with mock.patch("lib.control.config.os.fstat", side_effect=foreign_target):
-                    with self.assertRaisesRegex(ConfigError, "owned"):
-                        load_config(env)
-
-    def test_asha_home_must_be_absolute_and_have_no_symlink_components(self) -> None:
+    def test_asha_home_must_be_absolute_and_not_home_but_may_be_a_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             home = root / "home"
@@ -399,18 +287,19 @@ class ControlConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "ASHA_HOME.*absolute"):
                 load_config({"HOME": str(home), "ASHA_HOME": "relative"})
 
-            # A symlinked ASHA_HOME was never supported: the config file's own
-            # parent guard rejects it, exactly as it rejected a symlinked
-            # ~/.asha before consolidation. The dotfiles pattern is a REAL
-            # .asha directory holding symlinked leaf files.
+            # A symlinked ASHA_HOME (state on another disk) is the Keeper's
+            # layout choice; the config is read through the link.
             target = root / "target"
             target.mkdir(mode=0o700)
-            (target / "config.json").write_text("{}")
+            write_config(target / "config.json", '{"default_harness":"codex"}')
             link = root / "asha-link"
             link.symlink_to(target, target_is_directory=True)
-            home.chmod(0o700)
-            with self.assertRaisesRegex(ConfigError, "symlink component rejected in ASHA_CONFIG parent"):
-                load_config({"HOME": str(home), "ASHA_HOME": str(link)})
+            config = load_config({
+                "HOME": str(home), "ASHA_HOME": str(link),
+                "XDG_RUNTIME_DIR": str(root / "runtime"),
+            })
+            self.assertEqual(config.asha_home, link)
+            self.assertEqual(config.default_harness, "codex")
             with self.assertRaisesRegex(ConfigError, "must not be HOME"):
                 load_config({"HOME": str(home), "ASHA_HOME": str(home)})
 
@@ -586,8 +475,6 @@ class ControlConfigTests(unittest.TestCase):
             # New root present alongside real legacy data: no refusal either —
             # migration is complete or in hand; the doctor reports the leftover.
             (legacy_control / "tasks").mkdir(mode=0o700)
-            # mkdir(parents=True) would give the intermediates the umask mode;
-            # the ancestor rule needs each level free of group/world write.
             for depth in (".asha", ".asha/state", ".asha/state/control"):
                 (home / depth).mkdir(mode=0o700)
             load_config({"HOME": str(home)})
@@ -597,12 +484,12 @@ class ControlConfigTests(unittest.TestCase):
             home = Path(td) / "home"
             home.mkdir()
 
-            def reject(path: Path, name: str) -> None:
+            def reject(_path: Path, name: str) -> None:
                 if name == "XDG_RUNTIME_DIR":
                     raise ConfigError("unsafe fallback runtime path")
 
             with mock.patch(
-                "lib.control.config.reject_unsafe_writable_ancestors",
+                "lib.control.config.require_existing_directory_components",
                 side_effect=reject,
             ), self.assertRaisesRegex(
                 ConfigError,
@@ -610,107 +497,35 @@ class ControlConfigTests(unittest.TestCase):
             ):
                 load_config({"HOME": str(home), "XDG_RUNTIME_DIR": ""})
 
-    def test_nonsticky_group_or_world_writable_path_ancestor_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            root.chmod(0o775)
-            home = root / "home"
-            home.mkdir()
-            with self.assertRaisesRegex(ConfigError, "writable non-sticky ancestor"):
-                load_config({
-                    "HOME": str(home),
-                    "XDG_RUNTIME_DIR": str(root / "runtime"),
-                })
+    def test_group_or_world_writable_ancestors_never_refuse_a_load(self) -> None:
+        """Directory modes the Keeper or his tools leave never refuse a load.
 
-    def test_private_boundary_rejects_owned_group_writable_descendants(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            root.chmod(0o755)
-            home = root / "home"
-            private = root / "private"
-            home.mkdir(mode=0o700)
-            private.mkdir(mode=0o700)
-            for mode in (0o770, 0o1770):
-                shared = private / f"shared-{mode:o}"
-                shared.mkdir(mode=mode)
-                shared.chmod(mode)
-
-                with self.subTest(mode=oct(mode)), self.assertRaisesRegex(
-                    ConfigError, "writable.*ancestor",
-                ):
-                    load_config({
-                        "HOME": str(home),
-                        "ASHA_CONFIG": str(home / "missing.json"),
-                        "ASHA_HOME": str(shared),
-                        "XDG_RUNTIME_DIR": str(private / "runtime"),
-                    })
-
-    def test_group_readable_home_establishes_the_private_boundary(self) -> None:
-        """A 0750 home must establish the boundary, not just 0700.
-
-        The boundary answers path SUBSTITUTION, which needs write access. A
-        0750 directory already denies creation and replacement to everyone but
-        the owner. Requiring 0700 rejected every ordinary home layout, and with
-        it every repository beneath one -- `asha task start` could not run
-        against any real repository on a standard Linux machine.
+        The writable-ancestor rule refused states Asha's own tools produce
+        (jj creates 0775 roots under umask 002: #115) and defends only against
+        same-user tampering, which the threat model (2026-10-05) trusts.
         """
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            root.chmod(0o755)
             home = root / "home"
-            home.mkdir(mode=0o750)          # group-readable, NOT group-writable
-            shared = home / "asha"
-            shared.mkdir(mode=0o750)        # group-readable, NOT group-writable
+            asha_home = home / "asha"
+            runtime = root / "runtime"
+            workspaces = root / "shared/workspaces"
+            for directory in (home, asha_home, runtime, workspaces):
+                directory.mkdir(parents=True)
+            for directory in (home, asha_home, runtime, workspaces.parent, workspaces):
+                directory.chmod(0o775)
+            root.chmod(0o777)
+            config_path = home / "config.json"
+            write_config(config_path, json.dumps({"control": {"workspace_root": str(workspaces)}}))
 
             config = load_config({
                 "HOME": str(home),
-                "ASHA_CONFIG": str(home / "missing.json"),
-                "ASHA_HOME": str(shared),
-                "XDG_RUNTIME_DIR": str(home / "runtime"),
+                "ASHA_CONFIG": str(config_path),
+                "ASHA_HOME": str(asha_home),
+                "XDG_RUNTIME_DIR": str(runtime),
             })
-            self.assertEqual(config.tasks_dir, shared / "state/control/tasks")
-
-    def test_group_writable_ancestor_never_establishes_the_boundary(self) -> None:
-        """Writability is the line: a 0770 home must NOT confer trust."""
-        metadata = type("Metadata", (), {
-            "st_mode": stat.S_IFDIR | 0o770,
-            "st_uid": os.geteuid(),
-        })()
-        problem, boundary = namespace_safety_step(metadata, os.geteuid(), False)
-        self.assertEqual(problem, "writable non-sticky ancestor")
-        self.assertFalse(boundary)
-
-    def test_sticky_writable_ancestor_is_allowed_only_before_the_managed_namespace(self) -> None:
-        for mode in (0o1770, 0o1777):
-            metadata = type("Metadata", (), {
-                "st_mode": stat.S_IFDIR | mode,
-                "st_uid": os.geteuid(),
-            })()
-            with self.subTest(mode=oct(mode)):
-                problem, boundary = namespace_safety_step(
-                    metadata, os.geteuid(), False,
-                )
-                self.assertIsNone(problem)
-                self.assertFalse(boundary)
-                self.assertIn(
-                    "sticky",
-                    namespace_safety_step(metadata, os.geteuid(), True)[0] or "",
-                )
-                self.assertIn(
-                    "sticky",
-                    namespace_safety_step(
-                        metadata, os.geteuid(), False, namespace_root=True,
-                    )[0] or "",
-                )
-
-    def test_foreign_owned_namespace_ancestor_is_rejected(self) -> None:
-        metadata = type("Metadata", (), {
-            "st_mode": stat.S_IFDIR | 0o700,
-            "st_uid": os.geteuid() + 1,
-        })()
-        self.assertIn(
-            "owned", namespace_ancestor_problem(metadata, os.geteuid(), root_uid=0) or ""
-        )
+            self.assertEqual(config.tasks_dir, asha_home / "state/control/tasks")
+            self.assertEqual(config.workspace_root, workspaces)
 
     def test_control_and_tmux_null_or_unknown_keys_are_errors_but_root_extensions_are_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as td:

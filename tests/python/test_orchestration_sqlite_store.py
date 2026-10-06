@@ -361,7 +361,7 @@ class SQLiteInitiativeTests(unittest.TestCase):
         with self.assertRaisesRegex(StoreError, "differs"):
             self.store.write_assignment(INITIATIVE_ID, identity, b"changed")
 
-    def test_retained_artifact_lookup_refuses_symlink_hardlink_and_unsafe_mode(self):
+    def test_retained_artifact_lookup_refuses_symlink_and_unsafe_mode(self):
         _, identity, content, path = self.legacy_artifact()
         for mode in (0o644, 0o444):
             path.chmod(mode)
@@ -369,10 +369,6 @@ class SQLiteInitiativeTests(unittest.TestCase):
                 self.store.output_path(INITIATIVE_ID, identity)
         path.chmod(0o600)
         second = path.with_suffix(".link")
-        os.link(path, second)
-        with self.assertRaises(StoreError):
-            self.store.read_output(INITIATIVE_ID, identity)
-        second.unlink()
         path.rename(second)
         path.symlink_to(second)
         with self.assertRaises(StoreError):
@@ -404,8 +400,7 @@ class SQLiteInitiativeTests(unittest.TestCase):
         path = self.store.save_output(INITIATIVE_ID, identity, b"durable output")
         residue = path.with_name("." + path.name + ".tmp.interrupted")
         os.link(path, residue)
-        with self.assertRaisesRegex(StoreError, "link count"):
-            self.store.inventory(INITIATIVE_ID, locked=False)
+        self.store.inventory(INITIATIVE_ID, locked=False)
         self.assertTrue(residue.exists())
         self.assertEqual(self.store.inventory(INITIATIVE_ID)["outputs"]["bytes"], len(b"durable output"))
         self.assertFalse(residue.exists())
@@ -414,8 +409,7 @@ class SQLiteInitiativeTests(unittest.TestCase):
         _, retained_id, _, retained_path = self.legacy_artifact()
         retained_residue = retained_path.with_name("." + retained_path.name + ".tmp.retained")
         os.link(retained_path, retained_residue)
-        with self.assertRaisesRegex(StoreError, "link count"):
-            self.store.inventory(INITIATIVE_ID)
+        self.store.inventory(INITIATIVE_ID)
         self.assertTrue(retained_residue.exists())
 
     def test_assignment_retry_recovers_linked_current_residue(self):

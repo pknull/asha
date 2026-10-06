@@ -422,11 +422,11 @@ not how much was read. 2.0s leaves the five-second automatic interval room for
 the task and Room branches after it.
 
 The per-record reads go through the store's bounded presentation readers,
-which reuse the same descriptor-relative, no-follow, ownership-checked file
-readers and the same model validators as the strict readers. They add no
-validator and no record class. What they add is tolerance with an account: an
-entry that is foreign, truncated, malformed, symlinked, or whose identity does
-not match its filename is excluded and counted — never repaired, adopted,
+which reuse the same descriptor-relative, regular-file-checked readers and
+the same model validators as the strict readers. They add no validator and no
+record class. What they add is tolerance with an account: an entry that is not
+a regular file, truncated, malformed, or whose identity does not match its
+filename is excluded and counted — never repaired, adopted,
 renamed, removed, or presented as valid — and its readable siblings are kept.
 The strict journal and control readers are untouched and still fail closed.
 
@@ -1281,21 +1281,22 @@ ${XDG_RUNTIME_DIR:-/tmp/user-$UID}/asha-control/events/<run-id>.json
 `XDG_STATE_HOME` and `XDG_DATA_HOME` are no longer consumed; setting them is
 ignored. `ASHA_HOME` is the one override for the root, exported once by
 `bin/asha` so hooks, harnesses and worker panes agree; `ASHA_CONFIG` still
-overrides the config file specifically. A symlinked `$ASHA_HOME` is not
-supported (and never was: the config file's own parent guard refuses it) —
-the supported dotfiles pattern is a real `.asha` directory whose leaf files
-are symlinks. A group-writable `$ASHA_HOME` refuses every command with the
-exact remediation (`chmod g-w,o-w ~/.asha`), because the state tree now
-lives beneath it.
+overrides the config file specifically. The local user and their processes are
+trusted (threat model, 2026-10-05), so Control never refuses its own trees for
+their modes, owners, link counts or symlinks: a symlinked `$ASHA_HOME` (state on
+another disk) and a config file reached through symlinks are followed, and a
+group-writable `$ASHA_HOME` works. Control still creates its own directories
+0700 and its files 0600.
 
 `control.workspace_root` in the config may replace the workspaces default. It
 cannot be `/`, `$HOME`, the source, below the source, or an ancestor of the
-source. Existing path components must be canonical directories without
-symlink aliases or unsafe writable ancestry.
+source, and its existing path components must be directories. Task workspace
+and source repository paths of the legacy `asha task` substrate keep their own
+symlink and writable-ancestry refusals until that substrate is retired.
 
-If the `/tmp/user-$UID` runtime fallback already exists but fails those safety
-checks, Control refuses it and directs the operator to set `XDG_RUNTIME_DIR` to
-an existing private directory.
+If the `/tmp/user-$UID` runtime fallback already exists but has a symlink or
+non-directory component, Control refuses it and directs the operator to set
+`XDG_RUNTIME_DIR` to an existing private directory.
 
 ### Migrating from the pre-consolidation layout
 
@@ -1328,13 +1329,12 @@ to the registry, deliberately: their digests are frozen into archived
 initiative evidence and rewriting them would falsify it, while leaving them
 in place would make every `task list` silently skip 65 records forever.
 
-Writable ancestry is judged by mode, not ownership: a group- or other-writable
-non-sticky directory anywhere on a Control path (state, runtime, workspace
-root, task workspace, or source repository root) is refused, and every
-component from the workspace root down must be owned by the effective user
-with mode `0700`. Control creates its own directories that way and never
-changes the mode of a directory it did not create; each refusal names the
-path and the exact remediation (`chmod g-w,o-w <path>`). Task workspaces
+Writable ancestry is judged only on the legacy `asha task` substrate's task
+workspace and source repository paths, and retires with it: a group- or
+other-writable non-sticky directory on those paths is refused with the exact
+remediation (`chmod g-w,o-w <path>`). State, runtime and workspace-root paths
+are never refused for their modes. Control creates its own directories 0700
+and never changes the mode of a directory it did not create. Task workspaces
 created before 2026-08-17 may carry the umask mode `0775` and are skipped by
 `task list` until remediated:
 
@@ -1723,7 +1723,6 @@ foundation changed no execution rules, approvals, hooks, wrappers, or worker san
 A Control authorization check is not native execution consent, and native hooks
 are not complete enforcement of every execution seam. The U1b/U3 candidates
 below do not close native-consent or chair-owned acceptance; U4–U8 remain open.
-
 
 ### Bounded Codex chair startup (U3 candidate)
 

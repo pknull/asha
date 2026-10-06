@@ -587,7 +587,7 @@ backend; scheduling remains stopped.
 SQLite stores write new assignment/output artifacts under `control/artifacts` and
 new ownership sidecars under `control/materialization-ownership`. Retained files
 stay at their original real paths and inodes; symlink relocation is unsupported.
-The retained artifact reader permits owner-only read-only directories/files, while
+The retained artifact reader permits read-only (0400) as well as 0600 files, while
 ownership sidecar files must keep mode 0600 because their exact mode is bound into
 the journal. Current artifact write residue can be recovered under the initiative
 lock; retained source files are never swept. These adapters are covered by temporary
@@ -608,10 +608,13 @@ recovered root requires operator reconciliation before dispatch; switching live
 roots and resuming recovered work is not performed by restore. Recovery of artifact
 files and legacy registries remains necessary while those domains are file backed.
 
-If the restore process dies during publication, its offline destination may retain
-an extra temporary hard link. Normal database access refuses that incomplete root.
-Repeat the restore from the unchanged backup into a new empty recovery root; do
-not activate the interrupted destination. Read-only inspection accepts a restored
+If the restore process dies during publication, its offline destination may keep
+the temporary `.restore-*.sqlite3` name beside the published database. Publication
+links only a complete, validated database already paused for reconciliation, so
+that root opens normally, and a repeated restore into it refuses because it is not
+empty. A death before publication leaves only the temporary file, which no open
+mistakes for the database; repeat the restore from the unchanged backup into a new
+empty recovery root. Read-only inspection accepts a restored
 database's DELETE journal mode without converting it. Writable connections require
 WAL. Backups cannot use the source database's own main or sidecar filenames.
 
@@ -627,7 +630,6 @@ checks those executables and their installed hook surfaces; an unrelated harness
 installation does not block that plan. The general doctor continues to inspect
 all installed harnesses. SQL-backed initiative readiness validates the selected
 SQLite registry instead of requiring the retained legacy directory to be writable.
-
 
 ## Native workflow acceptance
 

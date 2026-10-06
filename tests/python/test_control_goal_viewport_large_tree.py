@@ -519,12 +519,14 @@ class OwnershipSidecarTests(unittest.TestCase):
             self.store.read(binding)
         path.write_bytes(original)
         path.chmod(0o644)
-        with self.assertRaisesRegex(JournalError, "0600"):
+        # The journal binding records the sidecar's mode, so a chmod still
+        # fails closed on the sidecar's own identity.
+        with self.assertRaisesRegex(JournalError, "identity"):
             self.store.read(binding)
         path.chmod(0o600)
         path.unlink()
         path.symlink_to(Path(self.temp.name) / "foreign")
-        with self.assertRaisesRegex(JournalError, "symlink"):
+        with self.assertRaisesRegex(JournalError, "missing"):
             self.store.read(binding)
 
     def test_v1_creation_journal_remains_readable(self) -> None:

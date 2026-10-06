@@ -131,8 +131,8 @@ class RegistryStageTests(unittest.TestCase):
             with db.transaction() as c:
                 self.assertEqual(c.execute("SELECT mode FROM control_runtime").fetchone()[0], "paused")
 
-    def test_linked_file_registry_records_are_refused(self):
-        for kind in ("symlink", "hardlink"):
+    def test_symlinked_file_registry_records_are_refused(self):
+        for kind in ("symlink",):
             for domain, identity in (("tasks", self.task["task_id"]), ("rooms", self.room["room_id"])):
                 with self.subTest(kind=kind, domain=domain):
                     path = self.config.tasks_dir.parent / domain / (identity + ".json")

@@ -686,13 +686,12 @@ class OrchestrationStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(StoreError, "event sequence disagrees"):
             self.store.verify_events(INITIATIVE_ID)
 
-    def test_record_reads_refuse_symlinks_bad_modes_and_oversize_records(self) -> None:
+    def test_record_reads_ignore_modes_and_refuse_invalid_linked_or_oversize_records(self) -> None:
         self.create()
         self.store.save_plan(INITIATIVE_ID, plan())
         plan_path = self.config.initiatives_dir / INITIATIVE_ID / "plans" / "0001.json"
         plan_path.chmod(0o644)
-        with self.assertRaisesRegex(StoreError, "mode"):
-            self.store.read_plan(INITIATIVE_ID, 1)
+        self.assertEqual(self.store.read_plan(INITIATIVE_ID, 1)["revision"], 1)
 
         result_id = "33333333-3333-4333-8333-333333333333"
         result_path = self.config.initiatives_dir / INITIATIVE_ID / "results" / f"{result_id}.json"
@@ -700,7 +699,7 @@ class OrchestrationStoreTests(unittest.TestCase):
         outside.write_text("{}")
         outside.chmod(0o600)
         result_path.symlink_to(outside)
-        with self.assertRaisesRegex(StoreError, "symlink"):
+        with self.assertRaisesRegex(StoreError, "invalid results record"):
             self.store.read_result(INITIATIVE_ID, result_id)
 
         oversized = node()
@@ -780,7 +779,7 @@ with store.transaction_lock({INITIATIVE_ID!r}):
         with self.assertRaisesRegex(StoreError, "symlink"):
             self.store.inventory(INITIATIVE_ID)
 
-    def test_snapshot_readers_reject_filename_mismatch_gap_and_symlink(self) -> None:
+    def test_snapshot_readers_reject_filename_mismatch_gap_and_invalid_linked_record(self) -> None:
         self.create()
         self.store.save_node(INITIATIVE_ID, node())
         nodes_dir = self.config.initiatives_dir / INITIATIVE_ID / "nodes"
@@ -803,7 +802,7 @@ with store.transaction_lock({INITIATIVE_ID!r}):
         outside.chmod(0o600)
         attempt_id = "33333333-3333-4333-8333-333333333333"
         (attempts_dir / f"{attempt_id}.json").symlink_to(outside)
-        with self.assertRaisesRegex(StoreError, "symlink"):
+        with self.assertRaisesRegex(StoreError, "invalid attempts record"):
             self.store.list_attempts_snapshot(INITIATIVE_ID)
 
     def test_ingestion_survey_names_unreadable_records_and_repairs_nothing(self) -> None:

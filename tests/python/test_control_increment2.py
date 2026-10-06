@@ -434,13 +434,13 @@ class JournalStoreTests(unittest.TestCase):
         self.store.save(changed, expected_phase="intent")
         self.assertEqual(self.store.read(self.task_id)["phase"], "task-recorded")
 
-    def test_journal_rejects_symlink_and_oversize(self) -> None:
+    def test_journal_dangling_link_reads_missing_and_oversize_is_refused(self) -> None:
         journal = self.journal()
         self.store.save(journal)
         path = self.store.path(self.task_id)
         path.unlink()
         path.symlink_to(Path(self.temp.name) / "outside")
-        with self.assertRaisesRegex(JournalError, "symlink"):
+        with self.assertRaisesRegex(JournalError, "not found"):
             self.store.read(self.task_id)
         path.unlink()
         journal["jj"]["description"] = "x" * (300 * 1024)

@@ -81,13 +81,9 @@ class RegistryTreeTests(unittest.TestCase):
         with fence_locks(self.config, self.prepared):
             pass
 
-    def test_snapshot_rejects_links_and_hardlinks(self):
+    def test_snapshot_rejects_symlinks(self):
         original = self.config.tasks_dir / (self.task["task_id"] + ".json")
         twin = original.with_suffix(".link")
-        os.link(original, twin)
-        with self.assertRaisesRegex(StoreError, "link count"):
-            capture_tree(self.config)
-        twin.unlink()
         twin.symlink_to(original)
         with self.assertRaisesRegex(StoreError, "symlink"):
             capture_tree(self.config)

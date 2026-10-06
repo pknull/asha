@@ -292,35 +292,21 @@ class ObservationTests(ExecutionFixture, unittest.TestCase):
                 finally:
                     path.unlink()
 
-    def test_cli_transaction_lock_lookalikes_require_safe_owned_regular_files(self):
+    def test_cli_transaction_lock_lookalikes_require_regular_files(self):
         task = self.task()
         target = self.root / "lock-target"
         target.write_bytes(b"untouched"); target.chmod(0o600)
         for domain in ("task", "source", "repository"):
-            for kind in ("symlink", "directory", "fifo", "hardlink", "mode", "foreign"):
+            for kind in ("directory", "fifo"):
                 with self.subTest(domain=domain, kind=kind):
                     path = self.config.control.tasks_dir / (domain + "-" + "f" * 64 + ".lock")
-                    if kind == "symlink":
-                        path.symlink_to(target)
-                    elif kind == "directory":
+                    if kind == "directory":
                         path.mkdir(mode=0o700)
-                    elif kind == "fifo":
-                        os.mkfifo(path, 0o600)
-                    elif kind == "hardlink":
-                        os.link(target, path)
                     else:
-                        path.write_bytes(b""); path.chmod(0o644 if kind == "mode" else 0o600)
+                        os.mkfifo(path, 0o600)
                     before = path.lstat()
-                    real_fstat = os.fstat
-                    def metadata(fd):
-                        value = real_fstat(fd)
-                        if kind == "foreign" and (value.st_dev, value.st_ino) == (before.st_dev, before.st_ino):
-                            parts = list(value); parts[4] = os.geteuid() + 1
-                            return os.stat_result(parts)
-                        return value
                     try:
-                        with mock.patch("os.fstat", side_effect=metadata):
-                            result = self.inventory_cli()
+                        result = self.inventory_cli()
                         self.assert_unavailable_source(result, "tasks")
                         self.assertEqual([row["task_id"] for row in result["rows"]
                                           if row["source"] == "tasks"], [task["task_id"]])

@@ -3,13 +3,11 @@
 One embedded database beneath the Control state root holds the transactional
 record domains the file registries do not: managed sessions, delivery queues,
 outstanding requests, and ordered event cursors.  This module owns the
-connection, its durability settings, ownership checks for the file and its
-WAL/SHM sidecars, and short fenced transactions.  Record semantics belong to
-the domain stores built on top of it.
+connection, its durability settings, and short fenced transactions.  Record
+semantics belong to the domain stores built on top of it.
 """
 from __future__ import annotations
 
-import errno
 import os
 import hashlib
 import json
@@ -162,11 +160,9 @@ class ControlDatabase:
             # The creator's ordinary fd must close before another local opener
             # can acquire SQLite locks on the newly visible inode.
             with _FILE_CREATION_LOCK:
-                identity = self._prepare_file(directory_fd, create=create)
-            self._inspect_sidecars(directory_fd)
+                self._prepare_file(directory_fd, create=create)
             connection = self._connect()
             try:
-                self._verify_identity(identity, directory_fd)
                 # Classify before configuring: setting WAL writes page one, and
                 # a refused file must be left exactly as it was found.
                 fresh = self._classify(connection, create=create, migrate=self._allow_migration or self._allow_legacy_reads)
@@ -180,56 +176,31 @@ class ControlDatabase:
                 raise
             return connection
 
-    def _prepare_file(self, directory_fd: int, *, create: bool) -> tuple[int, int]:
-        """Validate or create the 0600 database file; return its dev/inode identity."""
+    def _prepare_file(self, directory_fd: int, *, create: bool) -> None:
+        """Create the 0600 database file on first use; require a regular file.
+
+        Closing ANY ordinary descriptor for a SQLite database inode drops this
+        process's POSIX locks, including other live connections, so an
+        existing file is checked by name and never opened here. Its owner,
+        mode and links are the trusted local user's business (threat model,
+        2026-10-05); a non-regular name would hang or mislead SQLite.
+        """
         try:
-            metadata = self._inspect_file(directory_fd, DATABASE_NAME, "Control database")
+            metadata = os.stat(DATABASE_NAME, dir_fd=directory_fd, follow_symlinks=False)
         except FileNotFoundError:
             if not create:
                 raise DatabaseError(
                     "Control database does not exist; open it with create=True first"
                 ) from None
             try:
-                fd = self._create_file(directory_fd)
+                _close_quietly(self._create_file(directory_fd))
             except FileExistsError:
-                # Another creator won. Inspect without opening its live inode.
-                try:
-                    metadata = self._inspect_file(directory_fd, DATABASE_NAME, "Control database")
-                except FileNotFoundError as exc:
-                    raise DatabaseError("Control database disappeared during creation") from exc
-            else:
-                try:
-                    metadata = os.fstat(fd)
-                finally:
-                    _close_quietly(fd)
-        return metadata.st_dev, metadata.st_ino
-
-    @staticmethod
-    def _inspect_file(directory_fd: int, name: str, label: str, *, unlinked_is_absent: bool = False):
-        # Closing ANY ordinary descriptor for a SQLite database or SHM inode
-        # drops this process's POSIX locks, including other live connections.
-        # Inspect through the validated directory without opening that inode.
-        try:
-            metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        except FileNotFoundError:
-            raise
+                pass  # another creator won
+            return
         except OSError as exc:
-            raise DatabaseError(f"cannot inspect {label}: {exc}") from exc
-        if unlinked_is_absent and metadata.st_nlink == 0:
-            # The stat resolved the name, then a concurrent unlink (the last
-            # connection's close removing WAL/SHM) dropped the inode: absent.
-            raise FileNotFoundError(errno.ENOENT, "unlinked during inspection", name)
-        if stat.S_ISLNK(metadata.st_mode):
-            raise DatabaseError(f"symlinked {label} rejected: {name}")
+            raise DatabaseError(f"cannot inspect Control database: {exc}") from exc
         if not stat.S_ISREG(metadata.st_mode):
-            raise DatabaseError(f"{label} is not a regular file")
-        if metadata.st_uid != os.geteuid():
-            raise DatabaseError(f"{label} is not owned by the effective user")
-        if metadata.st_nlink != 1:
-            raise DatabaseError(f"{label} link count must be exactly 1")
-        if stat.S_IMODE(metadata.st_mode) != 0o600:
-            raise DatabaseError(f"{label} must have mode 0600")
-        return metadata
+            raise DatabaseError(f"Control database is not a regular file: {DATABASE_NAME}")
 
     @staticmethod
     def _create_file(directory_fd: int) -> int:
@@ -253,22 +224,10 @@ class ControlDatabase:
             raise
         return fd
 
-    @staticmethod
-    def _inspect_sidecars(directory_fd: int) -> None:
-        """SQLite copies the database mode onto WAL/SHM files; refuse tampered ones."""
-        for suffix in SIDECAR_SUFFIXES:
-            try:
-                ControlDatabase._inspect_file(
-                    directory_fd, DATABASE_NAME + suffix, "Control database sidecar",
-                    unlinked_is_absent=True,
-                )
-            except FileNotFoundError:
-                continue
-
     def _connect(self) -> sqlite3.Connection:
-        # mode=rw never creates a file: the validated inode must already exist.
+        # mode=rw never creates a file: the prepared file must already exist.
         mode = "ro" if self._read_only else "rw"
-        uri = "file:" + quote(str(self.path), safe="/") + "?mode=" + mode + "&nofollow=1"
+        uri = "file:" + quote(str(self.path), safe="/") + "?mode=" + mode
         try:
             connection = sqlite3.connect(
                 uri, uri=True, timeout=self.busy_timeout, isolation_level=None,
@@ -277,17 +236,6 @@ class ControlDatabase:
             raise _wrap(exc, "cannot open") from exc
         connection.row_factory = sqlite3.Row
         return connection
-
-    def _verify_identity(self, identity: tuple[int, int], directory_fd: int) -> None:
-        try:
-            pinned = self._inspect_file(directory_fd, DATABASE_NAME, "Control database")
-            metadata = os.stat(self.path, follow_symlinks=False)
-        except OSError as exc:
-            raise DatabaseError(f"cannot inspect Control database: {exc}") from exc
-        if (not stat.S_ISREG(metadata.st_mode)
-                or (metadata.st_dev, metadata.st_ino) != identity
-                or (pinned.st_dev, pinned.st_ino) != identity):
-            raise DatabaseError("Control database changed identity while opening")
 
     @staticmethod
     def _settings(connection: sqlite3.Connection) -> dict[str, Any]:
@@ -705,18 +653,14 @@ class ControlDatabase:
             raise DatabaseError("backup cannot run inside a transaction")
         with _directory_fd(destination.parent, create=False, managed_start=max(0, len(destination.parent.parts) - 2)) as fd:
             if fd is None:
-                raise DatabaseError("backup directory must already exist and be private")
+                raise DatabaseError("backup directory must already exist")
             try:
                 target = os.open(destination.name, os.O_RDWR | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC, 0o600, dir_fd=fd)
             except OSError as exc:
                 raise DatabaseError(f"cannot create new backup: {exc}") from exc
             try:
-                identity = os.fstat(target)
                 output = sqlite3.connect(str(destination))
                 try:
-                    current = os.stat(destination, follow_symlinks=False)
-                    if (current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino):
-                        raise DatabaseError("backup destination changed while opening")
                     self._live().backup(output)
                     output.execute("PRAGMA journal_mode=DELETE")
                     if output.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
@@ -746,18 +690,9 @@ class ControlDatabase:
                            managed_start=max(0, len(source.parent.parts) - 2)) as source_dir:
             if source_dir is None:
                 raise DatabaseError("restore source directory does not exist")
-            identity = cls._inspect_file(source_dir, source.name, "restore source")
             try:
-                for suffix in SIDECAR_SUFFIXES:
-                    try:
-                        cls._inspect_file(source_dir, source.name + suffix, "restore source sidecar")
-                    except FileNotFoundError:
-                        continue
                 input_db = sqlite3.connect("file:" + quote(str(source), safe="/") + "?mode=ro", uri=True)
                 try:
-                    current = os.stat(source, follow_symlinks=False)
-                    if (current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino):
-                        raise DatabaseError("restore source changed while opening")
                     cls._classify(input_db, create=False, migrate=True)
                     with _directory_fd(root, create=True, managed_start=_managed_start(root, ("state", "control"))) as target_dir:
                         if os.listdir(target_dir):
@@ -767,10 +702,6 @@ class ControlDatabase:
                         try:
                             output = sqlite3.connect(root / temporary)
                             try:
-                                target_identity = os.fstat(target_fd)
-                                current = os.stat(temporary, dir_fd=target_dir, follow_symlinks=False)
-                                if (current.st_dev, current.st_ino) != (target_identity.st_dev, target_identity.st_ino):
-                                    raise DatabaseError("restore destination changed while opening")
                                 input_db.backup(output)
                                 cls._migrate(output)
                                 if output.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:

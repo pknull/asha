@@ -121,6 +121,38 @@ class ControlStoreTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((shared / "control").stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE((shared / "control/tasks").stat().st_mode), 0o700)
 
+    def test_same_user_metadata_changes_never_hide_or_refuse_state(self) -> None:
+        # Threat model (2026-10-05): the local user is trusted, so modes, link
+        # counts and symlinks the Keeper or his tools leave on Asha's private
+        # trees never refuse an operation or hide a record (#115, #116).
+        record = self.record()
+        self.store.save(record)
+        record_path = self.config.tasks_dir / f"{record['task_id']}.json"
+        record_path.chmod(0o644)
+        for directory in (self.config.tasks_dir.parent, self.config.tasks_dir,
+                          self.config.runtime_dir / "tasks"):
+            directory.chmod(0o775)
+        lock = self.config.runtime_dir / "tasks" / f"{self.task_lock_id(record['task_id'])}.lock"
+        lock.unlink()
+        outside_lock = self.root / "outside-lock"
+        outside_lock.write_text("")
+        os.link(outside_lock, lock)
+        state = self.config.asha_home / "state"
+        moved = self.root / "elsewhere-state"
+        state.rename(moved)
+        state.symlink_to(moved, target_is_directory=True)
+
+        store = TaskStore(self.config)
+        self.assertEqual(store.list(), [record])
+        self.assertEqual(store.skipped, [])
+        self.assertEqual(store.read(record["task_id"]), record)
+        changed = json.loads(json.dumps(record))
+        changed["updated_at"] = "2026-08-14T18:03:00Z"
+        changed["runs"][0]["evidence"] = "saved through the symlinked state tree"
+        changed["runs"][0]["evidence_at"] = changed["updated_at"]
+        store.save(changed, expected_digest=task_digest(record))
+        self.assertEqual(json.loads((moved / "control/tasks" / record_path.name).read_text()), changed)
+
     def test_validation_happens_before_any_write(self) -> None:
         record = self.record()
         record["contract"] = "wrong"
@@ -128,44 +160,6 @@ class ControlStoreTests(unittest.TestCase):
             self.store.save(record)
         self.assertFalse(self.config.tasks_dir.exists())
         self.assertFalse(self.config.runtime_dir.exists())
-
-    def test_existing_record_and_lock_symlinks_are_rejected(self) -> None:
-        record = self.record()
-        self.store.save(record)
-        record_path = self.config.tasks_dir / f"{record['task_id']}.json"
-        record_path.unlink()
-        record_path.symlink_to(self.root / "outside-record")
-        with self.assertRaisesRegex(StoreError, "symlink"):
-            self.store.save(record)
-
-        record_path.unlink()
-        lock = self.config.runtime_dir / "tasks" / f"{self.task_lock_id(record['task_id'])}.lock"
-        lock.unlink()
-        lock.symlink_to(self.root / "outside-lock")
-        with self.assertRaisesRegex(StoreError, "symlink"):
-            self.store.save(record)
-
-    def test_symlinked_state_directory_is_rejected(self) -> None:
-        # The workspace chain (asha/workspaces) must stay real so validation
-        # reaches the STATE traversal; the symlink sits at asha/state.
-        target = self.root / "outside"
-        target.mkdir()
-        (self.root / "asha").mkdir(mode=0o700)
-        (self.root / "asha/state").symlink_to(target, target_is_directory=True)
-        with self.assertRaisesRegex(StoreError, "symlink"):
-            self.store.save(self.record())
-
-    def test_dangling_registry_symlink_is_rejected_even_when_listing(self) -> None:
-        self.config.tasks_dir.parent.mkdir(parents=True)
-        for directory in (
-            self.config.tasks_dir.parents[2],
-            self.config.tasks_dir.parents[1],
-            self.config.tasks_dir.parent,
-        ):
-            directory.chmod(0o700)
-        self.config.tasks_dir.symlink_to(self.root / "absent", target_is_directory=True)
-        with self.assertRaisesRegex(StoreError, "symlink"):
-            self.store.list()
 
     def test_failed_replace_preserves_old_complete_record_and_removes_temporary(self) -> None:
         record = self.record()
@@ -260,7 +254,9 @@ class ControlStoreTests(unittest.TestCase):
         self.assertFalse(self.config.runtime_dir.exists())
 
     def test_store_rechecks_nonsticky_writable_ancestors_during_each_operation(self) -> None:
-        for unsafe_kind in ("state", "runtime", "workspace"):
+        # Only the legacy task-path rule remains (retired with the task
+        # substrate); the state and runtime trees never refuse on mode.
+        for unsafe_kind in ("workspace",):
             with self.subTest(unsafe_kind=unsafe_kind), tempfile.TemporaryDirectory() as td:
                 root = Path(td)
                 home = root / "home"
@@ -291,52 +287,6 @@ class ControlStoreTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(StoreError, "writable non-sticky ancestor"):
                     TaskStore(config).save(record)
-
-    def test_store_descriptor_traversal_rechecks_namespace_ownership(self) -> None:
-        with mock.patch(
-            "lib.control.store.namespace_safety_step",
-            return_value=("ancestor is not owned by root or the effective user", False),
-        ):
-            with self.assertRaisesRegex(StoreError, "not owned"):
-                self.store.save(self.record())
-
-    def test_hard_linked_existing_lock_is_rejected_without_changing_its_mode(self) -> None:
-        record = self.record()
-        self.store.save(record)
-        lock = self.config.runtime_dir / "tasks" / f"{self.task_lock_id(record['task_id'])}.lock"
-        lock.unlink()
-        target = self.root / "outside-lock"
-        target.write_text("owned elsewhere")
-        target.chmod(0o600)
-        os.link(target, lock)
-        with self.assertRaisesRegex(StoreError, "link count"):
-            self.store.save(record)
-        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o600)
-
-    def test_pinned_task_directory_resists_parent_symlink_swap_during_replace(self) -> None:
-        record = self.record()
-        outside = self.root / "outside-state"
-        outside.mkdir()
-        real_replace = os.replace
-        swapped = False
-
-        def swap_parent_then_replace(*args, **kwargs):
-            nonlocal swapped
-            if not swapped:
-                managed = self.config.tasks_dir.parents[1]
-                pinned = managed.with_name("asha-pinned")
-                managed.rename(pinned)
-                managed.symlink_to(outside, target_is_directory=True)
-                swapped = True
-            return real_replace(*args, **kwargs)
-
-        with mock.patch("lib.control.store.os.replace", side_effect=swap_parent_then_replace):
-            self.store.save(record)
-
-        self.assertTrue(swapped)
-        self.assertFalse(any(outside.rglob("*.json")))
-        pinned_record = self.root / "asha/asha-pinned/control/tasks" / f"{record['task_id']}.json"
-        self.assertTrue(pinned_record.is_file())
 
     def test_production_lock_reports_deterministic_cross_process_contention(self) -> None:
         record = self.record()
@@ -684,9 +634,11 @@ print(json.dumps(task, sort_keys=True), flush=True)
                 raise FileExistsError("simulated unsafe winner")
             return real_mkdir(path, mode, dir_fd=dir_fd)
 
+        # A directory another creator made is used as found: never refused on
+        # its mode, never chmodded.
         with mock.patch("lib.control.store.os.mkdir", side_effect=unsafe_winner):
-            with self.assertRaisesRegex(StoreError, "writable non-sticky|mode 0700"):
-                TaskStore(config).save(other)
+            TaskStore(config).save(other)
+        self.assertTrue(raced)
         self.assertEqual(stat.S_IMODE(config.tasks_dir.parent.stat().st_mode), 0o777)
 
     def test_directory_durability_failure_is_controlled_and_retry_resyncs_visible_pair(self) -> None:
@@ -1103,7 +1055,7 @@ print(len(s.list()), len(s.skipped))
 
         path.unlink()
         path.symlink_to(self.root / "outside")
-        with self.assertRaisesRegex(StoreError, "symlink"):
+        with self.assertRaisesRegex(StoreError, "task not found"):
             self.store.read(record["task_id"])
 
     def test_store_rejects_existing_non_directory_repository_and_workspace_components(self) -> None:
@@ -1130,13 +1082,6 @@ print(len(s.list()), len(s.skipped))
         intermediate.write_text("not a directory")
         with self.assertRaisesRegex(StoreError, "directory"):
             self.store.save(self.record(repository_root=str(intermediate / "child")))
-
-    def test_read_rejects_record_with_permissions_broader_than_0600(self) -> None:
-        record = self.record()
-        path = self.store.save(record)
-        path.chmod(0o644)
-        with self.assertRaisesRegex(StoreError, "mode 0600"):
-            self.store.read(record["task_id"])
 
     def test_invalid_registry_filename_does_not_echo_unicode_format_controls(self) -> None:
         self.store.save(self.record())
