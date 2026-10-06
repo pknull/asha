@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — subtraction B0: hazards and sandbox holes (session 2.4.0)
+
+- Hooks no longer execute files inside the project tree, which a sandboxed
+  agent can write and which hooks then ran outside its sandbox. Removed the
+  project `.asha/.venv/bin/python3` preference (handlers use the system
+  `python3`) and the project-local `.asha/style-audit` post-tool nudge with
+  its Copilot next-prompt queue and four capability entries. No project used
+  either. No reinstall is needed: every installed hook calls the same
+  handlers as before.
+- `asha control session launch`, `send`, `stop`, `close`, `resume` and the
+  other operator verbs refuse a worker-profile session on any harness and a
+  non-chair session on a sandboxed harness, such as a Codex Room (Keeper
+  ruling K4). The chair keeps them on every harness; a Codex chair reaches
+  them through a sandbox escalation the Keeper approves. Claude, Copilot and
+  OpenCode Rooms and the operator's own terminal keep them too. `asha room
+  open|close`, initiative operator actions, chair messages and authority
+  grants share the refusal.
+- The ambiguous-colocation refusal in `asha task start` no longer tells the
+  operator to delete `control.sqlite3`. Under the SQLite backend the intent's
+  path was the whole Control database; the message now names the
+  `repository-inits` record and says no Control command clears it.
+- Doctor and drift-check name the remaining `PostToolUse` seam "recovery"
+  rather than "style".
+
 ## Unreleased — structured Codex workers start, finish and report (#120)
 
 - Structured Codex sessions failed in a tenth of a second: their owners run
