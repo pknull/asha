@@ -13,6 +13,36 @@
   the old shell: stop it once with `systemctl --user kill asha-supervisor`,
   then `systemctl --user start asha-supervisor`.
 
+## Unreleased — subtraction B2: two-axis session status (session 2.5.0)
+
+- A hub session row keeps two separate axes: `observed` (native hooks and tmux
+  liveness: `launched`, `working`, `waiting`, `ended`, `unknown`) and `report`
+  (explicit reports: `needs-input` or `finished`). Neither writes the other, so
+  a hook can no longer erase a report and a report no longer changes what the
+  hooks saw. The dashboard words are unchanged: a finished report whose turn
+  still runs reads `Working: reported finished`.
+- A close terminates at once (D7) only when a turn-ending Stop emitted after
+  the finished report shows the turn ended. A Stop from before the report that
+  arrives late, and a turn woken without a prompt (a background notification),
+  no longer let a close kill the running turn. Copilot, which has no turn-end
+  hook, always asks and waits; its finished report reads finished once quiet.
+- A new session reads `Starting` until its first native event instead of
+  `Inspect session`; a Claude or Codex session still silent after 90 s reads
+  `Hooks not reporting: attach` with the silent minutes.
+- Reports, handoffs and message reads take their session from the environment
+  only; the Room-marker and process-ancestry proof is gone (it refused
+  legitimate Stops and Codex reports, #112). Generation and lifecycle fences
+  still refuse a stale or closed session.
+- A SessionStart rebinds a session's native conversation only when its payload
+  source is `clear`, or after the bound conversation ended, so a nested
+  `claude -p` in the pane cannot take it over. The hook bridge forwards the
+  source.
+- A bridge timeout is recorded in the loss log only; the late Stop delivery
+  (#110) is retired. Removed the unreachable approval glyph and count.
+- Codex's rendered `rules/asha.rules` explains the report/handoff allow rule
+  differently; run `asha install codex` to refresh it. Other targets need no
+  reinstall: hooks run the same handlers.
+
 ## Unreleased — subtraction B0: hazards and sandbox holes (session 2.4.0)
 
 - Hooks no longer execute files inside the project tree, which a sandboxed
