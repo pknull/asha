@@ -1313,7 +1313,7 @@ class ReadOnlyObservationTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual((value["status"], code), ("unavailable", 2))
         spawn.assert_not_called()
 
-    def test_symlink_foreign_owner_and_inode_replacement_refuse(self):
+    def test_symlink_and_inode_replacement_refuse(self):
         from lib.control.orchestration import supervisor_daemon as daemon
         self.retained()
         lock = daemon.supervisor_lock_path(self.config)
@@ -1323,15 +1323,6 @@ class ReadOnlyObservationTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
         lock.unlink()
         with daemon._exclusive_lock(self.config):
-            real_fstat = os.fstat
-            def foreign_owner(fd):
-                metadata = real_fstat(fd)
-                if metadata.st_ino == lock.stat().st_ino:
-                    fields = list(metadata); fields[4] = os.geteuid() + 1
-                    return os.stat_result(fields)
-                return metadata
-            with mock.patch.object(daemon.os, "fstat", side_effect=foreign_owner):
-                self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
             real_stat = os.stat
             def replaced(path, *args, **kwargs):
                 if path == "supervisor.lock":

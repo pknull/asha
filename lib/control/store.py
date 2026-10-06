@@ -23,8 +23,6 @@ from .config import (
     ControlConfig,
     reject_symlink_components,
     reject_unsafe_writable_ancestors,
-    namespace_remediation,
-    namespace_safety_step,
     is_canonical_absolute_path,
     require_existing_directory_components,
     validate_workspace_root,
@@ -43,7 +41,6 @@ MAX_RECORD_BYTES = 256 * 1024
 _DIRECTORY_FLAGS = (
     os.O_RDONLY
     | getattr(os, "O_DIRECTORY", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
     | getattr(os, "O_CLOEXEC", 0)
 )
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
@@ -225,8 +222,8 @@ def _managed_start(path: Path, suffix: tuple[str, ...]) -> int:
 
 
 def _directory_error(path: Path, exc: OSError) -> StoreError:
-    if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
-        return StoreError(f"symlink or non-directory component rejected in Control path: {path}")
+    if exc.errno == errno.ENOTDIR:
+        return StoreError(f"non-directory component rejected in Control path: {path}")
     return StoreError(f"cannot open Control directory {path}: {exc}")
 
 
@@ -244,7 +241,14 @@ def _directory_fd(
     create: bool,
     managed_start: int,
 ) -> Iterator[int | None]:
-    """Traverse from / with one pinned no-follow directory FD per component."""
+    """Open a Control directory one component at a time from /.
+
+    Yields None when a component is missing and ``create`` is false. With
+    ``create``, missing components are made 0700 one at a time (umask-proof
+    for managed ones, from ``managed_start`` down). Opens follow symlinks and
+    an existing directory is used as found: its owner and mode are the
+    trusted local user's business (threat model, 2026-10-05).
+    """
     parts = _parts(path)
     try:
         fd = os.open("/", _DIRECTORY_FLAGS)
@@ -252,7 +256,6 @@ def _directory_fd(
         raise StoreError(f"cannot open filesystem root for Control traversal: {exc}") from exc
     current = Path("/")
     missing = False
-    private_boundary = False
     try:
         for index, part in enumerate(parts):
             current /= part
@@ -269,9 +272,7 @@ def _directory_fd(
                     created = True
                     child = os.open(part, _DIRECTORY_FLAGS, dir_fd=fd)
                 except FileExistsError:
-                    # Another creator won.  Treat the inode as untrusted and
-                    # reopen without following links; existing-mode rules
-                    # below decide whether it is safe.  Never chmod it.
+                    # Another creator won: use its directory, never chmod it.
                     created = False
                     try:
                         child = os.open(part, _DIRECTORY_FLAGS, dir_fd=fd)
@@ -282,27 +283,8 @@ def _directory_fd(
             except OSError as exc:
                 raise _directory_error(current, exc) from exc
             try:
-                metadata = os.fstat(child)
-                if not stat.S_ISDIR(metadata.st_mode):
-                    raise StoreError(f"Control path component is not a directory: {current}")
-                problem, private_boundary = namespace_safety_step(
-                    metadata, os.geteuid(), private_boundary
-                )
-                if problem:
-                    raise StoreError(
-                        f"{problem} rejected in Control path: {current}"
-                        f"{namespace_remediation(problem, current)}"
-                    )
-                if index >= managed_start:
-                    if metadata.st_uid != os.geteuid():
-                        raise StoreError(
-                            f"managed Control directory is not owned by the effective user: {current}"
-                        )
-                    if created:
-                        os.fchmod(child, 0o700)
-                        metadata = os.fstat(child)
-                    if stat.S_IMODE(metadata.st_mode) != 0o700:
-                        raise StoreError(f"managed Control directory must have mode 0700: {current}")
+                if created and index >= managed_start:
+                    os.fchmod(child, 0o700)
                 if create:
                     # Every visible pair may be residue from an interrupted
                     # earlier create-enabled traversal.  Re-syncing existing
@@ -311,9 +293,6 @@ def _directory_fd(
                     # creator or a concurrent EEXIST winner.
                     os.fsync(child)
                     os.fsync(fd)
-            except StoreError:
-                _close_quietly(child)
-                raise
             except OSError as exc:
                 _close_quietly(child)
                 raise StoreError(
@@ -331,15 +310,15 @@ def _directory_fd(
 
 
 def _validate_open_file(fd: int, label: str, *, required_mode: int = 0o600) -> os.stat_result:
+    """Require a regular file: a FIFO or device would hang or mislead a reader.
+
+    Owner, link count and mode are the trusted local user's business (threat
+    model, 2026-10-05); ``required_mode`` is accepted for existing callers,
+    which enforce their own mode rules.
+    """
     metadata = os.fstat(fd)
     if not stat.S_ISREG(metadata.st_mode):
         raise StoreError(f"{label} is not a regular file")
-    if metadata.st_uid != os.geteuid():
-        raise StoreError(f"{label} is not owned by the effective user")
-    if metadata.st_nlink != 1:
-        raise StoreError(f"{label} link count must be exactly 1")
-    if stat.S_IMODE(metadata.st_mode) != required_mode:
-        raise StoreError(f"{label} must have mode {required_mode:04o}")
     return metadata
 
 
@@ -347,17 +326,13 @@ def _open_existing_file(directory_fd: int, name: str, label: str) -> int:
     """Open an ordinary private file, never a live SQLite database or sidecar.
 
     Closing a separate ordinary fd would drop SQLite's process-wide POSIX
-    locks. ControlDatabase validates those inodes with no-follow stat instead.
+    locks, so ControlDatabase never opens those inodes outside SQLite.
     """
     try:
-        fd = os.open(
-            name, os.O_RDONLY | _NONBLOCK | _NOFOLLOW | _CLOEXEC, dir_fd=directory_fd
-        )
+        fd = os.open(name, os.O_RDONLY | _NONBLOCK | _CLOEXEC, dir_fd=directory_fd)
     except FileNotFoundError:
         raise
     except OSError as exc:
-        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
-            raise StoreError(f"symlinked {label} rejected: {name}") from exc
         raise StoreError(f"cannot open {label} {name}: {exc}") from exc
     try:
         _validate_open_file(fd, label)
@@ -379,7 +354,7 @@ def _task_lock(locks_fd: int, task_id: str, before_flock=None) -> Iterator[None]
         return
     name = f"{task_id}.lock"
     created = False
-    flags = os.O_RDWR | _NONBLOCK | _NOFOLLOW | _CLOEXEC
+    flags = os.O_RDWR | _NONBLOCK | _CLOEXEC
     try:
         fd = os.open(name, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=locks_fd)
         created = True
@@ -387,26 +362,16 @@ def _task_lock(locks_fd: int, task_id: str, before_flock=None) -> Iterator[None]
         try:
             fd = os.open(name, flags, dir_fd=locks_fd)
         except OSError as exc:
-            if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
-                raise StoreError(f"symlinked task lock rejected: {name}") from exc
             raise StoreError(f"cannot open task lock {name}: {exc}") from exc
     except OSError as exc:
-        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
-            raise StoreError(f"symlinked task lock rejected: {name}") from exc
         raise StoreError(f"cannot create task lock {name}: {exc}") from exc
     locked = False
     try:
         metadata = os.fstat(fd)
         if not stat.S_ISREG(metadata.st_mode):
             raise StoreError("task lock is not a regular file")
-        if metadata.st_uid != os.geteuid():
-            raise StoreError("task lock is not owned by the effective user")
-        if metadata.st_nlink != 1:
-            raise StoreError("task lock link count must be exactly 1")
         if created:
             os.fchmod(fd, 0o600)
-        elif stat.S_IMODE(metadata.st_mode) != 0o600:
-            raise StoreError("task lock must have mode 0600")
         if before_flock is not None:
             before_flock()
         fcntl.flock(fd, fcntl.LOCK_EX)

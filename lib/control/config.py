@@ -18,15 +18,8 @@ HARNESSES = frozenset({"claude", "codex", "copilot", "opencode"})
 MAX_CONFIG_BYTES = 64 * 1024
 _PERCENT = re.compile(r"(?:[1-9][0-9]?|100)%")
 _SESSION_PREFIX = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30})?")
-_DIRECTORY_FLAGS = (
-    os.O_RDONLY
-    | getattr(os, "O_DIRECTORY", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
-    | getattr(os, "O_CLOEXEC", 0)
-)
 _CONFIG_FLAGS = (
     os.O_RDONLY
-    | getattr(os, "O_NOFOLLOW", 0)
     | getattr(os, "O_NONBLOCK", 0)
     | getattr(os, "O_CLOEXEC", 0)
 )
@@ -123,12 +116,15 @@ def reject_symlink_components(path: Path, name: str = "path") -> None:
 
 
 def require_existing_directory_components(path: Path, name: str = "path") -> None:
-    """Require each existing path component, including the leaf, to be a directory."""
+    """Require each existing path component, including the leaf, to be a directory.
+
+    Symlinks are followed; callers that refuse them run reject_symlink_components.
+    """
     current = Path(path.anchor)
     for part in path.parts[1:]:
         current /= part
         try:
-            metadata = current.lstat()
+            metadata = current.stat()
         except FileNotFoundError:
             break
         except OSError as exc:
@@ -230,26 +226,6 @@ def reject_unsafe_writable_ancestors(path: Path, name: str = "path") -> None:
             )
 
 
-def require_owned_directory_ancestors(path: Path, name: str) -> None:
-    """Require a read-only path's existing parents to be root/euid-owned directories."""
-    if not path.is_absolute():
-        raise ConfigError(f"{name} must be an absolute path")
-    allowed_owners = {0, os.stat("/").st_uid, os.geteuid()}
-    current = Path(path.anchor)
-    for part in path.parts[1:]:
-        current /= part
-        try:
-            metadata = current.lstat()
-        except FileNotFoundError:
-            break
-        except OSError as exc:
-            raise ConfigError(f"cannot inspect {name} ancestor: {exc}") from exc
-        if not stat.S_ISDIR(metadata.st_mode):
-            raise ConfigError(f"existing {name} ancestor must be a directory: {current}")
-        if metadata.st_uid not in allowed_owners:
-            raise ConfigError(f"{name} ancestor is not owned by root or the effective user")
-
-
 def validate_workspace_root(
     workspace_root: Path,
     *,
@@ -273,127 +249,36 @@ def validate_workspace_root(
             raise ConfigError("control.workspace_root must not be an ancestor of the source repository")
         if workspace_root.is_relative_to(repository):
             raise ConfigError("control.workspace_root must not be below the source repository")
-    reject_symlink_components(workspace_root, "control.workspace_root")
     require_existing_directory_components(workspace_root, "control.workspace_root")
-    reject_unsafe_writable_ancestors(workspace_root, "control.workspace_root")
     return workspace_root
 
 
-def _resolved_config_target(path: Path, raw_target: str) -> Path:
-    if (not raw_target or len(raw_target) > 4096 or
-            any(unicodedata.category(char) in {"Cc", "Cf", "Cs"} for char in raw_target)):
-        raise ConfigError("ASHA_CONFIG symlink target is invalid")
-    if raw_target.startswith("/"):
-        if not is_canonical_absolute_path(raw_target):
-            raise ConfigError("ASHA_CONFIG symlink target must be an absolute canonical path")
-        target = Path(raw_target)
-    else:
-        target = Path(posixpath.normpath(f"{path.parent}/{raw_target}"))
-        if not is_canonical_absolute_path(str(target)):
-            raise ConfigError("ASHA_CONFIG symlink target did not resolve to a canonical path")
-    if not is_canonical_absolute_path(str(target), resolved=True):
-        raise ConfigError("symlink chain or parent alias rejected in ASHA_CONFIG target")
-    reject_symlink_components(target, "ASHA_CONFIG target")
-    require_existing_directory_components(target.parent, "ASHA_CONFIG target parent")
-    require_owned_directory_ancestors(target.parent, "ASHA_CONFIG target")
-    return target
-
-
 def _open_config_file(path: Path) -> tuple[int, os.stat_result] | None:
-    """Open a direct config or one owned leaf symlink without following aliases."""
-    reject_symlink_components(path.parent, "ASHA_CONFIG parent")
-    require_existing_directory_components(path.parent, "ASHA_CONFIG parent")
-    require_owned_directory_ancestors(path.parent, "ASHA_CONFIG parent")
+    """Open the config file, following symlinks; None when it is absent.
+
+    Where the config lives (a symlinked .asha, a dotfiles leaf, its modes and
+    links) is the trusted local user's choice (threat model, 2026-10-05).
+    Only a non-regular file is refused: O_NONBLOCK plus S_ISREG keep a FIFO
+    from hanging every load.
+    """
     try:
-        leaf_metadata = path.lstat()
+        fd = os.open(path, _CONFIG_FLAGS)
     except FileNotFoundError:
+        # A dangling leaf symlink is a broken install, not an absent config.
+        if os.path.islink(path):
+            raise ConfigError("ASHA_CONFIG symlink target does not exist") from None
         return None
     except OSError as exc:
-        raise ConfigError(f"cannot inspect ASHA_CONFIG: {exc}") from exc
-
-    link_target: str | None = None
-    open_path = path
-    if stat.S_ISLNK(leaf_metadata.st_mode):
-        if leaf_metadata.st_uid != os.geteuid():
-            raise ConfigError("ASHA_CONFIG symlink is not owned by the effective user")
-        try:
-            link_target = os.readlink(path)
-        except OSError as exc:
-            raise ConfigError(f"cannot read ASHA_CONFIG symlink: {exc}") from exc
-        open_path = _resolved_config_target(path, link_target)
-
-    parts = open_path.parts[1:]
-    if not parts:
-        raise ConfigError("ASHA_CONFIG must name a regular file")
+        raise ConfigError(f"cannot open ASHA_CONFIG: {exc}") from exc
     try:
-        parent_fd = os.open("/", _DIRECTORY_FLAGS)
+        metadata = os.fstat(fd)
     except OSError as exc:
-        raise ConfigError(f"cannot open ASHA_CONFIG root: {exc}") from exc
-    try:
-        for part in parts[:-1]:
-            try:
-                child_fd = os.open(part, _DIRECTORY_FLAGS, dir_fd=parent_fd)
-            except OSError as exc:
-                raise ConfigError(f"symlink or invalid parent rejected in ASHA_CONFIG: {exc}") from exc
-            try:
-                parent_metadata = os.fstat(child_fd)
-                if parent_metadata.st_uid not in {
-                    0, os.stat("/").st_uid, os.geteuid()
-                }:
-                    raise ConfigError(
-                        "ASHA_CONFIG parent is not owned by root or the effective user"
-                    )
-            except Exception:
-                os.close(child_fd)
-                raise
-            os.close(parent_fd)
-            parent_fd = child_fd
-        try:
-            fd = os.open(parts[-1], _CONFIG_FLAGS, dir_fd=parent_fd)
-        except FileNotFoundError as exc:
-            if link_target is None:
-                return None
-            raise ConfigError("ASHA_CONFIG symlink target does not exist") from exc
-        except OSError as exc:
-            raise ConfigError(f"cannot open ASHA_CONFIG without following symlinks: {exc}") from exc
-        try:
-            metadata = os.fstat(fd)
-        except OSError as exc:
-            os.close(fd)
-            raise ConfigError("cannot inspect opened ASHA_CONFIG") from exc
-        if not stat.S_ISREG(metadata.st_mode):
-            os.close(fd)
-            raise ConfigError("ASHA_CONFIG is not a regular file")
-        if metadata.st_uid != os.geteuid():
-            os.close(fd)
-            raise ConfigError("ASHA_CONFIG file is not owned by the effective user")
-        if stat.S_IMODE(metadata.st_mode) & 0o022:
-            os.close(fd)
-            raise ConfigError("ASHA_CONFIG file must not be group/world-writable")
-        if metadata.st_nlink != 1:
-            os.close(fd)
-            raise ConfigError("ASHA_CONFIG file link count must be exactly 1")
-        if link_target is None:
-            if (metadata.st_dev, metadata.st_ino) != (
-                leaf_metadata.st_dev, leaf_metadata.st_ino
-            ):
-                os.close(fd)
-                raise ConfigError("ASHA_CONFIG changed while it was being opened")
-        else:
-            try:
-                current_link = path.lstat()
-                current_target = os.readlink(path)
-            except OSError as exc:
-                os.close(fd)
-                raise ConfigError("ASHA_CONFIG symlink changed while it was being opened") from exc
-            if ((current_link.st_dev, current_link.st_ino, current_link.st_uid) !=
-                    (leaf_metadata.st_dev, leaf_metadata.st_ino, leaf_metadata.st_uid) or
-                    current_target != link_target):
-                os.close(fd)
-                raise ConfigError("ASHA_CONFIG symlink changed while it was being opened")
-        return fd, metadata
-    finally:
-        os.close(parent_fd)
+        os.close(fd)
+        raise ConfigError("cannot inspect opened ASHA_CONFIG") from exc
+    if not stat.S_ISREG(metadata.st_mode):
+        os.close(fd)
+        raise ConfigError("ASHA_CONFIG is not a regular file")
+    return fd, metadata
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -536,13 +421,9 @@ def load_config(
     reject_symlink_components(home, "HOME")
     require_existing_directory_components(home, "HOME")
 
-    # The root check here is canonical form plus ancestor writability. A
-    # symlinked ASHA_HOME needs no extra rejection: the config file's own
-    # parent guard in _open_config_file refuses it (as it always refused a
-    # symlinked ~/.asha), and the state store's traversal validators plus the
-    # orchestration doctor's symlink-free root probe govern the machine-state
-    # subtree. The supported dotfiles pattern is a REAL .asha directory whose
-    # leaf files are symlinks.
+    # The root check here is canonical form only. Ancestor modes, owners and
+    # symlinks are the trusted local user's layout (threat model, 2026-10-05):
+    # a symlinked ASHA_HOME is followed like any other path.
     asha_home = _absolute(
         values.get("ASHA_HOME") or str(home / ".asha"),
         "ASHA_HOME",
@@ -552,9 +433,6 @@ def load_config(
         raise ConfigError("ASHA_HOME must not be filesystem root")
     if asha_home == home:
         raise ConfigError("ASHA_HOME must not be HOME itself")
-    # The ancestor-safety walk runs AFTER the config file is read, preserving
-    # the long-standing error precedence: a malformed config file reports as
-    # such even when a fixture home would also fail the namespace rule.
 
     config_path = _absolute(
         values.get("ASHA_CONFIG") or str(asha_home / "config.json"),
@@ -573,8 +451,6 @@ def load_config(
     if unknown_control:
         raise ConfigError(f"control has {len(unknown_control)} unsupported field(s)")
 
-    reject_unsafe_writable_ancestors(asha_home, "ASHA_HOME")
-
     runtime_default = f"/tmp/user-{os.getuid()}"
     using_runtime_fallback = not values.get("XDG_RUNTIME_DIR")
     runtime_home = _absolute(
@@ -588,14 +464,12 @@ def load_config(
         try:
             reject_symlink_components(path, name)
             require_existing_directory_components(path, name)
-            reject_unsafe_writable_ancestors(path, name)
             if path == Path("/"):
                 raise ConfigError(f"{name} must not be filesystem root")
         except ConfigError as exc:
             if name == "XDG_RUNTIME_DIR" and using_runtime_fallback:
                 raise ConfigError(
-                    f"{exc}; set XDG_RUNTIME_DIR to an existing private directory "
-                    "owned by the effective user"
+                    f"{exc}; set XDG_RUNTIME_DIR to an existing private directory"
                 ) from exc
             raise
 

@@ -451,12 +451,6 @@ class MessageTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(snapshot(), before)
         self.call("%2", "ack", message_id=message["message_id"],
                   digest=message["content_digest"], error="receive the message")
-        path = root / "messages" / (message["message_id"] + ".json")
-        target = self.root / "foreign-message.json"
-        target.write_bytes(path.read_bytes()); target.chmod(0o600)
-        path.unlink(); path.symlink_to(target)
-        with self.assertRaises(StoreError):
-            messages.pending(self.store, self.initiative_id)
 
     def test_global_coordinator_cannot_claim_chair_by_clearing_env(self):
         # Claim the *chair* pane as another coordinator, then try to send with
@@ -497,21 +491,9 @@ class MessageTests(ExecutionFixture, unittest.TestCase):
                               env=self.env, tmux=OwnedPanes({}, os.getpid()))
         self.assertIsNone(self.store.message_snapshot(self.initiative_id, mid))
 
-    def test_foreign_owner_and_mismatched_receipt_are_not_silently_skipped(self):
+    def test_mismatched_receipt_is_not_silently_skipped(self):
         message = self.send()
         mid = message["message_id"]
-        path = self.config.initiatives_dir / self.initiative_id / "messages" / (mid + ".json")
-        inode = path.stat().st_ino
-        real_fstat = os.fstat
-        def foreign(fd):
-            value = real_fstat(fd)
-            if value.st_ino == inode:
-                parts = list(value); parts[4] = os.geteuid() + 1
-                return os.stat_result(parts)
-            return value
-        with mock.patch("os.fstat", side_effect=foreign):
-            with self.assertRaises(StoreError):
-                messages.pending(self.store, self.initiative_id)
         receipt = self.call("%2", "receive", message_id=mid)["receipt"]
         receipt["content_digest"] = "0" * 64
         with self.assertRaisesRegex(StoreError, "bind the immutable message"):

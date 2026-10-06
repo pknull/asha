@@ -1262,7 +1262,7 @@ class BoundedRetainedReadTests(ExecutionFixture, unittest.TestCase):
                 "the pane may not assert facts over records nobody opened",
             )
 
-    def test_a_foreign_or_symlinked_record_is_refused_and_counted(self) -> None:
+    def test_a_foreign_or_misnamed_linked_record_is_refused_and_counted(self) -> None:
         clean = tui._load_initiative_views(self.env, tmux=mock.Mock())
         expected = sorted(node["node_id"] for node in clean[0]["nodes"])
         self.assertTrue(expected)
@@ -1272,8 +1272,8 @@ class BoundedRetainedReadTests(ExecutionFixture, unittest.TestCase):
         foreign = json.loads((nodes_dir / readable[0]).read_text())
         foreign["node_id"] = "somewhere-else"
         (nodes_dir / "not-the-same-node.json").write_text(json.dumps(foreign))
-        # A symlink is refused outright rather than followed to its target,
-        # even though that target is a record this reader would accept.
+        # A symlink is followed, and its target's identity contradicts the
+        # link's own filename, so it is refused and counted all the same.
         (nodes_dir / "link-a.json").symlink_to(nodes_dir / readable[0])
         views = tui._load_initiative_views(self.env, tmux=mock.Mock())
         completeness = views[0]["_completeness"]
@@ -1286,7 +1286,7 @@ class BoundedRetainedReadTests(ExecutionFixture, unittest.TestCase):
         reasons = " ".join(
             failure["reason"] for failure in completeness["failures"]
         )
-        self.assertIn("symlink", reasons.lower())
+        self.assertIn("link-a.json does not match its filename", reasons)
 
     def test_nested_entries_cost_the_budget_one_by_one_not_one_per_graph(self) -> None:
         budget = tui_store.PresentationBudget(deadline_seconds=30.0)
