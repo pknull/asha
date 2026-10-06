@@ -3,7 +3,8 @@ import json
 import unittest
 from unittest import mock
 
-from lib.control.database import ControlDatabase
+from lib.control.cli import RepositorySelection, _ensure_colocated
+from lib.control.database import ControlDatabase, DATABASE_NAME
 from lib.control.jj import JjError
 from lib.control.record_registry import RecordRegistry
 from lib.control.sqlite_colocation import SQLiteColocationIntentStore
@@ -84,3 +85,19 @@ class SQLiteColocationTests(unittest.TestCase):
                 self.store.reauthenticate_root_hardening(self.source, candidate)
         self.source.chmod(0o755)
         self.assertEqual(self.store.classify(self.source).raw, candidate.raw)
+
+    def test_ambiguous_intent_remediation_never_names_the_database(self):
+        # Under SQLite the intent's path() is the whole Control database; the
+        # remediation once told the operator to delete it.
+        self.store.begin(self.source)
+        (self.source / '.jj').mkdir()
+        adapter = mock.Mock()
+        with self.assertRaisesRegex(ValueError, 'ambiguous Control colocation') as caught:
+            _ensure_colocated(adapter, RepositorySelection(self.source, plain_git=False), self.store)
+        message = str(caught.exception)
+        self.assertNotIn(DATABASE_NAME, message)
+        self.assertNotIn(str(self.store.path(self.source)), message)
+        self.assertNotIn('`rm', message)
+        self.assertIn('`repository-inits` record', message)
+        self.assertIn(self.store._key(self.source), message)
+        adapter.preflight.assert_not_called()
