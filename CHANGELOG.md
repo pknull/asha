@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — subtraction B1: storage core trusts the local user
+
+- Control's shared storage helpers in `config.py`, `store.py` and
+  `database.py` no longer defend Asha's private state against same-user
+  tampering (Keeper threat model, 2026-10-05): the writable-ancestor,
+  owner, mode, link-count and symlink-swap checks and `_inspect_file`,
+  `_inspect_sidecars` and `_verify_identity` are gone, removing the #115 and
+  #116 failure class from every config load and database open. Regular-file
+  and FIFO guards and private 0700 creation remain.
+
 ## Unreleased — supervisor restart replaces the supervisor (#121)
 
 - `systemctl --user restart asha-supervisor` left the old supervisor running
