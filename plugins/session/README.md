@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 2.3.2
+**Version**: 2.4.0
 
 Compact explicit memory publication, bounded crash recovery, reviewed learning
 lifecycle, policy guardrails, guarded loops, and workspace management.
@@ -91,7 +91,6 @@ migration review is owned by `/session:consolidate`.
 | `SessionStart` | Coherently inject the project's published pair, operation rules, active learnings, workspace context, and any verify-first recovery hint; then expire stale private state |
 | `UserPromptSubmit` | Update prompt recovery; directly deliver RP routing when active |
 | `PostToolUse` | Update bounded paths/action/blocker recovery |
-| `PostToolUse` style audit | On file edits, run executable project-local `.asha/style-audit` for at most 10 seconds and deliver non-empty output as a fail-open nudge |
 | `Stop` verification pass | Recheck `Work/markers/pass-declaration.json`; block one Claude/Codex stop retry while the old value remains, or clear the marker after an empty proof |
 | `SessionEnd` | Seal timestamp and prune only |
 | `PreToolUse` | Independent secret and policy guardrails |
@@ -136,6 +135,13 @@ for the repository; workspace state answers what coordinates the repositories.
   checks required by `AGENTS.md`.
 
 ## Version history
+
+### 2.4.0
+
+Removed the project-local style audit nudge (`style-audit.sh`, its
+post-tool wiring and the Copilot next-prompt queue) and the project
+`.asha/.venv` interpreter preference. Hooks can run outside the harness
+sandbox, so they no longer execute files a sandboxed agent can write.
 
 ### 2.3.0
 

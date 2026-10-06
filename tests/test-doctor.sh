@@ -148,9 +148,9 @@ grep -q "persona loads via 'asha copilot' wrapper only" <<<"$out" \
 grep -q 'compact identity merge valid' <<<"$out" \
   && ok "doctor validates the hot identity budget" \
   || fail "doctor validates the hot identity budget"
-grep -q 'verification-pass and style-audit source seams are complete' <<<"$out" \
-  && ok "doctor validates completion/style source seams" \
-  || fail "doctor validates completion/style source seams"
+grep -q 'verification-pass source seams are complete' <<<"$out" \
+  && ok "doctor validates completion source seams" \
+  || fail "doctor validates completion source seams"
 grep -q 'Memory v2 recovery hooks match installer-expected content' <<<"$out" \
   && jq -e '.hooks.userPromptSubmitted[1].bash
       | endswith("verify-pass-complete.sh")' \
@@ -160,16 +160,16 @@ grep -q 'Memory v2 recovery hooks match installer-expected content' <<<"$out" \
 
 out="$(run --target codex 2>&1)"; rc=$?
 if [[ $rc -eq 0 ]] \
-    && grep -Eq 'Codex [1-9][0-9]* expected commands registered, executable paths verified; verification Stop and style PostToolUse checked;' <<<"$out" \
+    && grep -Eq 'Codex [1-9][0-9]* expected commands registered, executable paths verified; verification Stop and recovery PostToolUse checked;' <<<"$out" \
     && jq -e --arg handlers "$REPO_ROOT/plugins/session/hooks/handlers/" '
       any(.hooks.Stop[]?.hooks[]?;
         .command == ("env ASHA_HARNESS=codex " + $handlers + "verify-pass-complete.sh"))
       and any(.hooks.PostToolUse[]?.hooks[]?;
         .command == ("env ASHA_HARNESS=codex " + $handlers + "post-tool-use.sh"))
     ' "$SANDBOX/.codex/hooks.json" >/dev/null; then
-  ok "doctor validates Codex completion/style rendering"
+  ok "doctor validates Codex completion/recovery rendering"
 else
-  fail "doctor validates Codex completion/style rendering (rc=$rc)"
+  fail "doctor validates Codex completion/recovery rendering (rc=$rc)"
 fi
 
 # Already-current recovery must not short-circuit cleanup of retired exact
@@ -482,7 +482,7 @@ else
   fail "untagged asha hook with missing path FAILS --target claude (rc=$rc)"
 fi
 # Now point it at a real file: path extraction passes and is counted, while the
-# newly required completion/style seam correctly remains missing.
+# newly required completion/recovery seam correctly remains missing.
 jq -n --arg repo "$REPO_ROOT" '{
   hooks: {
     PostToolUse: [
@@ -493,7 +493,7 @@ jq -n --arg repo "$REPO_ROOT" '{
 }' > "$SANDBOX/.claude/settings.json"
 out="$(run --target claude 2>&1)"; rc=$?
 if [[ $rc -ne 0 ]] && grep -q "1 asha hook entry registered" <<<"$out" \
-    && grep -q "Claude verification Stop or style PostToolUse seam is missing" <<<"$out" \
+    && grep -q "Claude verification Stop or recovery PostToolUse seam is missing" <<<"$out" \
     && ! grep -q "asha hook paths missing" <<<"$out"; then
   ok "untagged existing hook path passes extraction while required seams stay enforced"
 else
@@ -535,7 +535,7 @@ mkdir -p "$SANDBOX/.codex"
 printf 'features.hooks=true\n' > "$SANDBOX/.codex/config.toml"
 out="$(run --target codex 2>&1 || true)"
 if grep -q "expected commands registered, executable paths verified" <<<"$out" \
-    && grep -q "verification Stop and style PostToolUse checked" <<<"$out" \
+    && grep -q "verification Stop and recovery PostToolUse checked" <<<"$out" \
     && grep -q 'env ASHA_HARNESS=codex' "$SANDBOX/.codex/hooks.json"; then
   ok "owned JSON env wrappers resolve real expected hook executables and required seams"
 else
@@ -681,7 +681,7 @@ with tempfile.TemporaryDirectory(dir=work) as directory:
         if case == 'healthy':
             assert probe.outcome == 'match', probe
             assert f'Codex {expected_count} expected commands registered, executable paths verified;' in probe.detail
-            assert 'verification Stop and style PostToolUse checked;' in probe.detail
+            assert 'verification Stop and recovery PostToolUse checked;' in probe.detail
             assert 'native trust and execution NOT verified' in probe.detail
         elif case in ('Stop', 'PostToolUse'):
             assert probe.outcome == 'missing', probe

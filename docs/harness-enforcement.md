@@ -15,29 +15,27 @@ contract is portability of behavior, not identical primitives.
 | Semantic Memory publication | Explicit `/session:save` | Explicit session save skill | Explicit session save skill | Explicit session save command |
 | Workspace context | SessionStart delivery | SessionStart delivery | SessionStart delivery | Plugin SessionStart delivery |
 
-## Fail-open completion and style nudges
+## Fail-open completion nudge
 
-Both nudges come from handlers under `plugins/session`; harness adapters only
-select the verified delivery seam. They never publish Memory or block a tool.
+The nudge comes from a handler under `plugins/session`; harness adapters only
+select the verified delivery seam. It never publishes Memory or blocks a tool.
 
 | Nudge | Claude Code | OpenAI Codex | GitHub Copilot CLI | OpenCode |
 |---|---|---|---|---|
 | Declared verification pass | `Stop` runs `verify-pass-complete.sh`; remaining fixed-string hits return one `{"decision":"block","reason":...}` retry and `stop_hook_active` suppresses the loop | Same Stop JSON, subject to Codex's per-command hash-bound hook trust | No Stop claim: next `userPromptSubmitted` runs the handler and returns top-level `additionalContext` | Root `session.idle` appends handler stdout to pending context for the next system transform; known child-session idles are ignored |
-| Project style audit | `PostToolUse` for Edit/Write/MultiEdit/apply_patch returns `hookSpecificOutput.additionalContext` | Same response shape, with the known incomplete `unified_exec` interception caveat | `postToolUse` queues output because copilot-cli#2980 drops its additional context; the next `userPromptSubmitted` returns it | `tool.execute.after` appends handler stdout to pending context for the next system transform |
 
-The style handler resolves the payload cwd to an initialized project, runs
-only an executable `<root>/.asha/style-audit`, passes the edited path as its
-first argument and the hook payload on stdin, and caps execution at ten
-seconds. OpenCode `apply_patch` paths are read from its native `patchText`
-payload. Missing, non-executable, or silent auditors are no-ops. Exit and
-timeout status never block; any stdout captured before failure or timeout is
-still delivered as a nudge. The declared-pass handler excludes `.git`, `.jj`,
-and `Work` from its fixed-string search, including binary/NUL-containing
-files, names remaining files, and after an empty proof clears the marker only
+The declared-pass handler excludes `.git`, `.jj`, and `Work` from its
+fixed-string search, including binary/NUL-containing files, names remaining
+files, and after an empty proof clears the marker only
 when its `old` value, re-read under the lock, still equals the value that was
 proved. Internal search or lock errors fail open. The marker lock uses
 `flock(1)`, which `lib/portable.sh` does not yet cover: without it the
 declare tool refuses with a Linux-only error and the handler is a `{}` no-op.
+
+Hooks can run outside the harness sandbox, so no handler executes a file inside
+the project tree, which a sandboxed agent can write. The project-local
+`.asha/style-audit` nudge and the project `.asha/.venv` interpreter preference
+were removed for that reason; Python handlers use the system `python3`.
 
 ## Control status event claims
 
@@ -216,7 +214,7 @@ loss path, not every possible race against arbitrary artifact writers.
 
 Both installed drift and Control hook probes inspect JSON-only, combined,
 legacy, absent, malformed and ownership evidence against actual expected
-commands/filters, including verification `Stop` and style `PostToolUse`.
+commands/filters, including verification `Stop` and recovery `PostToolUse`.
 Explicit `features.hooks=false` is disabled. The retained **0.153.4** empty-config
 default-true evidence applies only to that release; other absent-flag versions
 remain unavailable/unsupported. Neither probe inserts a feature flag.
@@ -250,8 +248,7 @@ The installer emits:
 - `asha-guardrails.json` for translated policy and secret guards
 - `asha-recovery.json` for start, prompt, post-tool, and session-end recovery,
   each followed by a hub-session-only `control-event.sh` report
-- the declared-pass next-prompt check in `asha-recovery.json`; style findings
-  queued by post-tool recovery are drained through the same prompt seam
+- the declared-pass next-prompt check in `asha-recovery.json`
 - the remaining feature-specific hook files required by installed plugins
 
 Legacy lifecycle and nudge hook files are removed during reconciliation.
@@ -259,8 +256,8 @@ Legacy lifecycle and nudge hook files are removed during reconciliation.
 ### OpenCode
 
 `harnesses/opencode.sh` generates `plugins/asha.js`. It calls the shared recovery
-handlers directly for start, prompt, post-tool, and dispose, appends style-audit
-stdout after tools, and runs the declared-pass handler on `session.idle`.
+handlers directly for start, prompt, post-tool, and dispose, and runs the
+declared-pass handler on `session.idle`.
 Pending output enters the next system-context transform. Dispose invokes only
 the session-end seal path. Commands and agents remain native Markdown under
 plural `commands/` and `agents/` directories.

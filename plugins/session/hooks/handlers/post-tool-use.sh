@@ -25,13 +25,5 @@ if [[ ! -f "$PROJECT_DIR/Work/markers/silence" \
     >/dev/null 2>&1 || true
 fi
 
-STYLE_HANDLER="$SCRIPT_DIR/style-audit.sh"
-if [[ -x "$STYLE_HANDLER" ]]; then
-  STYLE_RESPONSE="$(printf '%s' "$INPUT" | "$STYLE_HANDLER" 2>/dev/null || true)"
-  if [[ -n "$STYLE_RESPONSE" && "$STYLE_RESPONSE" != '{}' ]]; then
-    printf '%s\n' "$STYLE_RESPONSE"
-    exit 0
-  fi
-fi
 echo '{}'
 exit 0

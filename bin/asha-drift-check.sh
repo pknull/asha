@@ -550,23 +550,18 @@ done
 
 declare_pass_tool="$ASHA/plugins/session/tools/declare-pass.sh"
 verify_pass_handler="$ASHA/plugins/session/hooks/handlers/verify-pass-complete.sh"
-style_audit_handler="$ASHA/plugins/session/hooks/handlers/style-audit.sh"
 verify_pass_fragment="$ASHA/plugins/session/hooks/nudges/fragments/verify-pass-complete.md"
-style_audit_fragment="$ASHA/plugins/session/hooks/nudges/fragments/style-audit.md"
 hooks_registry="$ASHA/plugins/session/hooks/hooks.json"
 if [[ -x "$declare_pass_tool" && -x "$verify_pass_handler" \
-    && -x "$style_audit_handler" && -f "$verify_pass_fragment" \
-    && -f "$style_audit_fragment" ]] \
+    && -f "$verify_pass_fragment" ]] \
     && jq -e '
       .hooks.Stop[]
       | select(._asha_harnesses == ["claude", "codex"])
       | any(.hooks[]?; (.command // "") | endswith("verify-pass-complete.sh"))
-    ' "$hooks_registry" >/dev/null 2>&1 \
-    && grep -Fq 'style-audit.sh' \
-      "$ASHA/plugins/session/hooks/handlers/post-tool-use.sh"; then
-  pass "verification-pass and style-audit source seams are complete"
+    ' "$hooks_registry" >/dev/null 2>&1; then
+  pass "verification-pass source seams are complete"
 else
-  nope "verification-pass or style-audit source seam is missing/incomplete"
+  nope "verification-pass source seam is missing/incomplete"
 fi
 
 if python3 - "$ASHA/harnesses/capabilities.json" "$ASHA/harnesses/capabilities.schema.json" <<'PY' >/dev/null 2>&1
@@ -695,9 +690,9 @@ print(words[0] if words else "")
         and any(.hooks.PostToolUse[]?.hooks[]?;
           (.command // "") | endswith("post-tool-use.sh"))
       ' "$CLAUDE/settings.json" >/dev/null 2>&1; then
-      pass "Claude verification Stop and style PostToolUse seams are installed"
+      pass "Claude verification Stop and recovery PostToolUse seams are installed"
     else
-      nope "Claude verification Stop or style PostToolUse seam is missing"
+      nope "Claude verification Stop or recovery PostToolUse seam is missing"
     fi
   fi
 fi
@@ -951,7 +946,7 @@ if [[ "$TARGET" == "opencode" || "$TARGET" == "all" ]]; then
       && grep -q 'verify-pass-complete.sh' "$plugin" \
       && grep -q 'shell.env' "$plugin" \
       && grep -q 'dispose' "$plugin"; then
-      pass "OpenCode integration plugin carries guardrail, style, idle verification, session-env, and clean-exit hooks"
+      pass "OpenCode integration plugin carries guardrail, post-tool recovery, idle verification, session-env, and clean-exit hooks"
     else
       nope "OpenCode integration plugin is stale or incomplete: $plugin"
     fi
