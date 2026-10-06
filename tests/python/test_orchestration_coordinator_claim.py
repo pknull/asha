@@ -261,6 +261,17 @@ class CoordinatorClaimTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(shown["revision"], self.plan["revision"])
         self.assertEqual(self.store.list_actions_snapshot(self.initiative_id), [])
 
+    def test_operator_verbs_refuse_worker_and_sandboxed_harness_sessions(self) -> None:
+        # K4 (2026-10-05): keyed on the worker profile and the sandboxed
+        # harness, not on a coordinator label or pane; no coordinator is live.
+        for label, extra in (("worker", {"ASHA_SESSION_PROFILE": "worker"}),
+                             ("codex", {"ASHA_HARNESS": "codex"})):
+            env = {**self.env, "TMUX_PANE": "%9", **extra}
+            with self.subTest(label), \
+                    self.assertRaisesRegex(CoordinatorError, "cannot perform session operator actions"):
+                cli._operator_action("pause", [self.initiative_id], self.store, env, self.tmux)
+        self.assertEqual(self.store.list_actions_snapshot(self.initiative_id), [])
+
     def test_cli_coordinator_verbs_round_trip(self) -> None:
         payload, json_output = cli._coordinator_command(
             ["claim", self.initiative_id, "--json"], self.store, self.pane_env, self.tmux,

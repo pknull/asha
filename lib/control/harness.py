@@ -50,6 +50,12 @@ QUIT_SEQUENCES: dict[str, str] = {
 # Harnesses with a real headless (one-turn, exits-on-completion) mode. A
 # headless worker's exit is structural, so its seal never waits on a human.
 HEADLESS_HARNESSES = frozenset({"claude", "codex"})
+# Harnesses whose Asha launches run commands inside a native sandbox (Codex
+# Rooms, workers and chair; subtraction panel E5). Claude, Copilot and OpenCode
+# run unsandboxed under native permissions. Session operator verbs refuse a
+# non-chair caller on one of these (K4, 2026-10-05): run outside the sandbox
+# through an allow rule, they would hand it authority the sandbox withholds.
+SANDBOXED_HARNESSES = frozenset({"codex"})
 PROC_ROOT = Path("/proc")
 MAX_PROC_BYTES = 64 * 1024
 _BOOT_ID = re.compile(

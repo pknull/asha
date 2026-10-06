@@ -1913,6 +1913,11 @@ def _room_command(args: list[str], env: Mapping[str, str]) -> int:
         _room_usage()
         return 0
     config = load_config(env)
+    if command in {"open", "close"}:
+        # Opening or ending a Room is a session operator act (K4).
+        from .registry_backend import control_config
+        from .sessions import refuse_managed_operator
+        refuse_managed_operator(control_config(config), env)
     store = RoomStore(config)
     adapter = TmuxAdapter()
     if command == "open":

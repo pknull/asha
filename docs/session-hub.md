@@ -34,6 +34,19 @@ ownership check first and attach nothing when it fails. `--json` keeps the
 print-only result for scripts and the dashboard; `--print` prints the verified
 tmux command instead of running it, as does any non-terminal caller.
 
+`launch`, `send`, `stop`, `close`, `resume` and the other operator verbs, and
+`asha room open|close`, refuse a worker-profile session on any harness and a
+non-chair session on a sandboxed harness, such as a Codex Room (Keeper ruling
+K4, 2026-10-05). Run outside the sandbox, they would let that session start
+an unsandboxed one or type into another. The chair keeps them on every
+harness: a Codex chair reaches them only through a sandbox escalation the
+Keeper approves at the native prompt, which is consent. A Claude, Copilot or
+OpenCode Room, which already runs with native permissions, and the operator's
+own terminal keep them too. A session's own `report`, `handoff`, `messages`
+and `ack-message` are unaffected. The refusal reads `ASHA_SESSION_PROFILE`
+and `ASHA_HARNESS`, which every Asha launch sets; a plain `codex` started
+outside the wrapper carries neither.
+
 Project names resolve through Asha's existing index; canonical initialized
 project paths also work. Ambiguous names require a choice. Ordinary jobs run
 in that checkout, without a jj workspace requirement. The project's own

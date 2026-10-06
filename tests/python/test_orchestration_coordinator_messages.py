@@ -135,10 +135,13 @@ class MessageTests(ExecutionFixture, unittest.TestCase):
         self.chair.mkdir(mode=0o700)
         self.actors = {}
         context = multiprocessing.get_context("fork")
-        for pane, seat in (("%1", self.chair), ("%2", self.repo)):
+        # A seated chair carries the chair profile, as bin/asha exports it; a
+        # Codex session without it is not the operator (K4, 2026-10-05).
+        chair_env = {**self.env, "ASHA_SESSION_PROFILE": "chair"}
+        for pane, seat, env in (("%1", self.chair, chair_env), ("%2", self.repo, self.env)):
             parent, child = context.Pipe()
             process = context.Process(target=actor_process, args=(
-                child, self.config, self.initiative_id, pane, seat, self.env,
+                child, self.config, self.initiative_id, pane, seat, env,
             ))
             process.start()
             child.close()
@@ -183,6 +186,17 @@ class MessageTests(ExecutionFixture, unittest.TestCase):
         self.call("%2", "receive", message_id=sent["message_id"])
         self.call("%2", "ack", message_id=sent["message_id"], digest=sent["content_digest"])
         self.assertEqual(messages.pending(self.store, self.initiative_id)["messages"], [])
+
+    def test_chair_on_a_sandboxed_harness_is_the_operator(self):
+        # K4 (2026-10-05, chair correction): the chair profile is exempt on
+        # every harness; a Codex worker profile in the chair pane is refused.
+        sent = self.send("Continue")
+        self.assertIsNotNone(self.store.message_snapshot(self.initiative_id, sent["message_id"]))
+        mid = str(uuid.uuid4())
+        self.call("%1", "send", message_id=mid, body="refuse",
+                  env_overrides={"ASHA_HARNESS": "codex", "ASHA_SESSION_PROFILE": "worker"},
+                  error="worker sessions cannot perform session operator actions")
+        self.assertIsNone(self.store.message_snapshot(self.initiative_id, mid))
 
     def test_standalone_managed_owner_cannot_claim_chair_with_stripped_env(self):
         self.call("%1", "managed", coordinator=False)

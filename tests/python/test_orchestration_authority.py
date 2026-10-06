@@ -231,6 +231,19 @@ class AuthorityVerbRefusalTests(ExecutionFixture, unittest.TestCase):
             self.assertEqual(cli._authority_command(["list"], self.config, env, mock.Mock()), 0)
 
 
+    def test_grant_refuses_worker_and_sandboxed_harness_sessions(self) -> None:
+        # K4 (2026-10-05): the same refusal as every other operator verb.
+        from lib.control.store import StoreError
+        for extra in ({"ASHA_SESSION_PROFILE": "worker"}, {"ASHA_HARNESS": "codex"}):
+            env = {**self.env, **extra}
+            with self.subTest(extra=extra), \
+                    self.assertRaisesRegex(StoreError, "cannot perform session operator actions"):
+                cli._authority_command(["add", "n", "--repo", str(self.repo), "--scope", "src"],
+                                       self.config, env, mock.Mock(), jj=self.jj)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli._authority_command(["list"], self.config, env, mock.Mock()), 0)
+
+
 class AuthorityStorageFailureTests(ExecutionFixture, unittest.TestCase):
     """A damaged authority store must never approve, and never break proposing."""
 
