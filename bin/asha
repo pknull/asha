@@ -635,6 +635,12 @@ if [[ "${1:-}" == "task" || "${1:-}" == "room" || "${1:-}" == "control" || "${1:
   control_route="$1"; shift
   # shellcheck disable=SC1090
   source "$ASHA_ROOT/lib/control.sh"
+  # The supervisor unit's ExecStart. Under KillMode=process systemd signals
+  # only MainPID, so the supervisor must be that process, not a child (#121).
+  if [[ "$control_route" == control && "${1:-}" == supervisor && "${2:-}" == run ]]; then
+    asha_control_exec "$control_route" "$@"
+    exit $?
+  fi
   ( set -euo pipefail; asha_control_main "$control_route" "$@" )
   exit $?
 fi
