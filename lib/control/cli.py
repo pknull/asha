@@ -725,13 +725,16 @@ def _ensure_colocated(
         else assessment.value
     )
     if intent is not None and intent["state"] == "intent":
-        intent_path = intents.path(selection.root)
+        # Name the record, never a path: under SQLite the store's path() is
+        # the whole Control database.
         raise ValueError(
             "ambiguous Control colocation intent was retained; refusing to "
             f"adopt or overwrite {selection.root}/.jj. Run `jj status` in "
-            f"{selection.root}, inspect Git status/refs and {intent_path}, then "
-            "complete or repair colocation. Only after verification, remove "
-            f"the intent with `rm -- {shlex.quote(str(intent_path))}` and retry"
+            f"{selection.root}, inspect Git status/refs, then complete or "
+            "repair colocation. The intent is the `repository-inits` record "
+            f"{intents._key(selection.root)} in Control's private state; no "
+            "Control command clears it, and task start refuses this "
+            "repository until that one record is removed after verification"
         )
     if intent is not None and intent["state"] == "verified":
         jj.preflight(selection.root)
