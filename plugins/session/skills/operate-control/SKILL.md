@@ -175,6 +175,10 @@ and dashboard. A failed telemetry hook must not block native work.
 
 ## Gotchas
 
+- Launch, send and the operator verbs refuse a worker-profile session and a
+  Codex Room ("cannot perform session operator actions"). The chair keeps them
+  on every harness; on Codex they run through a sandbox escalation the Keeper
+  approves.
 - Launch refuses a project without initialized Memory v2 ("not exactly one
   initialized Memory v2 Asha project"). For a scratch probe, run `memory_v2.py
   init --project-dir DIR` and commit it before launching.

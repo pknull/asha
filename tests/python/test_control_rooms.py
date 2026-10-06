@@ -743,6 +743,26 @@ class RoomTests(unittest.TestCase):
             ], env=self.env), 0)
         self.assertEqual(json.loads(stdout.getvalue())["state"], "ended")
 
+    def test_cli_open_and_close_refuse_worker_and_sandboxed_harness_sessions(self) -> None:
+        # K4 (2026-10-05): the Room surface launches and ends sessions too.
+        argvs = (
+            ["room", "open", "Escape", "--project", str(self.project), "--harness", "claude",
+             "--prompt", "Escape", "--json"],
+            ["room", "close", "Draft Room", "--yes", "--json"],
+        )
+        for extra in ({"ASHA_SESSION_PROFILE": "worker"}, {"ASHA_HARNESS": "codex"}):
+            for argv in argvs:
+                stderr = io.StringIO()
+                with self.subTest(extra=extra, verb=argv[1]), \
+                        unittest.mock.patch("lib.control.cli.load_config", return_value=self.config), \
+                        unittest.mock.patch("lib.control.cli.TmuxAdapter", return_value=self.tmux), \
+                        unittest.mock.patch("lib.control.rooms.shutil.which", return_value="/usr/bin/true"), \
+                        contextlib.redirect_stderr(stderr):
+                    self.assertEqual(cli.main(argv, env={
+                        **self.env, "ASHA_ROOT": str(self.asha_root), **extra}), 2)
+                    self.assertIn("cannot perform session operator actions", stderr.getvalue())
+        self.assertEqual(self.tmux.created, [])
+
     def test_cli_attach_inside_tmux_uses_caller_bound_popup(self) -> None:
         opened = self._open()
         self.tmux.caller_client = unittest.mock.Mock(return_value="/dev/pts/7")

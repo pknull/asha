@@ -43,6 +43,77 @@ class SessionHubTests(unittest.TestCase):
         with self.hub.database() as db, db.transaction() as c:
             self.assertIsNone(c.execute("SELECT 1 FROM sqlite_master WHERE name='managed_sessions'").fetchone())
 
+    def test_worker_and_sandboxed_harness_sessions_cannot_launch_send_or_operate(self):
+        # K4 (2026-10-05): a worker on any harness, or a non-chair Codex
+        # session, could otherwise start an unsandboxed session or type into
+        # another one. Refused before any tmux or record mutation.
+        from lib.control.session_hub import Hub
+        row = self.launch()
+        messages = self.hub.messages(row['session_id'])
+        callers = {
+            'worker': dict(ASHA_SESSION_PROFILE='worker', ASHA_HARNESS='claude',
+                           ASHA_HUB_SESSION_ID=row['session_id'], ASHA_HUB_GENERATION='1'),
+            'codex room': dict(ASHA_SESSION_PROFILE='room', ASHA_HARNESS='codex',
+                               ASHA_HUB_SESSION_ID=row['session_id'], ASHA_HUB_GENERATION='1'),
+            'codex worker': dict(ASHA_SESSION_PROFILE='worker', ASHA_HARNESS='codex',
+                                 ASHA_HUB_SESSION_ID=row['session_id'], ASHA_HUB_GENERATION='1'),
+        }
+        refusal = 'cannot perform session operator actions'
+        for label, extra in callers.items():
+            with self.subTest(label):
+                hub = Hub(self.config, env=dict(self.env, **extra), tmux=self.tmux)
+                created, respawned = len(self.tmux.created), len(self.tmux.respawned)
+                with self.assertRaisesRegex(StoreError, refusal):
+                    hub.launch(project=str(self.project), prompt='Escape', name='escape ' + label,
+                               harness='claude')
+                with self.assertRaisesRegex(StoreError, refusal):
+                    hub.send(row['session_id'], 'Type this', key='escape-' + label)
+                with self.assertRaisesRegex(StoreError, refusal):
+                    hub.stop(row['session_id'])
+                with self.assertRaisesRegex(StoreError, refusal):
+                    hub.close(row['session_id'], force=True)
+                with self.assertRaisesRegex(StoreError, refusal):
+                    hub.resume(row['session_id'], prompt='Continue')
+                self.assertEqual((len(self.tmux.created), len(self.tmux.respawned)), (created, respawned))
+        self.assertEqual(self.hub.messages(row['session_id']), messages)
+        self.assertEqual(self.hub.get(row['session_id'])['lifecycle'], row['lifecycle'])
+
+    def test_unsandboxed_room_and_chair_may_still_launch(self):
+        # K4: Claude, Copilot and OpenCode run unsandboxed with native
+        # permissions, so the refusal adds nothing for their Room or chair.
+        from lib.control.session_hub import Hub
+        callers = {
+            'claude room': dict(ASHA_SESSION_PROFILE='room', ASHA_HARNESS='claude'),
+            'claude chair': dict(ASHA_SESSION_PROFILE='chair', ASHA_HARNESS='claude', ASHA_SEAT='1'),
+            'opencode room': dict(ASHA_SESSION_PROFILE='room', ASHA_HARNESS='opencode'),
+        }
+        for label, extra in callers.items():
+            with self.subTest(label):
+                hub = Hub(self.config, env=dict(self.env, **extra), tmux=self.tmux)
+                row = hub.launch(project=str(self.project), prompt='Trim the games',
+                                 name='launch from ' + label, harness='claude')
+                self.assertEqual(row['profile'], 'worker')
+                message = hub.send(row['session_id'], 'Keep the clock', key='from-' + label)
+                self.assertEqual(message['state'], 'queued')
+                # The shared Room fake models one pane at a time.
+                self.assertEqual(hub.close(row['session_id'], force=True)['lifecycle'], 'closed')
+
+    def test_codex_chair_is_the_operator(self):
+        # K4 chair correction: the chair is exempt on every harness. A Codex
+        # chair reaches these verbs only through a sandbox escalation the Keeper
+        # approves at the native prompt, which is consent, not an escape.
+        from lib.control.session_hub import Hub
+        hub = Hub(self.config, env=dict(self.env, ASHA_SESSION_PROFILE='chair',
+                                        ASHA_HARNESS='codex', ASHA_SEAT='1'), tmux=self.tmux)
+        row = hub.launch(project=str(self.project), prompt='Trim the games',
+                         name='launch from codex chair', harness='claude')
+        self.assertEqual(row['profile'], 'worker')
+        self.assertEqual(hub.send(row['session_id'], 'Keep the clock', key='codex-chair')['state'], 'queued')
+        hub.stop(row['session_id'])
+        resumed = hub.resume(row['session_id'], prompt='Continue with my followup')
+        self.assertEqual((resumed['session_id'], resumed['generation']), (row['session_id'], 2))
+        self.assertEqual(hub.close(row['session_id'], force=True)['lifecycle'], 'closed')
+
     def test_queued_message_is_not_claimed_delivered(self):
         row = self.launch()
         message = self.hub.send(row['session_id'], 'Keep the clock', key='followup')

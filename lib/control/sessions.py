@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .config import load_config
 from .database import DatabaseBusyError
-from .harness import HarnessError, caller_descends_from, verify_process
+from .harness import SANDBOXED_HARNESSES, HarnessError, caller_descends_from, verify_process
 from .session_harness import CAPABILITIES, ClaudeTransport, CodexTransport, claude_argv, codex_argv
 from .session_store import SessionStore, SessionsUninitialized, process_live
 from .store import StoreError, _directory_fd, _managed_start
@@ -41,6 +41,18 @@ def overview(config, *, limit=100, deadline=None):
 def refuse_managed_operator(config, env, *, allow_legacy_reads=False):
     if any(env.get(k) for k in ("ASHA_MANAGED_SESSION_ID", "ASHA_CONTROL_MANAGED", "ASHA_ORCHESTRATION_COORDINATOR_ID")):
         raise StoreError("managed actors cannot perform session operator actions")
+    # K4 (2026-10-05): a worker on any harness, or a non-chair session on a
+    # sandboxed harness, is not the operator. Launch, send and the operator verbs
+    # would let it start an unsandboxed session or type into another one. The
+    # chair is exempt on every harness: a sandboxed chair reaches these verbs
+    # only through an escalation the Keeper approves natively. A Room on an
+    # unsandboxed harness already holds native permissions; it is not refused.
+    profile = env.get("ASHA_SESSION_PROFILE")
+    if profile == "worker":
+        raise StoreError("worker sessions cannot perform session operator actions")
+    if env.get("ASHA_HARNESS") in SANDBOXED_HARNESSES and profile != "chair":
+        raise StoreError(f"non-chair sessions on the sandboxed {env['ASHA_HARNESS']} harness "
+                         "cannot perform session operator actions")
     if not (config.tasks_dir.parent / "control.sqlite3").exists():
         return
     from .database import ControlDatabase

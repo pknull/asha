@@ -141,7 +141,9 @@ for the repository; workspace state answers what coordinates the repositories.
 Removed the project-local style audit nudge (`style-audit.sh`, its
 post-tool wiring and the Copilot next-prompt queue) and the project
 `.asha/.venv` interpreter preference. Hooks can run outside the harness
-sandbox, so they no longer execute files a sandboxed agent can write.
+sandbox, so they no longer execute files a sandboxed agent can write. The
+`operate-control` skill notes that worker-profile sessions and Codex Rooms
+cannot launch, send or run operator verbs; the chair can on every harness.
 
 ### 2.3.0
 

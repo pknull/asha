@@ -592,6 +592,38 @@ class RecordDatabaseTests(unittest.TestCase):
         with SessionStore(self.config, create=True) as store:
             self.assertEqual(store.snapshot()["sessions"], [])
 
+    def test_worker_and_sandboxed_harness_sessions_are_not_the_operator(self):
+        # K4 (2026-10-05, chair correction): a worker-profile session on any
+        # harness, or a non-chair session on a sandboxed harness, cannot reach
+        # launch, send or operator verbs, with or without a database. The chair
+        # is the operator on every harness; an unsandboxed Room is too.
+        from lib.control.sessions import refuse_managed_operator
+        empty = load_config({"ASHA_HOME": str(self.root / "empty"), "HOME": str(self.root)})
+        refused = (
+            {"ASHA_SESSION_PROFILE": "worker"},
+            {"ASHA_SESSION_PROFILE": "worker", "ASHA_HARNESS": "claude", "ASHA_HUB_SESSION_ID": "s"},
+            {"ASHA_HARNESS": "codex"},
+            {"ASHA_HARNESS": "codex", "ASHA_SESSION_PROFILE": "room", "ASHA_HUB_SESSION_ID": "s"},
+            {"ASHA_HARNESS": "codex", "ASHA_SESSION_PROFILE": "worker"},
+        )
+        for config in (self.config, empty):
+            for env in refused:
+                with self.subTest(env=env, database=config is self.config), \
+                        self.assertRaisesRegex(StoreError, "cannot perform session operator actions"):
+                    refuse_managed_operator(config, env)
+        allowed = (
+            {},
+            {"ASHA_HARNESS": "claude", "ASHA_SESSION_PROFILE": "room", "ASHA_HUB_SESSION_ID": "s"},
+            {"ASHA_HARNESS": "claude", "ASHA_SESSION_PROFILE": "chair", "ASHA_SEAT": "1"},
+            {"ASHA_HARNESS": "codex", "ASHA_SESSION_PROFILE": "chair", "ASHA_SEAT": "1"},
+            {"ASHA_HARNESS": "codex", "ASHA_SESSION_PROFILE": "chair"},
+            {"ASHA_HARNESS": "copilot", "ASHA_SESSION_PROFILE": "room"},
+            {"ASHA_HARNESS": "opencode", "ASHA_SESSION_PROFILE": "chair"},
+        )
+        for env in allowed:
+            with self.subTest(env=env):
+                refuse_managed_operator(self.config, env)
+
     def test_doctor_reports_health_and_refuses_future_schema(self):
         from lib.control.doctor import _managed_sessions_probe
         self.assertEqual(_managed_sessions_probe(self.config).outcome, "match")
