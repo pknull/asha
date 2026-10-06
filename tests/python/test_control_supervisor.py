@@ -791,6 +791,40 @@ class SupervisorProcessTests(ExecutionFixture, unittest.TestCase):
         kill.assert_not_called()
 
 
+class SupervisorLauncherTests(unittest.TestCase):
+    """The unit's ExecStart is bin/asha; systemd's MainPID must be the supervisor."""
+
+    def test_supervisor_run_replaces_the_launcher_shell(self) -> None:
+        # KillMode=process signals MainPID only. A supervisor forked beneath
+        # the launcher shell outlived restart and held the flock (#121).
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name).resolve()
+        home = root / "home"
+        home.mkdir(mode=0o750)
+        stub = root / "bin"
+        stub.mkdir()
+        record = root / "record"
+        python = stub / "python3"
+        python.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$$\" \"$@\" >'{record}'\n")
+        python.chmod(0o755)
+        repository = Path(__file__).resolve().parents[2]
+        launcher = subprocess.Popen(
+            [str(repository / "bin" / "asha"), "control", "supervisor", "run"],
+            env={"HOME": str(home), "PATH": f"{stub}:/usr/bin:/bin", "LANG": "C.UTF-8"},
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        )
+        _, stderr = launcher.communicate(timeout=30)
+
+        self.assertEqual(launcher.returncode, 0, stderr)
+        lines = record.read_text().splitlines()
+        self.assertEqual(lines[0], str(launcher.pid))
+        self.assertEqual(lines[1:4], ["-B", "-I", "-c"])
+        self.assertEqual(
+            lines[-4:], [str(repository / "lib"), "control", "supervisor", "run"],
+        )
+
+
 class SupervisorServiceTests(unittest.TestCase):
     maxDiff = None
 

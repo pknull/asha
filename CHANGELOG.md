@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — supervisor restart replaces the supervisor (#121)
+
+- `systemctl --user restart asha-supervisor` left the old supervisor running
+  and the unit inactive. `bin/asha` forked the Python supervisor beneath its
+  shell, so the unit's main process was the shell, and `KillMode=process`
+  signals only that process. The old supervisor kept the lock, the new start
+  printed "already running" and exited 0. `asha control supervisor run` now
+  replaces the launcher shell with the supervisor. `KillMode=process` stays,
+  so session owners still survive a restart. The unit is unchanged and needs
+  no reinstall, but a supervisor started before this change still runs under
+  the old shell: stop it once with `systemctl --user kill asha-supervisor`,
+  then `systemctl --user start asha-supervisor`.
+
 ## Unreleased — subtraction B0: hazards and sandbox holes (session 2.4.0)
 
 - Hooks no longer execute files inside the project tree, which a sandboxed

@@ -378,7 +378,9 @@ that deliberately detach into another group remain outside this cleanup contract
 
 Session owners survive scheduling-supervisor process restarts. Generated systemd
 units use `KillMode=process` for that reason; existing installations need the usual
-`supervisor install` update to acquire this setting. Operator runtime commands
+`supervisor install` update to acquire this setting. Because systemd then signals
+only the unit's main process, `asha control supervisor run` replaces the launcher
+shell with the supervisor instead of forking it. Operator runtime commands
 persist separately from the supervisor process:
 
 | Command | Effect |
