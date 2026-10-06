@@ -79,8 +79,8 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(self.supported({'TERM': 'xterm', 'ASHA_CONTROL_TITLE': '0'}))
 
     def test_title_text(self):
-        self.assertEqual(session_title.title_text({'input': 0, 'approval': 0}), 'asha control')
-        self.assertEqual(session_title.title_text({'input': 1, 'approval': 1}), '2 awaiting input · asha control')
+        self.assertEqual(session_title.title_text({'input': 0}), 'asha control')
+        self.assertEqual(session_title.title_text({'input': 2}), '2 awaiting input · asha control')
 
 
 class WriterTests(unittest.TestCase):

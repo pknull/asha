@@ -68,8 +68,8 @@ class AttentionTests(unittest.TestCase):
         ordered = [r['session_id'] for r in order(rows)]
         self.assertEqual(ordered, ['a', 'f', 'e'])
 
-    def test_approval_and_waiting_input_count_as_attention(self):
-        for changes in ({'activity': 'permission-requested'}, {'activity': 'waiting-input'}):
+    def test_native_and_structured_input_count_as_attention(self):
+        for changes in ({'activity': 'needs-input'}, {'activity': 'waiting-input'}):
             with self.subTest(changes=changes):
                 rows = [row('a'), row('b', **changes)]
                 self.assertEqual([r['session_id'] for r in order(rows)], ['b', 'a'])

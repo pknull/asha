@@ -97,7 +97,7 @@ class SessionColourTests(unittest.TestCase):
     def test_status_palette_covers_native_and_structured_states(self):
         expected = {'working': MACHINE, 'running': MACHINE, 'queued': MACHINE,
                     'needs-input': WAITING, 'waiting-input': WAITING,
-                    'finished': GOOD, 'failed': BAD, 'blocked': BAD,
+                    'finished': GOOD, 'failed': BAD,
                     'uncertain': BAD, 'budget-exhausted': BAD,
                     'idle': INERT, 'closed': INERT, 'unknown': INERT,
                     'future-state': INERT}

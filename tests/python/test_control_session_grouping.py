@@ -82,10 +82,11 @@ class StateSectionTests(unittest.TestCase):
 
     CASES = [
         (dict(activity='needs-input'), 'state:needs'),
-        (dict(activity='permission-requested'), 'state:needs'),
+        (dict(activity='waiting-input', transport='structured'), 'state:needs'),
         (dict(activity='working'), 'state:working'),
         (dict(activity='queued'), 'state:working'),
-        (dict(activity='unknown', telemetry='hooks-not-reporting'), 'state:working'),
+        (dict(activity='starting', observed='launched'), 'state:working'),
+        (dict(activity='unknown', observed='launched'), 'state:working'),
         (dict(activity='closing', lifecycle='closing'), 'state:closing'),
         (dict(activity='finished'), 'state:ready'),
         (dict(activity='idle', profile='room'), 'state:idle'),
@@ -341,7 +342,7 @@ class QA15AutoFoldTests(unittest.TestCase):
 class AttentionJumpTests(unittest.TestCase):
     def test_jump_cycles_attention_rows_in_display_order(self):
         rows = [row('a'), row('b', activity='needs-input'), row('c', project='zeta'),
-                row('d', project='zeta', activity='permission-requested')]
+                row('d', project='zeta', activity='needs-input')]
         model = model_of(rows)
         self.assertEqual(model.selected_id, 'b')
         model = session_view.jump_attention(model)
@@ -361,10 +362,10 @@ class AttentionJumpTests(unittest.TestCase):
         model = model_of([row('a')])
         self.assertIs(session_view.jump_attention(model), model)
 
-    def test_attention_counts_split_input_and_approval(self):
-        rows = [row('a', activity='needs-input'), row('b', activity='permission-requested'),
+    def test_attention_counts_native_and_structured_input(self):
+        rows = [row('a', activity='needs-input'), row('b', activity='needs-input'),
                 row('c', activity='waiting-input', transport='structured'), row('d')]
-        self.assertEqual(session_view.attention_counts(model_of(rows)), {'input': 2, 'approval': 1})
+        self.assertEqual(session_view.attention_counts(model_of(rows)), {'input': 3})
 
 
 class RowFactTests(unittest.TestCase):

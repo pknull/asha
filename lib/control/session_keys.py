@@ -3,7 +3,7 @@ from .session_hub import attach_refusal
 
 # Footer keys by priority; lower-priority keys drop first on a narrow terminal.
 TAIL = '? keys  q quit'
-_ANSWERABLE = frozenset({'needs-input', 'permission-requested', 'waiting-input'})
+_ANSWERABLE = frozenset({'needs-input', 'waiting-input'})
 
 
 def attachable(row):

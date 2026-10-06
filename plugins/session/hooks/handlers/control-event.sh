@@ -7,9 +7,9 @@
 #
 # The hub path is deliberately the thinner of the two: session identity and
 # generation are inherited environment. Event name, the hook's start time,
-# optional native session ID and the native cwd are forwarded,
-# plus a clipped one-line request summary on PermissionRequest; no other body
-# is retained. The
+# optional native session ID and the native cwd are forwarded, plus a clipped
+# one-line request summary on PermissionRequest and the payload source on
+# SessionStart; no other body is retained. The
 # bridge is bounded (under a second on keystroke-facing events, a few seconds
 # at the session-start, Stop and session-end lifecycle boundaries), and the
 # answer is a harmless empty object — with one named exception. On Stop only, a pending graceful close request is
@@ -66,8 +66,8 @@ HUB_CONTROLLER_SECONDS=0.6
 # call is slower than the keystroke budget (#110: p50 0.5 s at 2x CPU
 # oversubscription, p99 1.6 s with 16 concurrent writers; interpreter start and
 # imports dominate). They get a larger, still bounded, budget, which stays
-# under Copilot's 5 s per-hook timeout. A Stop killed here is delivered late by
-# the loss call below, and its close request is re-emitted at the next Stop.
+# under Copilot's 5 s per-hook timeout. A Stop killed here is only counted as
+# lost; its close request is re-emitted at the next Stop.
 HUB_LIFECYCLE_SECONDS=3
 case "$CONTROL_EVENT" in
   session-start|turn-stopped|session-ended) HUB_CONTROLLER_SECONDS="$HUB_LIFECYCLE_SECONDS" ;;
@@ -106,19 +106,24 @@ INPUT_TRUNCATED=""
 [[ "$(printf '%s' "$INPUT" | wc -c)" -lt "$HUB_READ_CHARS" ]] || INPUT_TRUNCATED=1
 SESSION_ID=""
 HOOK_CWD=""
+HOOK_SOURCE=""
 EXIT_STATUS=""
 STOP_HOOK_ACTIVE=""
 if command -v jq >/dev/null 2>&1 && [[ -n "$INPUT" ]]; then
-  # One jq, two lines: the native session ID, then the native thread's own
-  # cwd (#100). Hook identity is inherited environment, which a shared harness
-  # process can carry from another session, so the hub refuses a different
-  # conversation reporting from outside the session's project. A value holding
-  # a newline is dropped rather than split.
-  { IFS= read -r SESSION_ID; IFS= read -r HOOK_CWD; } < <(printf '%s' "$INPUT" | jq -r '
+  # One jq, three lines: the native session ID, the native thread's own cwd
+  # (#100) and the payload source. Hook identity is inherited environment,
+  # which a shared harness process can carry from another session, so the hub
+  # refuses a different conversation reporting from outside the session's
+  # project. A value holding a newline is dropped rather than split.
+  { IFS= read -r SESSION_ID; IFS= read -r HOOK_CWD; IFS= read -r HOOK_SOURCE; } < <(printf '%s' "$INPUT" | jq -r '
     def line: if type == "string" and (contains("\n") | not) then . else "" end;
     ((.session_id // .sessionId // .sessionID // "") | line),
-    ((.cwd // "") | line | select(startswith("/")) // "")' 2>/dev/null || true)
+    ((.cwd // "") | line | select(startswith("/")) // ""),
+    ((.source // "") | line)' 2>/dev/null || true)
   [[ -n "$HUB_SESSION" && ${#HOOK_CWD} -le 4096 ]] || HOOK_CWD=""
+  # Only a SessionStart's source matters: /clear (source "clear") may rebind the
+  # hub session to its new conversation, a nested `claude -p` ("startup") may not (F6).
+  [[ -n "$HUB_SESSION" && "$CONTROL_EVENT" == "session-start" && "$HOOK_SOURCE" =~ ^[a-z]{1,16}$ ]] || HOOK_SOURCE=""
 fi
 # A PermissionRequest names what it asks for; Control shows that summary as the
 # session's question (answering stays in the terminal: #100 scope, #101). One
@@ -191,6 +196,7 @@ if [[ -n "$HUB_SESSION" ]]; then
     [[ ! "$EMITTED_AT" =~ ^[0-9]{1,12}\.[0-9]{1,9}$ ]] || HUB_ARGS+=(--emitted-at "$EMITTED_AT")
     [[ -z "$SESSION_ID" ]] || HUB_ARGS+=(--native-id "$SESSION_ID")
     [[ -z "$HOOK_CWD" ]] || HUB_ARGS+=(--cwd "$HOOK_CWD")
+    [[ -z "$HOOK_SOURCE" ]] || HUB_ARGS+=(--source "$HOOK_SOURCE")
     [[ -z "$PERMISSION_TEXT" ]] || HUB_ARGS+=(--text "$PERMISSION_TEXT")
     [[ -z "$STOP_HOOK_ACTIVE" ]] || HUB_ARGS+=(--stop-hook-active)
     [[ -z "$BACKGROUND_TASKS" ]] || HUB_ARGS+=(--background-tasks "$BACKGROUND_TASKS")
@@ -201,16 +207,14 @@ if [[ -n "$HUB_SESSION" ]]; then
     )" || HUB_RC=$?
     # A timed-out call is a lost report (cheap loss metric, beside the
     # rejection log). It is recorded by a separate, bounded call that is
-    # fully detached, so the hook still returns within its own budget. For a
-    # Stop the same call delivers the turn end late (#110), so it carries the
-    # background task count, and its bound outlasts the load that caused the
-    # timeout (one live record landed 5 s after a 3 s Stop budget).
+    # fully detached, so the hook still returns within its own budget, and its
+    # bound outlasts the load that caused the timeout (one live record landed
+    # 5 s after a 3 s Stop budget). A lost report is never delivered late.
     if [[ $HUB_RC -eq 124 || $HUB_RC -eq 137 ]]; then
       LOST_ARGS=(control session event-lost --event "$CONTROL_EVENT" --reason bridge-timeout
                  --budget "$HUB_CONTROLLER_SECONDS")
       [[ ! "$EMITTED_AT" =~ ^[0-9]{1,12}\.[0-9]{1,9}$ ]] || LOST_ARGS+=(--emitted-at "$EMITTED_AT")
       [[ -z "$SESSION_ID" ]] || LOST_ARGS+=(--native-id "$SESSION_ID")
-      [[ -z "$BACKGROUND_TASKS" ]] || LOST_ARGS+=(--background-tasks "$BACKGROUND_TASKS")
       DETACH=()
       ! command -v setsid >/dev/null 2>&1 || DETACH=(setsid)
       ( "${DETACH[@]}" timeout --signal=TERM --kill-after=0.5 20 "$ASHA_CMD" "${LOST_ARGS[@]}" \

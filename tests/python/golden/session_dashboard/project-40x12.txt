@@ -1,7 +1,7 @@
 ASHA CONTROL · Sessions       by project
-7 current; 1 ended; 1 need input
+7 current; 1 ended; 2 need input
 ▼ asha                                 5
-> ◆ lint-sweep     Answer in termi…   1m
+> ▲ lint-sweep     Answer in termi…   1m
   ▲ docs-room      Answer in Contr…   3m
   ● issue-102      Working            4s
   ✓ close-audit    Finished, saved…   9m

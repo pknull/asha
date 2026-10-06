@@ -43,14 +43,6 @@ BACKGROUND_TASK_LIMIT = 10000
 BACKGROUND_WAIT_SECONDS = 4 * 3600
 
 
-def _ownership_unavailable(detail):
-    """The refusal names why ownership is unknown, and how to rerun when tmux refused the caller."""
-    message = f'session ownership unavailable: {detail}'
-    if any(marker in detail.casefold() for marker in TMUX_CONNECT_FAILURES):
-        message += '; ' + SANDBOX_HINT
-    return StoreError(message)
-
-
 def waiting_on_background(row):
     """The last native Stop listed background work, and it is not too old to trust."""
     stamp = row.get('native_observed_at')
@@ -65,18 +57,21 @@ CLOSE_POLL_SECONDS = 0.5
 # A hook report stamped this much older than the newest applied one is skipped
 # (D2); anything older still applies, bounding a backward clock step.
 STALE_REPORT_SECONDS = 30
-# A sandboxed shell cannot reach the tmux socket or see host PIDs, so the
-# ownership proof fails there (#112). Codex runs a plain asha command that its
-# rules allow outside the sandbox; a chained or expanded one stays inside.
-SANDBOX_HINT = 'inside the Codex sandbox run this asha command on its own with literal arguments'
-TMUX_CONNECT_FAILURES = ('error connecting to', 'failed to connect to server')
-# A live terminal session with no native hook event this long after launch is
-# labelled "hooks not reporting" instead of plain unknown (#100): SessionStart
-# fires within seconds of a healthy launch.
+# A live terminal session is observed ``launched`` until its first native hook
+# event. Past this many seconds a hook harness reads "hooks not reporting"
+# (#100): SessionStart fires within seconds of a healthy launch.
 HOOK_SILENCE_SECONDS = 90
 # Only these harnesses have a native hook bridge into the hub; Copilot and
 # OpenCode sessions report explicitly and are never "hooks not reporting".
 HOOK_REPORTING_HARNESSES = frozenset({'claude', 'codex'})
+# A SessionStart whose payload names one of these sources starts a new native
+# conversation in the pane (Claude and Codex /clear), so it may take over the
+# generation's binding (F6). A nested `claude -p` starts as ``startup``.
+REBIND_SOURCES = frozenset({'clear'})
+# What the hook bridge observed, in the observed axis's words.
+OBSERVED = {'working': 'working', 'idle': 'waiting', 'needs-input': 'waiting', 'exited': 'ended'}
+# Explicit report states; working withdraws a standing report.
+REPORT_STATES = frozenset({'needs-input', 'finished', 'working'})
 # Rejected hook events are kept, not discarded, in a small local diagnostic.
 REJECTION_LOG_NAME = 'hub-rejected-events.jsonl'
 REJECTION_LOG_BYTES = 64 * 1024
@@ -85,6 +80,93 @@ REJECTION_LOG_BYTES = 64 * 1024
 # as the rejection log; a cheap loss metric, not an ordering mechanism.
 LOSS_LOG_NAME = 'hub-lost-events.jsonl'
 LOSS_REASONS = frozenset({'stale-skip', 'bridge-timeout'})
+
+
+def report_of(row):
+    """The report axis: None, or ``{state, text, at}`` with state needs-input or finished.
+
+    Only explicit reports and structured completion write it. Rows stored
+    before the two-axis model (subtraction B2) carry a current finished report
+    as ``completion_report`` instead; it reads as one until the row is next written.
+    """
+    if 'report' in row:
+        return row['report']
+    legacy = row.get('completion_report') or {}
+    if legacy.get('generation') == row.get('generation') and legacy.get('assignment_epoch') == row.get('assignment_epoch'):
+        return {'state': 'finished', 'text': row.get('result'), 'at': legacy.get('reported_at') or 0}
+    return None
+
+
+def settled(row):
+    """D7: a finished report whose turn has ended.
+
+    A structured report is made at the managed turn boundary. A terminal report
+    needs a waiting observation emitted after it: a turn-ending Stop (#109)
+    that lists no background work (#99), stamped later than the report. A Stop
+    emitted before the report, however late it applies, any later hook event
+    (#114) and a harness without a turn-end event (Copilot) leave it unsettled.
+    """
+    report = report_of(row) or {}
+    if report.get('state') != 'finished':
+        return False
+    if row.get('transport') == 'structured':
+        return True
+    # Rows stored before subtraction B2 stamped the turn end on the report.
+    since = row['waiting_since'] if 'waiting_since' in row else (row.get('completion_report') or {}).get('turn_ended_at')
+    return since is not None and since > report['at']
+
+
+def _observed(row, now):
+    """(observed, activity, reason) for a live pane, from hook evidence alone.
+
+    ``launched`` holds until the first native event. A working observation
+    with nothing newer for five minutes reads unknown, unless its Stop listed
+    background work (#99). Worker reports never change this axis.
+    """
+    stamp = row.get('native_observed_at')
+    if not stamp:
+        silent = now - (row.get('launched_at') or now)
+        if silent <= HOOK_SILENCE_SECONDS:
+            return 'launched', 'starting', row.get('reason')
+        if row['harness'] not in HOOK_REPORTING_HARNESSES:
+            # Copilot and OpenCode report explicitly; no native event is expected.
+            return 'unknown', 'unknown', row.get('reason')
+        return 'launched', 'unknown', (f'Hooks not reporting: no native event in the {int(silent // 60)} min since '
+                                       'launch; attach to check the terminal, then run asha doctor')
+    native = row.get('native_activity')
+    if native == 'working' and now - stamp > closure.STALE_OBSERVATION_SECONDS and not waiting_on_background(row):
+        return 'unknown', 'unknown', 'No recent observation; the harness may still be working'
+    observed = OBSERVED.get(native, 'unknown')
+    return observed, native if observed != 'unknown' else 'unknown', row.get('reason')
+
+
+def _present_axes(row):
+    """Overlay the report axis on the observed one: the shown activity, question and reason.
+
+    A report reads as it lands. A question (a needs-input report, or a native
+    permission request with its summary) needs the operator. A finished report
+    reads working while the observed turn still runs, else finished. Once the
+    process has ended only a finished report still counts.
+    """
+    report = report_of(row) or {}
+    state = report.get('state')
+    row['question'] = None
+    if row['lifecycle'] in {'closed', 'stopped'} or row['process_state'] == 'ended':
+        if state == 'finished':
+            row['reported_activity'] = 'finished'
+            if row['activity'] == 'exited':
+                row['activity'] = 'finished'
+        return
+    asking = row['observed'] == 'waiting' and row.get('native_activity') == 'needs-input'
+    if asking or state == 'needs-input':
+        row['question'] = (row.get('asks') if asking else None) or report.get('text')
+        row.update(activity='needs-input', reason=row['question'] or row.get('reason') or 'Input requested')
+    elif state == 'finished':
+        row['reason'] = report.get('text') or 'Reported finished'
+        if row['observed'] == 'working' or (row['observed'] == 'waiting' and not settled(row)):
+            row.update(activity='working', reported_activity='finished')
+        else:
+            row['activity'] = 'finished'
 
 
 class LockTimeout(StoreError):
@@ -121,27 +203,37 @@ def _outside_project(row, cwd):
     return os.path.commonpath([project, os.path.realpath(cwd)]) != project
 
 
-def native_binding(row, event, native_id, cwd):
+def native_binding(row, event, native_id, cwd, source=None):
     """The generation's bound native conversation after this hook event (#100).
 
     Hook identity is inherited environment, which a shared harness process (or
     any other conversation under the same pane) can carry. The first native
     conversation of a generation binds it; resume is a new generation and binds
-    afresh. Ordinary events from a different conversation are refused whatever
-    their cwd. Only SessionStart (/clear, /new) rebinds, and only from inside the
-    project. The bound conversation may report from anywhere, because Claude's
-    hook cwd follows Bash ``cd`` and EnterWorktree. Returns the new binding, or
-    None when nothing changes.
+    afresh. Events from a different conversation are refused whatever their
+    cwd. Only a SessionStart rebinds (F6): one whose payload source says /clear,
+    or any once the bound conversation has ended. A nested `claude -p` in the
+    pane starts as ``startup`` and never takes the binding. A rebinding comes
+    from inside the project; the bound conversation may report from anywhere,
+    because Claude's hook cwd follows Bash ``cd`` and EnterWorktree. Returns the
+    new binding, or None when nothing changes.
     """
     binding = row.get('native_binding') or {}
     bound = binding.get('native_id') if binding.get('generation') == row['generation'] else None
     if not native_id or native_id == bound:
         return None
-    if bound is not None and event != 'session-start':
+    if bound is not None and not (event == 'session-start'
+                                  and (source in REBIND_SOURCES or binding.get('ended'))):
         raise StoreError('hook event names another native conversation than this session bound')
     if _outside_project(row, cwd):
         raise StoreError("hook cwd is outside this session's project and names another conversation")
     return dict(generation=row['generation'], native_id=native_id)
+
+
+def _native_id(value):
+    value = text(value, 'native session ID', 512)
+    if value.startswith('-') or not value.isprintable():
+        raise StoreError('invalid native session ID')
+    return value
 
 
 def loss_log_path(config):
@@ -356,9 +448,9 @@ class Hub:
                 raise StoreError('session ID belongs to an existing managed conversation')
             row = dict(session_id=sid, room_id=str(uuid.uuid4()), room_history=[], generation=1,
                        project_name=selected['name'], project_id=selected['project_id'],
-                       lifecycle='starting', activity='unknown',
-                       native_id=None, observed_at=None, reason='Awaiting native observation',
-                       result=None, question=None, created_at=time.time(), spec=spec, **spec)
+                       lifecycle='starting', report=None, prompt_since_report=False,
+                       native_id=None, reason='Awaiting native observation',
+                       result=None, created_at=time.time(), spec=spec, **spec)
             self._save(c, row)
         with self._action_lock(sid):
             current = self.get(sid)
@@ -440,7 +532,7 @@ class Hub:
         self._update(sid, runtime_warning=warning)
         return {'admission': mode, 'dispatch_warning': warning}
 
-    def _update(self, sid, *, expected_generation=None, closure_fn=None, validate_fn=None, **changes):
+    def _update(self, sid, *, expected_generation=None, closure_fn=None, **changes):
         """Merge changes into the freshly read row inside one write transaction.
 
         ``closure_fn(record, row)`` computes the closure record against the
@@ -454,8 +546,6 @@ class Hub:
             row = json.loads(found[0])
             if expected_generation is not None and (row['generation'] != expected_generation or row['lifecycle'] not in ACTIVE_LIFECYCLES):
                 raise StoreError('stale or inactive session reporter')
-            if validate_fn is not None:
-                validate_fn(c, row)
             row.update(changes)
             if closure_fn is not None:
                 row['closure'] = closure_fn(row.get('closure'), row)
@@ -522,31 +612,21 @@ class Hub:
             self._present_session(row, refresh_usage=refresh_usage, native_ids=native_ids)
             return row
         if row['lifecycle'] in {'closed', 'stopped'}:
-            row['activity'] = row['lifecycle']
-            row['process_state'] = 'ended'
+            row.update(process_state='ended', observed='ended', activity=row['lifecycle'])
         else:
             row['process_state'] = 'unknown'
             try:
                 room = RoomStore(self.config).read(row['room_id'])
                 state, detail = _owned_state(room, self.tmux)
                 row['process_state'] = 'ended' if state in {'missing', 'ended'} else 'live' if state == 'open' else 'unknown'
-                if state in {'missing', 'ended'}:
-                    row['activity'] = 'finished' if row['activity'] == 'finished' else 'exited'
-                    row['reason'] = detail
-                elif state != 'open':
-                    row.update(activity='unknown', reason=detail)
-                elif row['observed_at'] and time.time() - row['observed_at'] > closure.STALE_OBSERVATION_SECONDS and row['activity'] == 'working' and not waiting_on_background(row):
-                    row.update(activity='unknown', reason='No recent observation; the harness may still be working')
-                if (state == 'open' and row['harness'] in HOOK_REPORTING_HARNESSES and not row.get('native_observed_at')
-                        and row.get('launched_at') and time.time() - row['launched_at'] > HOOK_SILENCE_SECONDS):
-                    # Worker reports are not hook evidence; without a single
-                    # native event the dashboard cannot see turns or prompts.
-                    row['telemetry'] = 'hooks-not-reporting'
-                    if row['activity'] == 'unknown':
-                        row['reason'] = (f'Hooks not reporting: no native event {HOOK_SILENCE_SECONDS}s after launch; '
-                                         'attach to check the terminal, then run asha doctor')
+                if state == 'open':
+                    row['observed'], row['activity'], row['reason'] = _observed(row, time.time())
+                else:
+                    row.update(observed='ended' if state in {'missing', 'ended'} else 'unknown',
+                               activity='exited' if state in {'missing', 'ended'} else 'unknown', reason=detail)
             except (ValueError, OSError) as exc:
-                row.update(activity='unknown', reason=str(exc)[:1000])
+                row.update(observed='unknown', activity='unknown', reason=str(exc)[:1000])
+        _present_axes(row)
         with self.database() as db, db.transaction() as c:
             row['pending_messages'] = c.execute("SELECT COUNT(*) FROM hub_messages WHERE session_id=? AND state='queued'", (sid,)).fetchone()[0]
         row['capabilities'] = {'attach': 'native-terminal', 'send': 'queued-until-read',
@@ -826,20 +906,12 @@ class Hub:
                 pass
 
     def _finished_and_saved(self, row):
-        """D7: a current finished report and a save for the current assignment, in either order.
+        """D7: a finished report whose turn has ended and a save for the current assignment, in either order.
 
-        A report stays current until new work: a message read as a new
-        assignment, a working report, or a prompt whose turn makes a report
-        (#114: a prompt alone only unsettles it). Tool calls (the save's own) do
-        not end it. A structured report is current while its row says finished.
+        Until a waiting observation emitted after the report shows the
+        reporting turn ended, closing now could kill it (#109, #114).
         """
-        report = row.get('completion_report') or {}
-        current = (report.get('generation') == row['generation']
-                   and report.get('assignment_epoch') == row.get('assignment_epoch'))
-        if not current and not (row['transport'] == 'structured' and row.get('activity') == 'finished'):
-            return False
-        if current and not closure.report_settled(row):
-            # #109: the reporting turn is still running; closing now would kill it.
+        if not settled(row):
             return False
         from .session_publication import saved_for_assignment
         return saved_for_assignment(self, row)
@@ -932,28 +1004,30 @@ class Hub:
         record['capture'] = Experiences(self).close_capture(row, record['request_id'])
         return record
 
-    def _adopt_later_turn(self, row):
-        """#114: a report in a later turn makes the prompt that started it a new assignment.
+    def _adopt_prompt(self, row):
+        """#114: a report after a native prompt makes that prompt a new assignment.
 
-        Only while the assignment that turn would replace is still current; a
-        Control assignment or resume in between keeps its own. Either way the
-        later turn is spent.
+        A prompt after a finished report only marks ``prompt_since_report``: a
+        wake turn that reports nothing leaves the report and its save current.
+        A Control send or resume clears the report and the mark, so their own
+        assignment stands.
         """
-        if not row.get('later_turn'):
+        if not row.get('prompt_since_report'):
             return row
         with self._observation_lock(row['session_id']):
             current = self.get(row['session_id'])
-            later = current.get('later_turn')
-            if not later:
+            if not current.get('prompt_since_report'):
                 return current
-            changes = dict(later_turn=None)
-            if later.get('replaces') == current.get('assignment_epoch'):
-                changes['assignment_epoch'] = later['epoch']
+            changes = dict(prompt_since_report=False)
+            if (report_of(current) or {}).get('state') == 'finished':
+                changes['assignment_epoch'] = str(uuid.uuid4())
             return self._update(current['session_id'], expected_generation=row['generation'], **changes)
 
     def report(self, *, state, body=None, native_id=None, experience_file=None,
                experience_ref=None, key=None, supersedes=None):
         """Optional completion assessment; capture failures never erase task status."""
+        if state not in REPORT_STATES:
+            raise StoreError('report state must be needs-input, finished or working')
         actor = self.structured_actor()[0] if self.env.get('ASHA_MANAGED_SESSION_ID') else self.actor()
         if (experience_file or experience_ref or supersedes) and state != 'finished':
             raise StoreError('experience requires an explicit finished report')
@@ -964,7 +1038,7 @@ class Hub:
             row = self.get(actor['session_id'])
             if row['generation'] != actor['generation'] or row['lifecycle'] not in ACTIVE_LIFECYCLES:
                 raise StoreError('stale or inactive session reporter')
-            row = self._adopt_later_turn(row)
+            row = self._adopt_prompt(row)
             # Finished is ungated (D3): the row shows whether this generation saved.
             experiences = Experiences(self)
             capture = None
@@ -989,15 +1063,7 @@ class Hub:
                     request = dict(request, status='answered')
             # Issued-key attachments amend capture, never the original task result.
             reported_body = None if followup else body
-            if row['transport'] == 'structured':
-                result = self._update(row['session_id'], expected_generation=row['generation'],
-                                      result=text(reported_body, 'report', 16000), activity=state)
-            elif state == 'finished':
-                with self._observation_lock(row['session_id']):
-                    result = self._observe(self.get(row['session_id']), None, state=state, body=reported_body,
-                                           native_id=native_id)
-            else:
-                result = self.observe(None, state=state, body=reported_body, native_id=native_id)
+            result = self._report(row, state, reported_body, native_id=native_id)
             if capture is not None:
                 changes = {'capture': capture}
                 if request:
@@ -1095,6 +1161,7 @@ class Hub:
             if not self._has_structured_record(sid):
                 row = self._update(sid, lifecycle='starting', generation=row['generation'] + 1,
                                    learning_ids=learning_ids, capture={}, closure=None,
+                                   report=None, prompt_since_report=False,
                                    closure_history=row.get('closure_history', []) +
                                    ([row['closure']] if row.get('closure') else []))
                 return self._start(row, row['prompt'] + '\nContinuation:\n' + prompt)
@@ -1108,7 +1175,7 @@ class Hub:
             def retained(c, message):
                 current = json.loads(c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (sid,)).fetchone()[0])
                 current.update(generation=next_row['generation'], lifecycle='open', closure=None, capture={},
-                               current_assignment=prompt,
+                               current_assignment=prompt, report=None, prompt_since_report=False,
                                closure_history=current.get('closure_history', []) + ([current['closure']] if current.get('closure') else []))
                 self._save(c, current)
                 guidance.carry_queued_in(c, current, row['generation'])
@@ -1133,9 +1200,10 @@ class Hub:
         row = self._update(sid, lifecycle='starting', room_id=str(uuid.uuid4()),
                            room_history=row.get('room_history', []) + [row['room_id']],
                            closure=None, closure_history=row.get('closure_history', []) + ([row['closure']] if row.get('closure') else []),
-                           generation=row['generation'] + 1, activity='unknown', observed_at=None, learning_ids=learning_ids,
+                           generation=row['generation'] + 1, learning_ids=learning_ids,
+                           report=None, prompt_since_report=False, asks=None, waiting_since=None,
                            native_activity='unknown', native_observed_at=None, native_emitted_at=None, background_tasks=None,
-                           question=None, reason='Resuming native conversation' if row['native_id'] else 'Starting with explicit continuation context; native resume ID unavailable')
+                           reason='Resuming native conversation' if row['native_id'] else 'Starting with explicit continuation context; native resume ID unavailable')
         return self._start(row, text(prompt, 'continuation'))
 
     def send(self, sid, body, *, key, learning_ids=None):
@@ -1166,9 +1234,11 @@ class Hub:
                 manifest = guidance.planned(manifest, body, block)
             if row['transport'] == 'structured':
                 from .session_store import SessionStore
+                def retained(c, message):
+                    guidance.retain_in(c, row, key, manifest)
+                    self._withdraw_report(c, sid)
                 with SessionStore(self.config) as sessions:
-                    message = sessions.enqueue(sid, text(body + block, 'guided input'), key=key,
-                        on_retained=lambda c, message: guidance.retain_in(c, row, key, manifest))
+                    message = sessions.enqueue(sid, text(body + block, 'guided input'), key=key, on_retained=retained)
                 return {**message, **self._wake_structured(sid)}
             with mutation_guard(self.config), self.database() as db, db.transaction(write=True) as c:
                 old = c.execute('SELECT * FROM hub_messages WHERE session_id=? AND delivery_key=?', (sid, key)).fetchone()
@@ -1181,14 +1251,20 @@ class Hub:
                 mid = str(uuid.uuid4())
                 c.execute('INSERT INTO hub_messages VALUES(?,?,?,?,?,?,?)',
                           (mid, sid, key, body, digest(body), 'queued', time.time()))
-                current = json.loads(c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (sid,)).fetchone()[0])
-                current['assignment_epoch'] = str(uuid.uuid4())
-                self._save(c, current)
+                self._withdraw_report(c, sid, new_assignment=True)
                 guidance.retain_in(c, row, key, manifest)
                 message = dict(c.execute('SELECT * FROM hub_messages WHERE message_id=?', (mid,)).fetchone())
             # The retained message is the delivery contract; the session reads it.
             return dict(message, delivery='queued-until-read',
                         delivery_detail='queued until the session reads messages')
+
+    def _withdraw_report(self, c, sid, *, new_assignment=False):
+        """A Control send is new work: the standing report and any prompt mark go with it."""
+        current = json.loads(c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (sid,)).fetchone()[0])
+        current.update(report=None, prompt_since_report=False)
+        if new_assignment:
+            current['assignment_epoch'] = str(uuid.uuid4())
+        self._save(c, current)
 
     def messages(self, sid, *, offset=0, limit=100):
         identifier(sid)
@@ -1219,66 +1295,32 @@ class Hub:
                     delivery='Reading does not acknowledge; use ack-message after processing')
 
     def actor(self):
-        from .harness import caller_descends_from
-        sid = self.env.get('ASHA_HUB_SESSION_ID', '')
-        row = self.get(identifier(sid))
+        """The reporting session, from the environment only (hub decision, subtraction B2).
+
+        No session argument selects it and no Room marker or process ancestry
+        proves it; the generation and lifecycle fences stop stale actors.
+        """
+        row = self.get(identifier(self.env.get('ASHA_HUB_SESSION_ID', '')))
         if str(row['generation']) != self.env.get('ASHA_HUB_GENERATION') or row['lifecycle'] not in ACTIVE_LIFECYCLES:
             raise StoreError('stale or inactive session reporter')
-        record = RoomStore(self.config).read(row['room_id'])
-        state, detail = _owned_state(record, self.tmux)
-        if state != 'open':
-            raise _ownership_unavailable(detail)
-        facts = self.tmux.pane_facts(record['tmux']['pane_id'])
-        if not facts.pane_pid or not caller_descends_from(facts.pane_pid, require_complete=True):
-            # A PID namespace hides the pane: the caller may be the session, sandboxed.
-            hidden = facts.pane_pid and not os.path.exists(f'/proc/{facts.pane_pid}')
-            raise StoreError('reporter is not part of this session' + ('; ' + SANDBOX_HINT if hidden else ''))
         return row
 
     def observe(self, event, *, native_id=None, state=None, body=None, cwd=None, background_tasks=None,
-                emitted_at=None):
-        if emitted_at is not None and not event:
-            raise StoreError('emitted-at is hook evidence; worker reports do not carry it')
+                emitted_at=None, source=None):
+        """A native hook event (the observed axis), or with no event a worker report (the report axis)."""
+        if not event:
+            if emitted_at is not None:
+                raise StoreError('emitted-at is hook evidence; worker reports do not carry it')
+            if cwd is not None or background_tasks is not None or source is not None:
+                raise StoreError('cwd, background tasks and source are hook evidence; worker reports do not carry them')
+            return self._report(self.actor(), state, body, native_id=native_id)
         actor = self.actor()
-        if cwd is not None and not event:
-            raise StoreError('cwd is hook evidence; worker reports do not carry it')
         with self._observation_lock(actor['session_id']):
             row = self.get(actor['session_id'])
             if row['generation'] != actor['generation'] or row['lifecycle'] not in ACTIVE_LIFECYCLES:
                 raise StoreError('stale or inactive session reporter')
-            return self._observe(row, event, native_id=native_id, state=state, body=body, cwd=cwd,
-                                 background_tasks=background_tasks, emitted_at=emitted_at)
-
-    def deliver_lost_stop(self, *, native_id, emitted_at, background_tasks=None):
-        """#110: apply a Stop the bridge gave up on, from its detached loss call.
-
-        A dropped turn-stopped would leave a #109 report unsettled indefinitely.
-        The loss call runs after the hook returned, outside the session's process
-        tree, so ``actor`` cannot vouch for it. It proves itself instead by the
-        native conversation this generation already bound (a different or
-        unbound conversation is refused, as is an unstamped report), and it
-        applies only when no newer hook report has been applied, at any age:
-        the 30 s clock-step allowance of D2 never lets a late Stop overwrite a
-        newer turn. No close decision rides back; the next Stop re-emits it.
-        """
-        if not native_id or type(emitted_at) not in {int, float}:
-            raise StoreError('a late Stop needs its native session ID and emission time')
-        sid = identifier(self.env.get('ASHA_HUB_SESSION_ID', ''))
-        with self._observation_lock(sid):
-            row = self.get(sid)
-            if str(row['generation']) != self.env.get('ASHA_HUB_GENERATION') or row['lifecycle'] not in ACTIVE_LIFECYCLES:
-                raise StoreError('stale or inactive session reporter')
-            binding = row.get('native_binding') or {}
-            if binding.get('generation') != row['generation'] or binding.get('native_id') != native_id:
-                raise StoreError('a late Stop must name the conversation this generation bound')
-            stored = row.get('native_emitted_at')
-            if stored is not None and stored > emitted_at:
-                raise StoreError('a newer hook report was applied after this Stop')
-            state, detail = _owned_state(RoomStore(self.config).read(row['room_id']), self.tmux)
-            if state != 'open':
-                raise _ownership_unavailable(detail)
-            return self._observe(row, 'turn-stopped', native_id=native_id, state=None, body=None,
-                                 background_tasks=background_tasks, emitted_at=emitted_at)
+            return self._observe(row, event, native_id=native_id, body=body, cwd=cwd,
+                                 background_tasks=background_tasks, emitted_at=emitted_at, source=source)
 
     @staticmethod
     def _skipped(row, emitted_at):
@@ -1291,101 +1333,100 @@ class Hub:
         stored = row.get('native_emitted_at')
         return emitted_at is not None and stored is not None and 0 < stored - emitted_at <= STALE_REPORT_SECONDS
 
-    def _observe(self, row, event, *, native_id, state, body, validate_fn=None, cwd=None, background_tasks=None,
-                 emitted_at=None):
-        activity = EVENTS.get(event) if event else state
-        if activity not in {'idle', 'working', 'needs-input', 'finished', 'exited'}:
+    def _observe(self, row, event, *, native_id, body=None, cwd=None, background_tasks=None, emitted_at=None,
+                 source=None):
+        """Apply one hook event to the observed axis; it never writes the report axis.
+
+        Only a native prompt touches the report: it clears a needs-input report
+        and starts a new assignment, or after a finished report only marks
+        ``prompt_since_report`` (#114).
+        """
+        activity = EVENTS.get(event)
+        if activity is None:
             raise StoreError('invalid session observation')
         if background_tasks is not None and (event != 'turn-stopped' or type(background_tasks) is not int
                                              or not 0 <= background_tasks < BACKGROUND_TASK_LIMIT):
             raise StoreError('invalid background task count')
         if emitted_at is not None and (type(emitted_at) not in {int, float} or not 0 < emitted_at < 1e12):
             raise StoreError('invalid hook emission time')
+        if source is not None and (event != 'session-start' or type(source) is not str
+                                   or not source.isascii() or not source.isalpha() or len(source) > 16):
+            raise StoreError('invalid session-start source')
         rebinding = None
         if native_id:
-            native_id = text(native_id, 'native session ID', 512)
-            if native_id.startswith('-') or not native_id.isprintable():
-                raise StoreError('invalid native session ID')
-            if event:
-                rebinding = native_binding(row, event, native_id, cwd)
-        if event and self._skipped(row, emitted_at):
+            native_id = _native_id(native_id)
+            rebinding = native_binding(row, event, native_id, cwd, source)
+        if self._skipped(row, emitted_at):
             # Every effect of an older report is suppressed: activity, background
             # tasks, question and lifecycle. The CLI gives a skipped Stop no decision.
             return dict(row, observation='ignored')
+        now = time.time()
         # #99: Claude's Stop payload lists background work (shells, Monitors,
         # agents) still running or pending. Such a turn ended, but the session
         # waits for that work to wake it: it is not an idle boundary.
         outstanding = background_tasks if event == 'turn-stopped' and background_tasks else None
         if outstanding:
             activity = 'working'
-        changes = dict(activity=activity, activity_source='hook' if event else 'report',
-                       observed_at=time.time(), reason=event or 'Reported by worker')
-        if event:
-            changes.update(native_activity=activity, native_observed_at=changes['observed_at'],
-                           background_tasks=outstanding)
-            if emitted_at is not None:
-                changes['native_emitted_at'] = emitted_at
-            if outstanding:
-                changes['reason'] = f'Turn ended; waiting on {outstanding} background task(s)'
-        report = row.get('completion_report')
-        if (event == 'prompt-submitted' and report and report.get('generation') == row['generation']
-                and report.get('assignment_epoch') == row.get('assignment_epoch')):
-            # #114: a turn after a finished report is not yet new work (Claude
-            # starts one when a background Monitor or task notification wakes
-            # it). The report stands, unsettled while the turn runs: a report in
-            # this turn makes it a new assignment (report), a clean turn end
-            # settles the standing report again.
-            changes.update(later_turn=dict(epoch=str(uuid.uuid4()), replaces=row.get('assignment_epoch')),
-                           completion_report={k: v for k, v in report.items() if k != 'turn_ended_at'},
-                           work_epoch=str(uuid.uuid4()))
-        else:
-            if event == 'prompt-submitted':
-                changes.update(assignment_epoch=str(uuid.uuid4()), later_turn=None)
-            if event == 'prompt-submitted' or (not event and state == 'working'):
-                changes['work_epoch'] = str(uuid.uuid4())
-                changes['completion_report'] = None
-        if not event:
-            # A worker report is fresher than the last Stop's background list.
-            changes['background_tasks'] = None
-        if not event and activity == 'finished':
-            changes['completion_report'] = dict(generation=row['generation'],
-                assignment_epoch=row.get('assignment_epoch'), reported_at=changes['observed_at'])
-        elif not event:
-            changes['completion_report'] = None
-        if report and event in {'turn-stopped', 'session-ended'} and not outstanding:
-            # #109: the reporting turn has ended; only now does the report read finished.
-            # #114: a later turn that made no report ends here and is spent.
-            changes.update(completion_report=dict(report, turn_ended_at=changes['observed_at']), later_turn=None)
-        if event == 'permission-requested':
-            changes['question'] = None
+        changes = dict(native_activity=activity, native_observed_at=now, background_tasks=outstanding,
+                       reason=f'Turn ended; waiting on {outstanding} background task(s)' if outstanding else event,
+                       # A turn-ending Stop is the waiting observation D7 compares with the report;
+                       # unstamped (older hooks) it counts from when it applied. Any other event clears it.
+                       waiting_since=(now if emitted_at is None else emitted_at)
+                       if event == 'turn-stopped' and not outstanding else None,
+                       # A native permission request names what it asks for (#101).
+                       asks=text(body, 'permission request', 16000) if event == 'permission-requested' and body else None)
+        if emitted_at is not None:
+            changes['native_emitted_at'] = emitted_at
+        if event == 'prompt-submitted':
+            if (report_of(row) or {}).get('state') == 'finished':
+                # #114: a wake turn (a background Monitor or task notification)
+                # is not yet new work; a report in it makes it one (report).
+                changes['prompt_since_report'] = True
+            else:
+                changes.update(report=None, prompt_since_report=False, assignment_epoch=str(uuid.uuid4()))
         if native_id:
+            binding = row.get('native_binding') or {}
             if rebinding:
                 changes['native_binding'] = rebinding
+            elif event == 'session-ended' and binding.get('generation') == row['generation']:
+                # The bound conversation ended; its successor's SessionStart may rebind (F6).
+                changes['native_binding'] = dict(binding, ended=True)
             changes['native_id'] = native_id
             changes['native_ids'] = session_usage.remember(row, native_id)
-        if body:
-            changes['reason'] = text(body, 'report', 16000)
-            if activity == 'finished':
-                changes['result'] = body
-            if activity == 'needs-input':
-                changes['question'] = body
-        if activity in {'working', 'idle', 'finished'}:
-            changes['question'] = None
-        # The report command itself fires a PostToolUse hook. Only new user
-        # input (or another explicit report) clears a retained result/question.
-        explicit_question = row['activity'] == 'needs-input' and (
-            row.get('activity_source') == 'report' or row.get('question'))
-        if event in {'tool-completed', 'turn-stopped', 'session-ended'} and (row['activity'] == 'finished' or explicit_question):
-            changes.update(activity=row['activity'], reason=row['reason'], question=row['question'],
-                           activity_source=row.get('activity_source', 'report'))
         if event == 'session-ended':
             from .session_experience import Experiences
             Experiences(self).reconcile_completion(row, observed_exit=True)
-        result = self._update(row['session_id'], expected_generation=row['generation'],
-                              validate_fn=validate_fn, **changes)
-        if event:
-            result['observation'] = 'applied'
+        result = self._update(row['session_id'], expected_generation=row['generation'], **changes)
+        result['observation'] = 'applied'
         return result
+
+    def _report(self, row, state, body, *, native_id=None):
+        """Apply one explicit report to the report axis; it never writes the observed axis.
+
+        needs-input and finished stand until a new report, a native prompt
+        (needs-input only), a Control send, a resume or a new generation;
+        working withdraws the standing report.
+        """
+        if state not in REPORT_STATES:
+            raise StoreError('report state must be needs-input, finished or working')
+        if row['transport'] == 'structured' or body is not None:
+            body = text(body, 'report', 16000)
+        with self._observation_lock(row['session_id']):
+            current = self.get(row['session_id'])
+            if current['generation'] != row['generation'] or current['lifecycle'] not in ACTIVE_LIFECYCLES:
+                raise StoreError('stale or inactive session reporter')
+            standing = report_of(current) or {}
+            if state == 'finished' and body is None and standing.get('state') == 'finished':
+                body = standing.get('text')   # an experience follow-up keeps the reported result
+            changes = dict(report=None if state == 'working' else dict(state=state, text=body, at=time.time()),
+                           prompt_since_report=False)
+            if state == 'finished' and body:
+                changes['result'] = body
+            if native_id:
+                native_id = _native_id(native_id)
+                changes['native_id'] = native_id
+                changes['native_ids'] = session_usage.remember(current, native_id)
+            return self._update(row['session_id'], expected_generation=row['generation'], **changes)
 
     def acknowledge(self, mid, *, delivery_digest=None):
         row = self.actor()

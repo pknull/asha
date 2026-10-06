@@ -26,7 +26,7 @@ class EmittedAtTests(ClosureFixture):
         result = self.hub.observe('turn-stopped', emitted_at=990.0, background_tasks=2)
         self.assertEqual(result['observation'], 'ignored')
         after = self.hub.get(self.sid)
-        self.assertEqual(after['activity'], 'working')
+        self.assertEqual(after['native_activity'], 'working')
         self.assertEqual(after['native_emitted_at'], 1000.0)
         self.assertIsNone(after.get('background_tasks'))
         self.assertEqual(after['updated_at'], before['updated_at'], 'a skipped report writes nothing')
@@ -34,7 +34,7 @@ class EmittedAtTests(ClosureFixture):
     def test_equal_and_newer_stamps_apply(self):
         self.hub.observe('prompt-submitted', emitted_at=1000.0)
         self.assertEqual(self.hub.observe('turn-stopped', emitted_at=1000.0)['observation'], 'applied')
-        self.assertEqual(self.hub.get(self.sid)['activity'], 'idle')
+        self.assertEqual(self.hub.get(self.sid)['native_activity'], 'idle')
         self.hub.observe('prompt-submitted', emitted_at=1001.5)
         self.assertEqual(self.hub.get(self.sid)['native_emitted_at'], 1001.5)
 
@@ -44,13 +44,13 @@ class EmittedAtTests(ClosureFixture):
         stepped = 1000.0 - STALE_REPORT_SECONDS - 0.5
         self.assertEqual(self.hub.observe('turn-stopped', emitted_at=stepped)['observation'], 'applied')
         current = self.hub.get(self.sid)
-        self.assertEqual(current['activity'], 'idle')
+        self.assertEqual(current['native_activity'], 'idle')
         self.assertEqual(current['native_emitted_at'], stepped)
 
     def test_an_unstamped_report_applies_unconditionally(self):
         self.hub.observe('prompt-submitted', emitted_at=1000.0)
         self.assertEqual(self.hub.observe('turn-stopped')['observation'], 'applied')
-        self.assertEqual(self.hub.get(self.sid)['activity'], 'idle')
+        self.assertEqual(self.hub.get(self.sid)['native_activity'], 'idle')
 
     def test_a_skipped_report_suppresses_question_and_lifecycle_effects(self):
         self.hub.observe('prompt-submitted', emitted_at=1000.0)
@@ -63,7 +63,7 @@ class EmittedAtTests(ClosureFixture):
     def test_explicit_reports_bypass_the_guard(self):
         self.hub.observe('prompt-submitted', emitted_at=1000.0)
         self.hub.observe(None, state='needs-input', body='Which branch?')
-        self.assertEqual(self.hub.get(self.sid)['activity'], 'needs-input')
+        self.assertEqual(self.hub.get(self.sid)['report']['state'], 'needs-input')
 
     def test_a_worker_report_cannot_carry_a_stamp(self):
         with self.assertRaisesRegex(Exception, 'hook evidence'):
@@ -91,7 +91,7 @@ class HookCompatibilityTests(ClosureFixture):
         code, out = self.event(sid, '--event', 'tool-started', '--tool-kind', 'finalizer', '--tool-token', 'x',
                                '--order', '7', '--attempts', '9', '--sequence', '3', '--sequence-pane', '%1')
         self.assertEqual((code, out), (0, '{}'))
-        self.assertEqual(self.hub.get(sid)['activity'], 'working')
+        self.assertEqual(self.hub.get(sid)['native_activity'], 'working')
 
     def test_a_skipped_stop_returns_no_close_decision(self):
         sid = self.launch()['session_id']

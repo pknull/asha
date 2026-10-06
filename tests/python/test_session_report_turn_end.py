@@ -1,11 +1,15 @@
-"""Issue #109: a completion report is finished only once its turn has stopped.
+"""Issue #109 on two axes: a report's turn has ended only at a later Stop.
 
 Controller fixtures, not native delivery proof. A worker reports finished as a
 tool call inside its last turn and may keep working after it (save, final
-test). Until the turn stops the row reads reported-but-working, is not ready
-to close, and a close asks instead of terminating at once. Harnesses with no
-turn-end event fall back to the five-minute staleness rule.
+test). The report axis reads finished when the report lands; the observed axis
+says whether the turn still runs. While it runs the row reads
+reported-but-working. A close terminates at once (D7) only when a waiting
+observation emitted after the report shows the turn ended; otherwise it asks
+and waits. Harnesses with no turn-end event therefore always ask.
 """
+import time
+
 from lib.control import session_view
 from tests.python.test_control_session_closure import FastClose
 
@@ -34,6 +38,7 @@ class ReportThenTurnEndTests(FastClose):
         self.assertNotEqual(session_view.state_section(shown), 'state:ready')
 
     def assert_finished(self, shown):
+        self.assertEqual(shown['report']['state'], 'finished')
         self.assertEqual(shown['activity'], 'finished', shown['next_step'])
         self.assertTrue(shown['next_step'].startswith('Finished, saved '), shown['next_step'])
         self.assertEqual(session_view.state_section(shown), 'state:ready')
@@ -64,6 +69,34 @@ class ReportThenTurnEndTests(FastClose):
         self.assert_finished(self.hub.show(sid))
         self.assertEqual(self.request(sid)['lifecycle'], 'closed')
 
+    def test_a_stop_emitted_before_the_report_never_settles_it(self):
+        # D7 happens-after: only a waiting observation emitted after the report
+        # ends the reporting turn. A slow bridge can apply an earlier
+        # boundary's Stop after the report; a close must not kill the turn.
+        sid = self.launch(harness='claude')['session_id']
+        earlier = time.time() - 5
+        with self.acting_as(sid):
+            self.hub.observe('prompt-submitted', emitted_at=earlier - 1)
+            self.hub.report(state='finished', body='Done')
+            self.hub.handoff(None, outcome='no-durable-update', detail='Nothing durable')
+            self.hub.observe('turn-stopped', emitted_at=earlier)
+        self.assertNotEqual(session_view.state_section(self.hub.show(sid)), 'state:ready')
+        with self.acting_as(sid):
+            self.hub.observe('turn-stopped', emitted_at=time.time())
+        self.assert_finished(self.hub.show(sid))
+        self.assertEqual(self.request(sid)['lifecycle'], 'closed')
+
+    def test_a_late_stop_does_not_close_the_reporting_turn(self):
+        sid = self.launch(harness='codex')['session_id']
+        earlier = time.time() - 5
+        with self.acting_as(sid):
+            self.hub.observe('prompt-submitted', emitted_at=earlier - 1)
+            self.hub.report(state='finished', body='Done')
+            self.hub.handoff(None, outcome='no-durable-update', detail='Nothing durable')
+            self.hub.observe('turn-stopped', emitted_at=earlier)
+        self.assertEqual(self.request(sid)['lifecycle'], 'closing', 'the Stop predates the report')
+        self.hub.close(sid, force=True)
+
     def test_background_stop_is_not_a_turn_end(self):
         sid = self.launch(harness='claude')['session_id']
         self.reported_mid_turn(sid)
@@ -74,31 +107,27 @@ class ReportThenTurnEndTests(FastClose):
         self.hub.close(sid, force=True)
 
     def quiet(self, sid, seconds=QUIET):
-        """Age every observation of the row by ``seconds``."""
+        """Age the row's last native observation by ``seconds``."""
         row = self.hub.get(sid)
-        report = dict(row['completion_report'], reported_at=row['completion_report']['reported_at'] - seconds)
-        changes = dict(completion_report=report, observed_at=row['observed_at'] - seconds)
-        if row.get('native_observed_at') is not None:
-            changes['native_observed_at'] = row['native_observed_at'] - seconds
-        self.hub._update(sid, **changes)
+        self.hub._update(sid, native_observed_at=row['native_observed_at'] - seconds)
 
-    def test_copilot_without_turn_end_falls_back_to_staleness(self):
+    def test_copilot_without_turn_end_reads_finished_but_closes_by_asking(self):
+        # Copilot has no turn-end hook, so nothing ends the reporting turn:
+        # once the observation is stale the report reads finished, but a close
+        # asks and waits instead of terminating at once.
         sid = self.launch(harness='copilot')['session_id']
         self.reported_mid_turn(sid)
         self.assert_reported_working(self.hub.show(sid))
+        self.quiet(sid)
+        self.assert_finished(self.hub.show(sid))
+        self.assertEqual(self.hub.show(sid)['observed'], 'unknown')
         self.assertEqual(self.request(sid)['lifecycle'], 'closing')
         self.hub.close(sid, force=True)
 
-        sid = self.launch(harness='copilot', session_id='44444444-4444-4444-8444-444444444444')['session_id']
-        self.reported_mid_turn(sid)
-        self.quiet(sid)
-        self.assert_finished(self.hub.show(sid))
-        self.assertEqual(self.request(sid)['lifecycle'], 'closed')
-
-    def test_a_turn_end_harness_never_settles_on_staleness_alone(self):
+    def test_staleness_never_ends_the_reporting_turn(self):
         sid = self.launch(harness='codex')['session_id']
         self.reported_mid_turn(sid)
         self.quiet(sid)
-        self.assertNotEqual(self.hub.show(sid)['activity'], 'finished')
+        self.assertEqual(self.hub.show(sid)['observed'], 'unknown')
         self.assertEqual(self.request(sid)['lifecycle'], 'closing')
         self.hub.close(sid, force=True)

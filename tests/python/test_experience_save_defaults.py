@@ -98,7 +98,7 @@ class SaveGate(unittest.TestCase):
                            'dispose --project P --decision-file D --publication-file R',
                            'review --project P --report R --result-file F'):
                 self.assertFalse(matches('asha control session experience ' + suffix), suffix)
-            # #112: these two act only as the proven caller session, so they run outside the sandbox.
+            # #112: these two act only for their environment's session and write Control state, so they run outside the sandbox.
             self.assertTrue(matches('asha control session report --state finished --text DONE'))
             self.assertTrue(matches('asha control session handoff --read --json'))
             self.assertTrue(matches('asha control session handoff --outcome no-durable-update --detail WHY --json'))

@@ -14,6 +14,9 @@ from unittest import mock
 from lib.control import hub_cli, session_refresh, session_view
 from lib.control.database import ControlDatabase, DatabaseError
 from lib.control.session_hub import HOOK_SILENCE_SECONDS
+
+# A launched hook-harness session with no native event past the silence window.
+SILENT = 'Hooks not reporting: attach'
 from tests.python.test_control_session_closure import ACTIVE, ClosureFixture
 
 
@@ -267,11 +270,11 @@ class RefresherTests(RefreshFixture):
         with mock.patch('lib.control.session_hub.time.time', self.wall):
             refresher = self.refresher()
             view = self.run_for(refresher, session_view.ViewModel(), 0.1)
-            self.assertNotEqual(view.rows[sid].get('telemetry'), 'hooks-not-reporting')
+            self.assertNotEqual(view.rows[sid].get('next_step'), SILENT)
             seen = []
             self.run_for(refresher, view, 2 * session_refresh.SLOW_SECONDS, each=lambda v: seen.append(
-                (self.wall.now, v.rows[sid].get('telemetry'))))
-        first = next(at for at, telemetry in seen if telemetry == 'hooks-not-reporting')
+                (self.wall.now, v.rows[sid].get('next_step'))))
+        first = next(at for at, step in seen if step == SILENT)
         self.assertGreater(first, crossing)
         self.assertLessEqual(first - crossing, session_refresh.SLOW_SECONDS + 0.1)
         self.assertEqual(sum(self.counting.shows.values()), 0)   # no write, so no row read
@@ -289,10 +292,10 @@ class RefresherTests(RefreshFixture):
             for _ in range(round(4 * session_refresh.SLOW_SECONDS / session_refresh.FAST_SECONDS)):
                 pool.settle()
                 view, _, _ = refresher.tick(view, include_closed=False)
-                seen.append((self.wall.now, view.rows.get(sid, {}).get('telemetry')))
+                seen.append((self.wall.now, view.rows.get(sid, {}).get('next_step')))
                 self.clock.now += session_refresh.FAST_SECONDS
                 self.wall.now += session_refresh.FAST_SECONDS
-        first = next(at for at, telemetry in seen if telemetry == 'hooks-not-reporting')
+        first = next(at for at, step in seen if step == SILENT)
         # Five seconds plus the next page's own (zero) duration and one collecting tick.
         self.assertLessEqual(first - crossing, session_refresh.SLOW_SECONDS + session_refresh.FAST_SECONDS)
 

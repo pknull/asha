@@ -355,13 +355,13 @@ codex_render_rules() {
 # also matches a planted ./asha or Work/asha, which would then run unsandboxed.
 host_executable(name = "asha", paths = ["__ASHA_LAUNCHER__"])
 
-# report and handoff act only as the proven caller session: Control verifies the
-# session's pane ownership and process ancestry before either writes. They run
-# outside the sandbox because that proof needs the tmux socket and host PIDs.
+# report and handoff act only for the session their environment names, in its
+# current generation; neither takes a session argument. They write Control
+# state, which the sandbox mounts read-only, so they run outside it.
 prefix_rule(
     pattern = ["asha", "control", "session", ["report", "handoff"]],
     decision = "allow",
-    justification = "Report status or publish Memory as the proven caller session.",
+    justification = "Report status or publish Memory for the session this environment names.",
 )
 
 # The read-only policy form rejects --mode/--clear; allowing the bare policy

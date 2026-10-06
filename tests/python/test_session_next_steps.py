@@ -20,13 +20,12 @@ class NextStepRenderingTests(unittest.TestCase):
             ({'activity': 'closing', 'lifecycle': 'closing', 'closure': {
                 'generation': 1, 'state': 'closing', 'requested_at': 0.0, 'deadline': 60.0}}, 'Closing: waiting for a save'),
             ({'activity': 'needs-input'}, 'Answer in terminal (attach)'),
-            ({'activity': 'permission-requested'}, 'Answer in terminal (attach)'),
             ({'activity': 'working'}, 'Working'),
-            # #109: a report whose turn has not stopped is still working; a stopped one is finished.
-            ({'activity': 'working', 'native_observed_at': 9e9, 'completion_report': {
-                'generation': 1, 'reported_at': 9e9}}, 'Working: reported finished'),
-            ({'activity': 'idle', 'native_observed_at': 9e9, 'completion_report': {
-                'generation': 1, 'reported_at': 9e9, 'turn_ended_at': 9e9}}, 'Finished, unsaved'),
+            # #109 on two axes: the hub shows a finished report whose turn still runs as working.
+            ({'activity': 'working', 'reported_activity': 'finished'}, 'Working: reported finished'),
+            # Observed `launched`: no native event yet, then silent past the window.
+            ({'activity': 'starting', 'observed': 'launched'}, 'Starting'),
+            ({'activity': 'unknown', 'observed': 'launched'}, 'Hooks not reporting: attach'),
         ]
         for changes, hint in cases:
             with self.subTest(hint=hint):

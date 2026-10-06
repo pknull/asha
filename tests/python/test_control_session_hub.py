@@ -131,7 +131,7 @@ class SessionHubTests(unittest.TestCase):
     def test_missing_telemetry_does_not_stop_or_complete_work(self):
         row = self.launch()
         observed = self.hub.show(row['session_id'])
-        self.assertEqual(observed['activity'], 'unknown')
+        self.assertEqual((observed['observed'], observed['activity']), ('launched', 'starting'))
         self.assertEqual(self.tmux.killed, [])
 
     def test_finished_process_exit_is_distinct_from_unreported_exit(self):
@@ -144,8 +144,7 @@ class SessionHubTests(unittest.TestCase):
         self.assertEqual(ended['next_step'], 'Done: close record')
         self.assertEqual(ended['group'], 'ended')
         self.assertIsNone(ended['memory_saved_at'], 'worker prose cannot manufacture a save receipt')
-        self.hub._update(row['session_id'], activity='exited', activity_source='hook',
-                         assignment_epoch='new-assignment')
+        self.hub._update(row['session_id'], report=None)
         unreported = self.hub.show(row['session_id'])
         self.assertEqual(unreported['next_step'], 'Ended unreported: check work')
 
@@ -248,14 +247,14 @@ class SessionHubTests(unittest.TestCase):
             # payload proved a wake-up is still owed, so it is not demoted,
             # up to a bound: an unproven wake-up cannot hold the row forever.
             from lib.control.session_hub import BACKGROUND_WAIT_SECONDS
-            self.hub._update(sid, observed_at=time.time() - 3600, native_observed_at=time.time() - 3600)
+            self.hub._update(sid, native_observed_at=time.time() - 3600)
             self.assertEqual(self.hub.show(sid)['activity'], 'working')
             late = time.time() - BACKGROUND_WAIT_SECONDS - 60
-            self.hub._update(sid, observed_at=late, native_observed_at=late)
+            self.hub._update(sid, native_observed_at=late)
             self.assertEqual(self.hub.show(sid)['activity'], 'unknown')
-            # A worker report is fresher evidence and drops the stale count.
+            # A worker report is the report axis: it never touches the observed one.
             self.hub.observe(None, state='working', body='Still testing')
-            self.assertIsNone(self.hub.get(sid).get('background_tasks'))
+            self.assertEqual(self.hub.get(sid).get('background_tasks'), 2)
             self.hub.observe('turn-stopped', background_tasks=2)
             # The wake-up turn's own Stop with nothing outstanding is idle.
             self.hub.observe('tool-started')
@@ -267,7 +266,7 @@ class SessionHubTests(unittest.TestCase):
             self.assertIsNone(idle.get('background_tasks'))
             self.hub.observe('turn-stopped', background_tasks=1)
             self.hub.observe('session-ended')
-            self.assertEqual(self.hub.get(sid)['activity'], 'exited')
+            self.assertEqual(self.hub.get(sid)['native_activity'], 'exited')
             with self.assertRaises(StoreError):
                 self.hub.observe('turn-stopped', background_tasks=-1)
 
@@ -287,11 +286,60 @@ class SessionHubTests(unittest.TestCase):
             self.hub.observe(None, state='finished', body='Old result')
         self.assertIsNone(self.hub.get(row['session_id'])['result'])
 
-    def test_environment_labels_alone_cannot_report(self):
+    def test_reports_take_their_session_from_the_environment_only(self):
+        # Hub decision (subtraction B2): no Room marker or process-ancestry
+        # proof. The session comes from the environment; the generation and
+        # lifecycle fences stop stale actors.
         row = self.launch()
-        self.hub.env.update(ASHA_HUB_SESSION_ID=row['session_id'], ASHA_HUB_GENERATION='1')
-        with mock.patch('lib.control.harness.caller_descends_from', return_value=False), self.assertRaises(StoreError):
-            self.hub.observe(None, state='finished', body='Spoofed')
+        sid = row['session_id']
+        self.hub.env.update(ASHA_HUB_SESSION_ID=sid, ASHA_HUB_GENERATION='1')
+        unproven = AssertionError('the reporter proof consulted tmux or process ancestry')
+        with mock.patch('lib.control.harness.caller_descends_from', side_effect=unproven), \
+                mock.patch('lib.control.session_hub._owned_state', side_effect=unproven), \
+                mock.patch('lib.control.session_hub.RoomStore', side_effect=unproven):
+            self.hub.observe(None, state='finished', body='From the environment')
+            self.hub.observe('prompt-submitted', native_id='thread-env')
+        self.assertEqual(self.hub.get(sid)['result'], 'From the environment')
+        self.hub.env['ASHA_HUB_GENERATION'] = '2'
+        with self.assertRaisesRegex(StoreError, 'stale'):
+            self.hub.observe(None, state='needs-input', body='From a successor label')
+        self.hub.env['ASHA_HUB_GENERATION'] = '1'
+        self.hub.stop(sid)
+        with self.assertRaisesRegex(StoreError, 'stale'):
+            self.hub.observe(None, state='needs-input', body='From a stopped session')
+        self.hub.env['ASHA_HUB_SESSION_ID'] = 'not-a-session'
+        with self.assertRaises(StoreError):
+            self.hub.observe(None, state='needs-input', body='From no session')
+
+    def test_a_session_start_rebinds_only_on_clear_or_after_the_bound_conversation_ended(self):
+        # F6: with no ancestry proof, a nested `claude -p` in the pane reports
+        # under this session's environment. Its SessionStart (startup) must not
+        # take the binding; /clear does, and so does a start once the bound
+        # conversation has ended.
+        row = self.launch()
+        sid = row['session_id']
+        project = str(self.project.resolve())
+        binding = lambda: self.hub.get(sid)['native_binding']['native_id']
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)):
+            self.hub.observe('prompt-submitted', native_id='thread-own', cwd=project)
+            for source in ('startup', 'resume', 'compact', None):
+                with self.subTest(source=source), \
+                        self.assertRaisesRegex(StoreError, 'another native conversation'):
+                    self.hub.observe('session-start', native_id='thread-nested', cwd=project, source=source)
+            self.assertEqual(binding(), 'thread-own')
+            self.assertEqual(self.hub.get(sid)['native_id'], 'thread-own')
+            # A nested conversation's own end never releases the binding.
+            with self.assertRaisesRegex(StoreError, 'another native conversation'):
+                self.hub.observe('session-ended', native_id='thread-nested')
+            with self.assertRaisesRegex(StoreError, 'another native conversation'):
+                self.hub.observe('session-start', native_id='thread-nested', cwd=project, source='startup')
+            self.hub.observe('session-start', native_id='thread-cleared', cwd=project, source='clear')
+            self.assertEqual(binding(), 'thread-cleared')
+            self.hub.observe('session-ended', native_id='thread-cleared')
+            self.hub.observe('session-start', native_id='thread-after', cwd=project, source='startup')
+            self.assertEqual(binding(), 'thread-after')
+            with self.assertRaisesRegex(StoreError, 'source'):
+                self.hub.observe('turn-stopped', native_id='thread-after', source='clear')
 
     def test_first_native_conversation_binds_the_generation(self):
         # A hook run by a shared Codex daemon, or any other conversation under
@@ -312,18 +360,18 @@ class SessionHubTests(unittest.TestCase):
                         self.assertRaisesRegex(StoreError, 'another native conversation'):
                     self.hub.observe(event, native_id='thread-foreign', cwd=cwd)
             current = self.hub.get(sid)
-            self.assertEqual((current['activity'], current['native_id']), ('working', 'thread-own'))
+            self.assertEqual((current['native_activity'], current['native_id']), ('working', 'thread-own'))
             # The bound conversation may report from anywhere (Claude's hook
             # cwd follows Bash cd and EnterWorktree), or without an ID at all.
             self.hub.observe('tool-started', native_id='thread-own', cwd=str(outside))
             self.hub.observe('tool-completed', native_id='thread-own', cwd=str(outside))
             self.hub.observe('turn-stopped', cwd='relative/ignored')
-            self.assertEqual(self.hub.get(sid)['activity'], 'idle')
+            self.assertEqual(self.hub.get(sid)['native_activity'], 'idle')
             # An explicit new conversation (/clear, /new) rebinds inside the
             # project; a foreign SessionStart from another project does not.
             with self.assertRaisesRegex(StoreError, 'outside this session'):
-                self.hub.observe('session-start', native_id='thread-far', cwd=str(outside))
-            self.hub.observe('session-start', native_id='thread-next', cwd=str(project / 'sub'))
+                self.hub.observe('session-start', native_id='thread-far', cwd=str(outside), source='clear')
+            self.hub.observe('session-start', native_id='thread-next', cwd=str(project / 'sub'), source='clear')
             with self.assertRaisesRegex(StoreError, 'another native conversation'):
                 self.hub.observe('turn-stopped', native_id='thread-own')
             self.hub.observe('turn-stopped', native_id='thread-next')
@@ -365,27 +413,29 @@ class SessionHubTests(unittest.TestCase):
         self.assertIn('make clean', shown['reason'])
         self.assertEqual(shown['next_step'], 'Answer in terminal (attach)')
 
-    def test_terminal_session_without_hook_evidence_is_labelled_hooks_not_reporting(self):
+    def test_a_launched_session_reads_starting_then_shows_how_long_it_has_been_silent(self):
+        # `launched` holds until the first native event (subtraction B2). It
+        # reads Starting, not "Inspect session", and after 90 s a hook harness
+        # shows how long it has been silent.
         from lib.control import session_hub
         row = self.launch()
-        fresh = self.hub.show(row['session_id'])
-        self.assertEqual(fresh['activity'], 'unknown')
-        self.assertNotEqual(fresh.get('telemetry'), 'hooks-not-reporting')
-        self.assertIsNotNone(self.hub.get(row['session_id'])['launched_at'])
-        self.hub._update(row['session_id'], launched_at=time.time() - session_hub.HOOK_SILENCE_SECONDS - 5)
-        silent = self.hub.show(row['session_id'])
-        self.assertEqual(silent['activity'], 'unknown')
-        self.assertEqual(silent['telemetry'], 'hooks-not-reporting')
-        self.assertIn('Hooks not reporting', silent['reason'])
+        sid = row['session_id']
+        fresh = self.hub.show(sid)
+        self.assertEqual((fresh['observed'], fresh['activity'], fresh['next_step']),
+                         ('launched', 'starting', 'Starting'))
+        self.assertIsNotNone(self.hub.get(sid)['launched_at'])
+        self.hub._update(sid, launched_at=time.time() - session_hub.HOOK_SILENCE_SECONDS - 5)
+        silent = self.hub.show(sid)
+        self.assertEqual((silent['observed'], silent['activity']), ('launched', 'unknown'))
+        self.assertIn('no native event in the 1 min since launch', silent['reason'])
         self.assertEqual(silent['next_step'], 'Hooks not reporting: attach')
         # A worker report is not hook evidence; one native event is.
-        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(row['session_id'])):
-            self.hub.observe(None, state='working', body='Started')
-            self.assertEqual(self.hub.show(row['session_id'])['telemetry'], 'hooks-not-reporting')
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)):
+            self.hub.observe(None, state='needs-input', body='Which branch?')
+            self.assertEqual(self.hub.show(sid)['observed'], 'launched')
             self.hub.observe('prompt-submitted')
-        observed = self.hub.show(row['session_id'])
-        self.assertEqual(observed['activity'], 'working')
-        self.assertIsNone(observed.get('telemetry'))
+        observed = self.hub.show(sid)
+        self.assertEqual((observed['observed'], observed['activity']), ('working', 'working'))
 
     def test_harnesses_without_a_hook_bridge_are_never_labelled_hooks_not_reporting(self):
         from lib.control import session_hub
@@ -395,8 +445,8 @@ class SessionHubTests(unittest.TestCase):
                 self.hub._update(row['session_id'], harness=harness,
                                  launched_at=time.time() - session_hub.HOOK_SILENCE_SECONDS - 5)
                 shown = self.hub.show(row['session_id'])
-                self.assertIsNone(shown.get('telemetry'))
-                self.assertNotEqual(shown['next_step'], 'Hooks not reporting: attach')
+                self.assertEqual((shown['observed'], shown['activity']), ('unknown', 'unknown'))
+                self.assertEqual(shown['next_step'], 'Inspect session')
 
     def test_rejected_hook_event_is_logged_to_a_bounded_local_diagnostic(self):
         from lib.control import hub_cli, session_hub

@@ -192,6 +192,29 @@ else
   fail "hub bridge answers with an empty object ($OUT)"
 fi
 
+# F6: the hub rebinds a session's native conversation only on a SessionStart
+# whose payload says clear, so the bridge forwards that source, and only there.
+run_control SessionStart '{"session_id":"native-clr","source":"clear"}' \
+  ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_GENERATION=2 >/dev/null
+if [[ "$(captured)" == "control session event --event session-start --native-id native-clr --source clear" ]]; then
+  ok "hub SessionStart forwards its payload source"
+else
+  fail "hub SessionStart forwards its payload source ($(captured))"
+fi
+SOURCE_LEAKED=""
+for case in 'SessionStart {"session_id":"native-bad","source":"Clear now"}' \
+            'SessionStart {"session_id":"native-bad","source":["clear"]}' \
+            'Stop {"session_id":"native-bad","source":"clear","stop_hook_active":false}'; do
+  read -r NATIVE_NAME PAYLOAD <<<"$case"
+  run_control "$NATIVE_NAME" "$PAYLOAD" ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_GENERATION=2 >/dev/null
+  [[ "$(captured)" != *--source* ]] || SOURCE_LEAKED="$SOURCE_LEAKED $NATIVE_NAME:$(captured)"
+done
+if [[ -z "$SOURCE_LEAKED" ]]; then
+  ok "a malformed source, or a source on any other event, is never forwarded"
+else
+  fail "a malformed source, or a source on any other event, is never forwarded ($SOURCE_LEAKED)"
+fi
+
 BRIDGED=1
 for pair in "UserPromptSubmit prompt-submitted" "PreToolUse tool-started" "PostToolUse tool-completed" \
             "PostToolUseFailure tool-completed" \
@@ -455,19 +478,6 @@ for lifecycle in SessionStart SessionEnd; do
     fail "a slow $lifecycle report lands within the lifecycle budget (${ELAPSED_MS}ms, lost=$(cat "$LOST_CAPTURE"))"
   fi
 done
-
-# A lost Stop is delivered late by the loss call, so the call carries what the
-# Stop meant: a turn still waiting on background work is not a turn end.
-: > "$LOST_CAPTURE"
-OUT="$(run_control Stop '{"session_id":"slow-bg","stop_hook_active":false,"background_tasks":[{},{}]}' \
-  ASHA_HUB_SESSION_ID="$HUB_ID" CONTROL_STUB_SLEEP=10)"
-for _ in $(seq 1 40); do grep -q -- 'slow-bg' "$LOST_CAPTURE" && break; sleep 0.1; done
-LOST="$(grep -- 'slow-bg' "$LOST_CAPTURE" | sed -E 's/ --emitted-at [0-9]+\.[0-9]+//')"
-if [[ "$OUT" == '{}' && "$LOST" == "control session event-lost --event turn-stopped --reason bridge-timeout --budget 3 --native-id slow-bg --background-tasks 2" ]]; then
-  ok "a lost Stop forwards its background task count to the loss call"
-else
-  fail "a lost Stop forwards its background task count to the loss call (out=$OUT, lost=$LOST)"
-fi
 
 : > "$LOST_CAPTURE"
 run_control PostToolUse '{"session_id":"fast-tool"}' ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null

@@ -11,7 +11,7 @@ from types import MappingProxyType
 from .session_presentation import present, row_facts
 
 GROUP_RANK = {'current': 0, 'ended': 1, 'history': 2}
-ATTENTION = frozenset({'needs-input', 'permission-requested', 'waiting-input'})
+ATTENTION = frozenset({'needs-input', 'waiting-input'})
 WORKING = frozenset({'working', 'running', 'queued', 'starting', 'closing'})
 GROUPINGS = ('project', 'state')
 # Phase 2 sections (#102). State sections follow the presented next step.
@@ -19,8 +19,7 @@ STATE_SECTIONS = (('state:needs', 'Needs you'), ('state:working', 'Working'), ('
                   ('state:ready', 'Ready to close'), ('state:idle', 'Idle'))
 TAIL_SECTIONS = (('ended', 'Ended'), ('history', 'History'))
 _SECTION_RANK = {key: rank for rank, (key, _) in enumerate(STATE_SECTIONS + TAIL_SECTIONS)}
-_NEEDS_STEPS = ('Answer', 'Blocked', 'Uncertain',
-                'Failed', 'Budget exhausted')
+_NEEDS_STEPS = ('Answer', 'Uncertain', 'Failed', 'Budget exhausted')
 _READY_STEPS = ('Done reported', 'Finished')
 # A folded section is one selectable heading in ``order``; session ids are never prefixed so.
 TOKEN = 'section:'
@@ -294,8 +293,7 @@ def _is_attention(row):
 
 def attention_counts(model):
     rows = [row for row in model.rows.values() if row.get('group') != 'history']
-    return {'input': sum(row.get('activity') in {'needs-input', 'waiting-input'} for row in rows),
-            'approval': sum(row.get('activity') == 'permission-requested' for row in rows)}
+    return {'input': sum(row.get('activity') in ATTENTION for row in rows)}
 
 
 def jump_attention(model):

@@ -60,35 +60,8 @@ CLOSE_REQUEST_TOKEN = "Asha Control close request"
 PUBLICATION_GRACE_SECONDS = 10
 # ``tmux.send_line`` refuses longer lines.
 POINTER_LIMIT = 200
-# Harnesses whose native turn end (Stop -> turn-stopped) reaches the hub. A
-# completion report there reads finished only once its turn has stopped (#109).
-# The rest (Copilot has no turn-end hook; OpenCode's idle Stop is not
-# live-proven) fall back to the staleness rule below; a Stop that does arrive
-# still settles them at once.
-TURN_END_HARNESSES = frozenset({"claude", "codex"})
-# The five-minute staleness rule: a working row with no observation this long reads unknown.
+# The five-minute staleness rule: a working observation with nothing newer this long reads unknown.
 STALE_OBSERVATION_SECONDS = 300
-
-
-def report_settled(row: dict, now: float | None = None) -> bool:
-    """#109: the turn that sent the completion report has stopped.
-
-    A worker reports finished from inside its last turn and may keep working
-    (save, final test). The hub stamps ``turn_ended_at`` on the report at the
-    next turn-ending Stop (one that lists no background work). Without a
-    turn-end event (other harnesses, or no native event at all) the report
-    settles after the staleness window with no newer observation. Structured
-    rows report finished only at the managed turn boundary.
-    """
-    if row.get("transport") == "structured":
-        return True
-    report = row.get("completion_report") or {}
-    if report.get("turn_ended_at") is not None:
-        return True
-    if row.get("harness") in TURN_END_HARNESSES and row.get("native_observed_at") is not None:
-        return False
-    last = max(report.get("reported_at") or 0, row.get("native_observed_at") or 0)
-    return (time.time() if now is None else now) - last > STALE_OBSERVATION_SECONDS
 
 
 def _digest(raw: bytes) -> str:

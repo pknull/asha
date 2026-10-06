@@ -13,10 +13,9 @@ Respect the assignment's publication limits.
 
 Run each `asha control session` command as its own tool call, on its own with
 literal arguments: no `&&`, pipes, redirection, `$VAR` or heredoc. Codex runs
-only that plain form outside its sandbox, where Control can prove the caller is
-this session; chained or expanded, it stays sandboxed and fails with `session
-ownership unavailable` or `reporter is not part of this session`. When an error
-says to run the command on its own, do that.
+only that plain form outside its sandbox, where Control state is writable;
+chained or expanded, it stays sandboxed and fails on read-only Control state.
+When such a command fails, run it again on its own.
 
 At startup, run `asha control session handoff --read --json` for the verified
 project plane. Then, as a separate command, read its pair through

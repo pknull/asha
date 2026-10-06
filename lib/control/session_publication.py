@@ -29,7 +29,7 @@ def assignment_epoch(row):
 
 
 def publication_actor(project_dir):
-    """Verify before publication; environment labels select, never prove, identity."""
+    """The acting session for a publication: from the environment only, fenced by generation and project."""
     if not (os.environ.get('ASHA_HUB_SESSION_ID') or os.environ.get('ASHA_MANAGED_SESSION_ID')):
         return None
     from .config import load_config

@@ -1,8 +1,6 @@
 """Read-only next steps from observed process state and publication evidence."""
 from datetime import datetime, timezone
 
-from .session_closure import report_settled
-
 
 def memory_label(row):
     stamp = row.get('memory_saved_at')
@@ -24,16 +22,14 @@ def finished_label(row):
 
 
 def present(row):
+    """The Keeper's words for a shown row. Hub rows arrive with both axes already combined:
+    ``activity`` as shown and ``reported_activity`` when a finished report stands behind it."""
     activity = row.get('activity', 'unknown')
     process = row.get('process_state', 'unknown')
     record = row.get('closure') or {}
     if record.get('generation') != row.get('generation'):
         record = {}
-    report = row.get('completion_report')
-    finished = (report.get('generation') == row.get('generation') and
-                report.get('assignment_epoch') == row.get('assignment_epoch')) if report else activity == 'finished'
-    # #109: a report sent mid-turn is finished only once that turn has stopped.
-    settled = finished and (not report or report_settled(row))
+    finished = activity == 'finished' or row.get('reported_activity') == 'finished'
     ended = process == 'ended' or (process != 'live' and activity in {'exited', 'stopped', 'closed'})
     group = 'history' if row.get('lifecycle') == 'closed' else 'ended' if ended else 'current'
     # An open Room is an ongoing conversation: a save or finished report never ends it (#105).
@@ -45,7 +41,7 @@ def present(row):
         hint = 'Closed: view history'
     elif ended:
         hint = 'Done: close record' if finished else 'Ended unreported: check work'
-    elif activity in {'needs-input', 'permission-requested', 'waiting-input'}:
+    elif activity in {'needs-input', 'waiting-input'}:
         hint = 'Answer in Control' if row.get('transport') == 'structured' else 'Answer in terminal (attach)'
     elif activity == 'closing':
         saved = row.get('memory_saved_at')
@@ -59,23 +55,19 @@ def present(row):
             changes.update(activity='idle', reported_activity='finished')
     elif activity == 'working' and row.get('background_tasks'):
         hint = 'Working: background tasks'
-    elif finished and not settled and activity in {'working', 'finished', 'idle'}:
+    elif activity == 'working' and finished:
         hint = 'Working: reported finished'
-        changes.update(activity='working', reported_activity='finished')
-    elif settled:
+    elif activity == 'finished':
         hint = finished_label(row) if process == 'live' or row.get('transport') == 'structured' \
             else 'Done reported: inspect session'
-        if hint != 'Done reported: inspect session':
-            # The Stop that settled the report overwrote the raw activity with idle.
-            changes['activity'] = 'finished'
-    elif activity == 'unknown' and row.get('telemetry') == 'hooks-not-reporting':
+    elif activity == 'unknown' and row.get('observed') == 'launched':
         hint = 'Hooks not reporting: attach'
     elif activity == 'idle':
         hint = 'Waiting for you' if row.get('profile') == 'room' else 'Stopped mid-task?'
     else:
         hint = {'working': 'Working', 'running': 'Working', 'queued': 'Queued',
                 'starting': 'Starting', 'failed': 'Failed: check work',
-                'blocked': 'Blocked: inspect', 'uncertain': 'Uncertain: inspect',
+                'uncertain': 'Uncertain: inspect',
                 'budget-exhausted': 'Budget exhausted: inspect'}.get(activity, 'Inspect session')
     return dict(row, next_step=hint, group=group, **changes)
 
