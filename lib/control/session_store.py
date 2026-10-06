@@ -328,13 +328,6 @@ class SessionStore:
             c.execute("INSERT INTO session_turns(turn_id,session_id,message_id,generation,state,started_at) VALUES(?,?,?,?,'running',?)", (turn, sid, msg["message_id"], generation, time.time()))
             c.execute("UPDATE session_messages SET state='submitted',turn_id=? WHERE message_id=?", (turn, msg["message_id"]))
             c.execute("UPDATE managed_sessions SET state='running',turns=turns+1,updated_at=? WHERE session_id=?", (time.time(), sid))
-            if c.execute("SELECT 1 FROM sqlite_master WHERE name='hub_sessions'").fetchone():
-                found = c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (sid,)).fetchone()
-                if found:
-                    current = json.loads(found[0])
-                    current.update(work_epoch=str(uuid.uuid4()))
-                    from .session_hub import Hub
-                    Hub._save(c, current)
             self._event(c, sid, "turn-reserved", {"message_id": msg["message_id"]}, turn)
             return {**dict(msg), "turn_id": turn}
 

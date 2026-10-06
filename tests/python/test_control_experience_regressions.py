@@ -21,7 +21,7 @@ class ExistingDatabase(ClosureFixture):
         self.assertNotIn('hub_guidance_exposures', tables)
         with self.acting_as(row['session_id']):
             self.hub.handoff(None, outcome='no-durable-update', detail='Reviewed legacy assignment')
-            self.assertEqual(self.hub.report(state='finished', body='Done')['activity'], 'finished')
+            self.assertEqual(self.hub.report(state='finished', body='Done')['report']['state'], 'finished')
         with self.hub.database() as db, db.transaction() as c:
             tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertIn('hub_experiences', tables)

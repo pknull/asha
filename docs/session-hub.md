@@ -364,35 +364,43 @@ Missing or stale telemetry shows `unknown`; it never stops a worker. An idle
 native turn is not a completed assignment. An explicit finished report or
 successful structured utility yields `finished`.
 
-A worker sends its finished report from inside its last turn and may keep
-working after it (save, final report, last test). A terminal row therefore
-reads `finished` only when the report has landed **and** that turn has
-stopped (#109): the next Stop that lists no background work stamps
-`completion_report.turn_ended_at`. Between the two the row shows
-`activity: "working"` with `reported_activity: "finished"` and the next step
-`Working: reported finished`; it is not ready to close, and a close asks
-instead of closing at once. A tool call after the report no longer erases it,
-and the Stop that ends the turn no longer turns it into `Stopped mid-task?`.
-Claude and Codex have that turn-end event. Harnesses without one fall back to
-the five-minute staleness rule: the report settles once no native event or
-report has arrived for five minutes after it. That covers Copilot (no turn-end
-hook), OpenCode (its idle Stop is not live-proven; one that arrives still
-settles at once) and any session whose hooks never reported. A Codex or Claude
-report never settles on staleness alone. Structured sessions report finished
-only at their managed turn boundary and are unaffected. Completed structured utilities
+A terminal row keeps two separate axes, and neither writes the other:
+
+- **Observed** (`observed` in `show --json`), from native hooks and tmux
+  liveness only: `launched` until the first native event, then `working`,
+  `waiting` (a turn ended, or a permission prompt is open), `ended`, or
+  `unknown` (tmux unreadable, or a working observation with nothing newer for
+  five minutes).
+- **Report** (`report`), from explicit reports and structured completion only:
+  none, `needs-input` with its text, or `finished` with its text and time. A
+  new report replaces it and `report --state working` withdraws it; a Control
+  `send`, launch, resume and a new generation clear it. A native prompt clears
+  only a needs-input report.
+
+The dashboard words combine the two. A finished report reads `Finished, saved
+HH:MM UTC` (or `Finished, unsaved`) as soon as it lands, unless the observed
+turn still runs: a worker sends its report from inside its last turn and may
+keep working after it (save, final test). While the observation is `working`,
+or a `waiting` one older than the report, the row shows `activity: "working"`
+with `reported_activity: "finished"` and the next step `Working: reported
+finished` (#109). The report is **settled** only by a turn-ending Stop (one
+that lists no background work) emitted after the report; a Stop emitted
+before it, however late it applies, does not count. Only a settled report lets
+a close terminate at once (D7, below). Harnesses without a turn-end event
+never settle: Copilot (no turn-end hook) reads finished once its observation
+is stale, and a close asks and waits. Structured sessions report finished at
+their managed turn boundary and settle at once. Completed structured utilities
 leave the current list; their results remain under `show ID` and `list --all`.
 
 A finished worker can start another turn without new work: Claude wakes for a
 background Monitor or task notification, and that turn reaches the hub as
-`prompt-submitted` (#114). A prompt that arrives while a current finished
-report stands therefore does not erase it. The report stays, unsettled while
-the later turn runs (`Working: reported finished`, a close asks), and settles
-again when that turn ends with no new report: the next clean Stop on Claude or
-Codex, five quiet minutes on Copilot. The assignment does not change, so an
-earlier save still counts. If the worker reports in that turn (working,
-needs-input or finished), the prompt becomes a new assignment and the report
-replaces the old one, as before. A Control assignment (`send`), a resume or a
-prompt after a report that is no longer current replace it as before.
+`prompt-submitted` or starts with a tool call (#114). Such a turn leaves the
+report standing but unsettled (`Working: reported finished`, a close asks) and
+settles again at its own clean Stop. A prompt after a finished report only
+marks `prompt_since_report`, so the assignment does not change and an earlier
+save still counts. If the worker reports in that turn (working, needs-input or
+finished), the prompt becomes a new assignment and the report replaces the old
+one. A Control assignment (`send`) or a resume clears the report.
 
 Hook identity is inherited environment, so every Codex TUI launch that Asha
 owns (Rooms, native resume, and the `bin/asha` chair, coordinator and Control
@@ -407,26 +415,31 @@ positional), so a profile, conversation name or prompt that spells a subcommand
 is still a TUI launch. As defence in depth the hub binds each generation to its
 first native conversation ID: an ordinary tool, Stop or permission event from a
 different conversation is refused whatever its cwd, including events without a
-cwd. Only SessionStart (an explicit new conversation such as `/clear` or `/new`)
-rebinds, and only from inside the project; resume is a new generation and binds
-afresh. The bound conversation may report from anywhere, because Claude's hook
-cwd follows a Bash `cd` or EnterWorktree. A missed SessionStart after `/clear`
+cwd. Only a SessionStart rebinds (F6), and only from inside the project: one
+whose payload source is `clear` (`/clear` on Claude, and on Codex 0.120 and
+later), or any SessionStart once the bound conversation has sent SessionEnd. A
+nested `claude -p` run inside the pane starts with source `startup` and is
+refused, as are its other events. Resume is a new generation and binds afresh.
+The bound conversation may report from anywhere, because Claude's hook cwd
+follows a Bash `cd` or EnterWorktree. A missed SessionStart after `/clear`
 leaves the new conversation's events refused for the rest of that generation,
 and a native subagent reporting under its own thread ID is refused too; both
-are logged. A foreign conversation that starts inside the project before the
-session's own first event can still bind; process ancestry, which requires the
-reporter to descend from the session's pane, is the remaining guard. Refused hook events
+are logged. Codex `/new` is not verified to report source `clear`; if it does
+not, its new conversation is refused the same way. A foreign conversation that
+starts inside the project before the session's own first event can still
+bind. Refused hook events
 are appended to `~/.asha/state/control/hub-rejected-events.jsonl` (mode 0600,
 locked, trimmed in place to the newest half past 64 KiB) instead of being
-discarded. A live Claude or Codex terminal session with no native hook event 90
-seconds after launch is labelled `Hooks not reporting: attach` (`telemetry:
-hooks-not-reporting` in JSON); worker reports do not count as hook evidence,
-and Copilot/OpenCode sessions, whose bridges are not live-proven, are never
-labelled.
-A terminal PermissionRequest makes the session `needs-input` with a one-line,
-300-character summary of the request (tool and command, path or URL) as its
-question, so Control shows what is being asked; the next step is `Answer in
-terminal (attach)`. Answering a terminal approval through `session permission`
+discarded. A live terminal session reads `Starting` until its first native
+hook event (observed `launched`). A live Claude or Codex session still without
+one 90 seconds after launch reads `Hooks not reporting: attach`, with the
+silent minutes in its reason; worker reports do not count as hook evidence.
+Copilot and OpenCode sessions, whose bridges are not live-proven, read
+`unknown` instead.
+A terminal PermissionRequest makes the session `needs-input` (observed
+`waiting`) with a one-line, 300-character summary of the request (tool and
+command, path or URL) as its question, so Control shows what is being asked;
+the next step is `Answer in terminal (attach)`. The next hook event clears it. Answering a terminal approval through `session permission`
 is not supported: it would mean typing into the pane.
 `asha doctor codex` fails when a running Codex daemon or its updater carries
 `ASHA_HUB_SESSION_ID` (the executable must be Codex), or when a Codex that has
@@ -461,8 +474,9 @@ background task(s)` and next step `Working: background tasks` (#99). It is not
 an idle boundary: a close does not type its pointer there, and the five-minute
 staleness rules wait instead. A pending Stop-hook close request is still
 emitted at such a Stop, because a Stop block only continues the turn and never
-interrupts the background job. The next hook event or worker
-report clears the count; the Stop that follows the wake-up decides idle. The
+interrupts the background job. The next hook event clears the count (a worker
+report is the other axis and leaves it); the Stop that follows the wake-up
+decides idle. The
 wait is bounded: four hours after that Stop with no newer native event, the
 usual staleness rules apply again (the row reads `unknown`).
 Limits: only Claude reports this (Codex, Copilot and OpenCode Stops carry no
@@ -506,11 +520,15 @@ asha control session report --state needs-input --text 'Which chapter?'
 asha control session report --state finished --text 'Updated the scanner; checks passed.'
 ```
 
-The reporter checks the Room's ownership markers and process ancestry, plus
-the hub session's generation. Environment labels alone cannot establish
-reporter identity. Native hooks bound reporting time and fail open when the
-hub is unavailable. An explicit report is retained across the report command's
-own completion hooks.
+Reports, handoffs and message reads take their session from the environment
+only (`ASHA_HUB_SESSION_ID` and `ASHA_HUB_GENERATION`): no session argument
+selects it, and no Room marker or process-ancestry check proves it. The
+generation and lifecycle fences stop a stale actor: a reporter from an earlier
+generation, or of a closed or stopped session, is refused. Inside the Codex
+sandbox Control state is read-only, so a report still succeeds only as the one
+plain command its rules run outside the sandbox. Native hooks bound reporting
+time and fail open when the hub is unavailable. A report is the report axis
+alone, so the report command's own hooks never change it.
 
 With effective experience policy enabled, a finished report without an assessment
 returns one bounded assessment request and controller key. Follow up with
@@ -559,12 +577,11 @@ save project Memory, waits a bounded time, then terminates:
    the newest publication in the generation, so an earlier save still shows,
    with its age visible; `unsaved` means the generation has none.
 
-A session whose finished report is still current (no new message, working
-report, or prompt whose turn made a report since; #114) and settled (its turn has stopped, or the staleness
-fallback above applies; #109) and whose current assignment already has a
-publication, in either order, closes at once without a request. A report whose
-turn is still running gets an ordinary close request, so a close never kills
-the turn that is finishing. The documented worker
+A session whose finished report is settled (a turn-ending Stop emitted after
+the report, above; #109, #114) and whose current assignment already has a
+publication, in either order, closes at once without a request (D7). Any other
+finished report gets an ordinary close request, so a close never kills the
+turn that is finishing. The documented worker
 sequence is save, then `report --state finished`.
 
 The request text asks the agent to save and end its turn:
@@ -641,21 +658,11 @@ session-end lifecycle boundaries), each append one line to
 bound, mode and trimming as the rejection log). The bridge records a timeout
 through a detached `session event-lost` call bounded at 20 s, so the hook
 itself still returns within its budget; a timeout whose record also fails is
-not counted. For every event but one this is a loss metric only: nothing
-reorders, retries or waits on it.
-
-The exception is `turn-stopped` (#110): a lost Stop would leave a finished
-report unsettled (`Working: reported finished`) until a later turn ends, so the
-loss call also delivers it late. That call runs after the hook returned and is
-not part of the session's process tree, so it proves itself by the native
-conversation this generation already bound instead: an unbound generation, a
-different native ID or an unstamped report is refused. It applies only when no
-newer hook report has been applied, at any age (the 30 s clock-step allowance
-above does not extend to it), carries the Stop's background task count (a Stop
-that listed background work still is not a turn end), and returns no close
-decision; a pending close request is re-emitted at the next Stop. A Stop whose
-loss record also fails stays unsettled until a later turn ends (#114), session
-end or close.
+not counted. It is a loss metric only: nothing reorders, retries, waits on or
+late-delivers a lost report. A lost Stop leaves a finished report unsettled:
+the row reads `Working: reported finished`, then `Finished` once the
+observation is stale, and a close asks and waits its bound instead of closing
+at once. A pending close request is re-emitted at the next Stop.
 
 ## Optional session experience
 

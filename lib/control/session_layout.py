@@ -28,12 +28,12 @@ Layout = namedtuple('Layout', 'mode height width list_top list_height list_width
                               'detail_top error_y message_y footer_y')
 
 # Unicode glyph, ASCII fallback. The meaning is also in the next-step words.
-GLYPHS = {'working': ('●', '*'), 'input': ('▲', '!'), 'approval': ('◆', '#'), 'done': ('✓', '+'),
+GLYPHS = {'working': ('●', '*'), 'input': ('▲', '!'), 'done': ('✓', '+'),
           'idle': ('○', 'o'), 'failed': ('✗', 'x'), 'ended': ('·', '.'), 'unknown': ('?', '?'),
           'closing': ('…', '~'), 'open': ('▼', '-'), 'folded': ('▸', '='), 'separator': ('│', '|'),
           'ellipsis': ('…', '~'), 'dot': ('·', '-'), 'dash': ('—', '-'), 'rule': ('─', '-')}
 _INPUT = frozenset({'needs-input', 'waiting-input'})
-_FAILED = frozenset({'failed', 'blocked', 'uncertain', 'budget-exhausted'})
+_FAILED = frozenset({'failed', 'uncertain', 'budget-exhausted'})
 
 
 def layout(height, width, *, errors=False, peek=False, preview=True):
@@ -64,8 +64,6 @@ def glyph_kind(row):
         return 'ended'
     if group == 'ended':
         return 'done' if step.startswith('Done') else 'ended'
-    if activity == 'permission-requested':
-        return 'approval'
     if activity in _INPUT:
         return 'input'
     if activity == 'closing' or step.startswith('Closing'):
@@ -82,7 +80,7 @@ def glyph_kind(row):
 def activity_tier(activity):
     # Session activity names differ from the advanced workflow state names.
     return {'working': MACHINE, 'queued': MACHINE, 'waiting-input': WAITING, 'finished': GOOD,
-            'blocked': BAD, 'uncertain': BAD, 'budget-exhausted': BAD}.get(activity, tier_for(activity))
+            'uncertain': BAD, 'budget-exhausted': BAD}.get(activity, tier_for(activity))
 
 
 def age(stamp, now):
@@ -354,8 +352,6 @@ def _banner(rows, shown, counts, ascii_only):
     parts = []
     if counts.get('input'):
         parts.append(f"{_g('input', ascii_only)} {counts['input']} needs input")
-    if counts.get('approval'):
-        parts.append(f"{_g('approval', ascii_only)} {counts['approval']} approval")
     return '  '.join(parts or ['sessions need you']) + f" {_g('dash', ascii_only)} press ! to jump"
 
 
@@ -372,8 +368,7 @@ def _counts(data, rows):
     if 'attention' in data:
         return data['attention']
     live = [row for row in rows if row.get('kind') != 'section' and row.get('group') != 'history']
-    return {'input': sum(row.get('activity') in _INPUT for row in live),
-            'approval': sum(row.get('activity') == 'permission-requested' for row in live)}
+    return {'input': sum(row.get('activity') in _INPUT for row in live)}
 
 
 def _put(screen, y, spans):

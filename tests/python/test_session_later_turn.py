@@ -9,7 +9,8 @@ terminating; when it ends without a new report the row is finished again. Only
 a new report, a new Control assignment or a resume replaces the report. Each
 harness is driven with the events its hooks actually emit: Claude (Stop with a
 background task count), Codex (Stop, no background count) and Copilot (no
-turn-end event: the five-minute staleness fallback of #109).
+turn-end event: its report reads finished once the observation is stale, and a
+close always asks).
 """
 from lib.control import session_view
 from tests.python.test_control_session_closure import FastClose
@@ -37,20 +38,16 @@ class LaterTurnFixture(FastClose):
                 self.hub.observe(event)
 
     def quiet(self, sid, seconds=QUIET):
-        """Age every observation of the row by ``seconds``."""
+        """Age the row's last native observation by ``seconds``."""
         row = self.hub.get(sid)
-        report = dict(row['completion_report'], reported_at=row['completion_report']['reported_at'] - seconds)
-        changes = dict(completion_report=report, observed_at=row['observed_at'] - seconds)
-        if row.get('native_observed_at') is not None:
-            changes['native_observed_at'] = row['native_observed_at'] - seconds
-        self.hub._update(sid, **changes)
+        self.hub._update(sid, native_observed_at=row['native_observed_at'] - seconds)
 
     def assert_finished(self, sid):
         shown = self.hub.show(sid)
         self.assertEqual(shown['activity'], 'finished', shown['next_step'])
         self.assertTrue(shown['next_step'].startswith('Finished, saved '), shown['next_step'])
         self.assertEqual(session_view.state_section(shown), 'state:ready')
-        self.assertIsNotNone(shown['completion_report'])
+        self.assertEqual(shown['report']['state'], 'finished')
         self.assertEqual(shown['result'], 'Done')
         return shown
 
@@ -100,6 +97,19 @@ class LaterTurnTests(LaterTurnFixture):
         self.wake(sid, 'turn-stopped')
         self.assert_finished(sid)
 
+    def test_a_later_turn_without_a_prompt_is_not_closed_at_once(self):
+        # A turn a background task wakes may report no prompt; its first hook
+        # event is a tool call. That work is newer than the report's turn end,
+        # so a close asks instead of killing it (#114's open hole).
+        sid = self.launch(harness='claude')['session_id']
+        self.finish(sid)
+        self.assert_finished(sid)
+        with self.acting_as(sid):
+            self.hub.observe('tool-started')
+        self.assertNotEqual(session_view.state_section(self.hub.show(sid)), 'state:ready')
+        self.assertEqual(self.request(sid)['lifecycle'], 'closing', 'a close must not kill the woken turn')
+        self.hub.close(sid, force=True)
+
     def test_a_running_later_turn_is_not_closed_at_once(self):
         sid = self.launch(harness='claude')['session_id']
         self.finish(sid)
@@ -122,23 +132,18 @@ class LaterTurnTests(LaterTurnFixture):
         self.assert_finished(sid)
         self.assertEqual(self.request(sid)['lifecycle'], 'closed')
 
-    def test_copilot_wake_without_a_report_settles_on_staleness(self):
+    def test_copilot_wake_without_a_report_reads_finished_but_closes_by_asking(self):
         sid = self.launch(harness='copilot')['session_id']
         self.finish(sid, stop=False)
         self.quiet(sid)
         self.assert_finished(sid)
         self.wake(sid, 'tool-completed')
         self.assert_reported_working(sid)
-        self.assertEqual(self.request(sid)['lifecycle'], 'closing')
-        self.hub.close(sid, force=True)
-
-        sid = self.launch(harness='copilot', session_id='44444444-4444-4444-8444-444444444444')['session_id']
-        self.finish(sid, stop=False)
-        self.quiet(sid)
-        self.wake(sid, 'tool-completed')
         self.quiet(sid)
         self.assert_finished(sid)
-        self.assertEqual(self.request(sid)['lifecycle'], 'closed')
+        # Copilot never shows the turn ending, so a close asks (subtraction B2).
+        self.assertEqual(self.request(sid)['lifecycle'], 'closing')
+        self.hub.close(sid, force=True)
 
 
 class LaterTurnReplacementTests(LaterTurnFixture):
@@ -152,7 +157,7 @@ class LaterTurnReplacementTests(LaterTurnFixture):
             self.hub.report(state='working', body='Picking up the follow-up')
             self.hub.observe('turn-stopped')
         shown = self.hub.show(sid)
-        self.assertIsNone(shown['completion_report'])
+        self.assertIsNone(shown['report'])
         self.assertEqual(shown['next_step'], 'Stopped mid-task?')
 
     def test_a_new_finished_report_in_the_later_turn_is_a_new_assignment(self):
@@ -165,7 +170,7 @@ class LaterTurnReplacementTests(LaterTurnFixture):
             self.hub.observe('turn-stopped')
         shown = self.hub.show(sid)
         self.assertNotEqual(shown['assignment_epoch'], epoch)
-        self.assertEqual(shown['completion_report']['assignment_epoch'], shown['assignment_epoch'])
+        self.assertFalse(shown['prompt_since_report'])
         self.assertEqual(shown['result'], 'Second result')
         self.assertTrue(shown['next_step'].startswith('Finished, saved '), shown['next_step'])
         # The save belonged to the earlier assignment, so a close asks again.
@@ -190,7 +195,7 @@ class LaterTurnReplacementTests(LaterTurnFixture):
         with self.acting_as(sid):
             self.hub.report(state='finished', body='Second result')
         self.assertEqual(self.hub.get(sid)['assignment_epoch'], sent)
-        self.assertEqual(self.hub.get(sid)['completion_report']['assignment_epoch'], sent)
+        self.assertEqual(self.hub.get(sid)['report']['state'], 'finished')
 
     def test_a_resume_replaces_it(self):
         sid = self.launch(harness='claude')['session_id']

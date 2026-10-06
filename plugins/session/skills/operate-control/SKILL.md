@@ -95,16 +95,19 @@ asha control session messages
 asha control session ack-message MESSAGE_ID
 ```
 
-These commands verify the reporting process belongs to the live session.
-Workers need not report each turn. Hooks supply best-effort native lifecycle
-observations where available. `unknown` means observation is missing or stale,
-`idle` means a native turn ended, and `finished` means an explicit worker report
-whose turn has stopped, or a completed structured utility. A report whose turn
-is still running reads `working` with `reported_activity: finished` (`Working:
-reported finished`); harnesses without a turn-end event (Copilot) settle it
-after five quiet minutes. A later turn with no new report (a background
-notification waking the worker) keeps the report and reads finished again
-when it ends. Silence proves none of these. Read results
+These commands act for the session their environment names, in its current
+generation only. Workers need not report each turn. A terminal row keeps two
+axes: `observed` from native hooks (`launched` until the first event, then
+`working`, `waiting`, `ended` or `unknown` when missing or stale) and `report`
+from explicit reports (`needs-input` or `finished`). `idle` means a native turn
+ended, and `finished` means an explicit worker report, or a completed
+structured utility. A finished report whose observed turn still runs reads
+`working` with `reported_activity: finished` (`Working: reported finished`). A
+close terminates at once only when a clean Stop emitted after the report ended
+that turn; otherwise it asks and waits (always for Copilot, which has no
+turn-end event). A later turn with no new report (a background notification
+waking the worker) keeps the report and reads finished again when it ends.
+Silence proves none of these. Read results
 before conveying them as conclusions. Message pages expose `complete` and
 `next_offset`; use `messages --offset N` to read subsequent pages.
 
@@ -183,13 +186,12 @@ and dashboard. A failed telemetry hook must not block native work.
   initialized Memory v2 Asha project"). For a scratch probe, run `memory_v2.py
   init --project-dir DIR` and commit it before launching.
 - A dropped hook report leaves a row stale (lost reports are logged in
-  `~/.asha/state/control/hub-lost-events.jsonl`). A dropped `turn-stopped` is
-  delivered late by the bridge's loss call (#110), usually within seconds; if
-  that also fails, a Claude or Codex finished report stays `Working: reported
-  finished` until a later turn ends, since they never settle on staleness alone.
-  Confirm from the pane before acting on the row.
+  `~/.asha/state/control/hub-lost-events.jsonl`; none is delivered late). After
+  a dropped `turn-stopped` a finished report reads `Working: reported finished`,
+  then `Finished` once stale, and a close waits its bound instead of closing at
+  once. Confirm from the pane before acting on the row.
 - Copilot has no turn-end hook: a Copilot row stays working after its turn until
-  the next event or the staleness rule.
+  the next event or the staleness rule, and its close always asks and waits.
 - Codex and Copilot ask to trust a new folder before their first turn; the row
   shows no activity (Codex: "Hooks not reporting") until someone answers in the
   pane. Accepting Codex's "remember" choice writes to the live

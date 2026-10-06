@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 2.4.0
+**Version**: 2.5.0
 
 Compact explicit memory publication, bounded crash recovery, reviewed learning
 lifecycle, policy guardrails, guarded loops, and workspace management.
@@ -135,6 +135,15 @@ for the repository; workspace state answers what coordinates the repositories.
   checks required by `AGENTS.md`.
 
 ## Version history
+
+### 2.5.0
+
+The hub bridge (`control-event.sh`) forwards a SessionStart's payload source,
+so Control rebinds a session's native conversation only after `/clear` or once
+the bound conversation ended, and a bridge timeout is now a loss metric only:
+the late Stop delivery and its background task count are gone. The
+`operate-control` and `project-memory` skills describe the two-axis session
+status (observed and report) and environment-only reporter identity.
 
 ### 2.4.0
 

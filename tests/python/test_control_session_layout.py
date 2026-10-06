@@ -24,7 +24,7 @@ def row(sid, name, *, project='asha', harness='claude', created, age=5, **change
 
 def fixture_rows():
     return [
-        row('00000000-0001', 'lint-sweep', harness='codex', created=1, age=60, activity='permission-requested',
+        row('00000000-0001', 'lint-sweep', harness='codex', created=1, age=60, activity='needs-input',
             reason='Run make lint in /home/pknull/Code/asha'),
         row('00000000-0002', 'docs-room', created=2, age=180, activity='needs-input', transport='structured',
             profile='room', reason='Which branch?'),
@@ -35,7 +35,7 @@ def fixture_rows():
         row('00000000-0006', 'refactor-io', project='servitor', harness='codex', created=6, age=12,
             background_tasks=2),
         row('00000000-0007', 'smoke-3', project='servitor', created=7, age=360, activity='unknown',
-            telemetry='hooks-not-reporting'),
+            observed='launched'),
         row('00000000-0008', 'old-worker', project='servitor', harness='codex', created=8, age=1320,
             activity='exited', process_state='ended', reason='Exited'),
         row('00000000-0009', '幅広い名前のセッション', project='測試プロジェクト', created=9, age=90000),
@@ -43,7 +43,7 @@ def fixture_rows():
 
 
 def snapshot(model, **extra):
-    return dict({'rows': session_view.display_rows(model), 'summary': '7 current; 1 ended; 1 need input',
+    return dict({'rows': session_view.display_rows(model), 'summary': '7 current; 1 ended; 2 need input',
                  'errors': [], 'grouping': model.grouping, 'now': NOW,
                  'attention': session_view.attention_counts(model)}, **extra)
 
@@ -177,7 +177,7 @@ class ContentTests(unittest.TestCase):
         heading = next(line for line in rendered if line.startswith('▼ asha'))
         self.assertTrue(heading.rstrip().endswith('5'))
         lint = next(line for line in rendered if 'lint-sweep' in line)
-        self.assertIn('◆', lint)
+        self.assertIn('▲', lint)
         self.assertIn('codex', lint)
         self.assertTrue(lint.rstrip().endswith('1m'))
         self.assertIn('▼ Ended', text)
@@ -218,10 +218,10 @@ class ContentTests(unittest.TestCase):
 
     def test_banner_announces_attention_in_a_folded_section(self):
         view = model(rows=[row('a', 'one', created=1), row('b', 'two', project='zulu', created=2,
-                                                            activity='permission-requested')])
+                                                            activity='needs-input')])
         view = session_view.fold(session_view.move(view, 1, visible=10), fold=True)
         rendered = render(snapshot(view), width=80, height=24, selected=session_view.selected_index(view))
-        self.assertIn('1 approval', rendered[1])
+        self.assertIn('1 needs input', rendered[1])
         heading = next(line for line in rendered if 'zulu' in line)
         self.assertTrue(heading.startswith('> ▸ zulu (1'))
 

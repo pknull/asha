@@ -188,7 +188,7 @@ class TitleTests(unittest.TestCase):
     def test_title_count_follows_attention_and_is_restored(self):
         stream = io.BytesIO()
         writer = session_title.TitleWriter(stream, enabled=True)
-        run([-1], [row('a', activity='needs-input'), row('b', activity='permission-requested'), row('c')],
+        run([-1], [row('a', activity='needs-input'), row('b', activity='needs-input'), row('c')],
             title=writer)
         written = stream.getvalue()
         self.assertIn(b'\x1b]2;2 awaiting input \xc2\xb7 asha control\x07', written)

@@ -309,20 +309,21 @@ def dispatch(argv, *, env):
             parser.add_argument('--cwd', help="native hook payload cwd; refused outside the session's project")
             parser.add_argument('--background-tasks', type=int,
                                 help='background tasks the native Stop reported still running (#99)')
+            parser.add_argument('--source', help='native SessionStart payload source; clear may rebind the session (F6)')
             # Accepted and ignored for one release (D11): hooks in live Rooms still pass them.
             for obsolete in ('--tool-kind', '--tool-token', '--sequence', '--sequence-pane', '--order', '--attempts'):
                 parser.add_argument(obsolete, help=argparse.SUPPRESS)
         parser.add_argument('--native-id')
         parser.add_argument('--text')
     elif verb == 'event-lost':
-        # The hook bridge's own record of a report it gave up on: a loss metric,
-        # and for a Stop its late delivery (#110).
+        # The hook bridge's own record of a report it gave up on: a loss metric only.
         parser.add_argument('--event', required=True)
         parser.add_argument('--reason', required=True)
         parser.add_argument('--native-id')
         parser.add_argument('--emitted-at', type=float)
-        parser.add_argument('--background-tasks', type=int)
         parser.add_argument('--budget', type=float)
+        # Accepted and ignored for one release: the late-Stop delivery it fed is retired.
+        parser.add_argument('--background-tasks', type=int, help=argparse.SUPPRESS)
     elif verb == 'messages':
         parser.add_argument('session_id', nargs='?')
         parser.add_argument('--offset', type=int, default=0)
@@ -398,7 +399,8 @@ def dispatch(argv, *, env):
                     supersedes=args.supersedes, key=args.key)
             else:
                 result = hub.observe(args.event, body=args.text, native_id=args.native_id, cwd=args.cwd,
-                                     background_tasks=args.background_tasks, emitted_at=args.emitted_at)
+                                     background_tasks=args.background_tasks, emitted_at=args.emitted_at,
+                                     source=args.source)
                 if result.get('observation') == 'ignored':
                     from .session_hub import record_loss
                     record_loss(config, env, event=args.event, reason='stale-skip', native_id=args.native_id,
@@ -423,14 +425,6 @@ def dispatch(argv, *, env):
             if args.event in EVENTS and args.reason in LOSS_REASONS - {'stale-skip'}:
                 record_loss(config, env, event=args.event, reason=args.reason, native_id=args.native_id,
                             emitted_at=args.emitted_at, budget=args.budget)
-                if args.event == 'turn-stopped':
-                    # A lost Stop would leave a finished report unsettled; deliver it
-                    # late when this call can prove the conversation. Refusal is silent.
-                    try:
-                        hub.deliver_lost_stop(native_id=args.native_id, emitted_at=args.emitted_at,
-                                              background_tasks=args.background_tasks)
-                    except (ValueError, OSError, StoreError):
-                        pass
             print('{}')
             return 0
         elif verb == 'handoff':

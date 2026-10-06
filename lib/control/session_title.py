@@ -53,7 +53,7 @@ def _osc(value):
 
 
 def title_text(counts):
-    waiting = (counts or {}).get('input', 0) + (counts or {}).get('approval', 0)
+    waiting = (counts or {}).get('input', 0)
     return f'{waiting} awaiting input · asha control' if waiting else 'asha control'
 
 

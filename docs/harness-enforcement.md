@@ -140,17 +140,19 @@ the tmux socket or host PID ancestry: a digest-bound launch token proves the
 staging reservation, while the pane proof remains primary wherever tmux is
 reachable.
 
-Terminal session reports and Memory handoffs have no token: they prove the
-caller through the tmux socket and host PID ancestry, which the workspace-write
-sandbox denies. The installer-owned `rules/asha.rules` therefore pins `asha` to
-`$HOME/.local/bin/asha` with `host_executable` and allows exactly `asha control
-session report` and `asha control session handoff`, so Codex runs those two
-outside the sandbox without a prompt. Both act only as the proven caller
-session. Codex bypasses the sandbox only when every segment of a command is
-allowed, so a save chained with other commands, or using redirection, `$VAR` or
-a heredoc, stays sandboxed and fails with `session ownership unavailable` or
-`reporter is not part of this session`, plus a hint to rerun the command on its
-own. Without the pin, a bare-name allow rule also matches a planted `./asha`,
+Terminal session reports and Memory handoffs take their session from the
+environment only (`ASHA_HUB_SESSION_ID` and `ASHA_HUB_GENERATION`), with no
+tmux or process-ancestry proof; the generation and lifecycle fences refuse a
+stale or closed session. They write Control state, which the workspace-write
+sandbox mounts read-only. The installer-owned `rules/asha.rules` therefore pins
+`asha` to `$HOME/.local/bin/asha` with `host_executable` and allows exactly
+`asha control session report` and `asha control session handoff`, so Codex runs
+those two outside the sandbox without a prompt. Neither takes a session
+argument, and no allow rule may add one or set those variables, so both act
+only for the session the environment names. Codex bypasses the sandbox only
+when every segment of a command is allowed, so a save chained with other
+commands, or using redirection, `$VAR` or a heredoc, stays sandboxed and fails
+on the read-only Control state. Without the pin, a bare-name allow rule also matches a planted `./asha`,
 `Work/asha` or `/tmp/x/asha`; with it they no longer match. No allow rule
 renders when `HOME` is empty or `/`. Tested qualifier: Codex 0.160.0, terminal
 Rooms and workers, by `codex execpolicy check --resolve-host-executables`

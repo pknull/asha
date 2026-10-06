@@ -98,6 +98,7 @@
           "limitations": [
             "Installed Asha skills, commands and agents stay discoverable in a worker; only the automatic context injection is removed",
             "Hub session activity is observed through control-event.sh on SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop and SessionEnd; permission-requested is not claimed for Claude",
+            "SessionStart forwards its payload source: only clear (/clear), or a start after the bound conversation's SessionEnd, rebinds a hub session's native conversation, so a nested claude -p (startup) is refused",
             "The observation bridge is bounded and fail-open, so a missing observation leaves activity unknown rather than gating the session"
           ]
         },
@@ -263,6 +264,7 @@
           "limitations": [
             "Installed Asha skills, commands and agents stay discoverable in a worker; only the automatic context injection is removed",
             "Hub session activity is observed through control-event.sh on SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PermissionRequest and Stop; Codex has no session-ended equivalent",
+            "SessionStart forwards its payload source: only clear (/clear, Codex 0.120 and later) rebinds a hub session's native conversation; /new is not verified to report clear",
             "Each rendered hook command remains subject to Codex's hash-bound interactive hook trust, and some unified_exec shell calls are not intercepted",
             "A worker preserves native project trust; attach to its terminal if Codex asks whether to trust this project"
           ]
@@ -316,7 +318,7 @@
             "No Git publication, transcript extraction, chair context, or native permission bypass",
             "Structured close is the next structured turn, then a stop request; native permissions may block the handoff CLI",
             "PreToolUse unified_exec/tool coverage remains incomplete; callbacks are telemetry, not a complete enforcement boundary",
-            "Codex 0.160.0, terminal Rooms and workers: report and handoff prove the caller through the tmux socket and host PID ancestry, which the sandbox denies, so they succeed only as one plain command that rules/asha.rules runs outside the sandbox; a chained or expanded command fails ownership with a rerun hint. Live Room probe pending (#112)"
+            "Codex 0.160.0, terminal Rooms and workers: report and handoff take their session from the environment only and write Control state, which the sandbox mounts read-only, so they succeed only as one plain command that rules/asha.rules runs outside the sandbox; a chained or expanded command stays sandboxed and fails. Live Room probe pending (#112)"
           ]
         }
       }
@@ -375,7 +377,7 @@
           "limitations": [
             "Rendered and tested against a fake asha only; not live-proven against a running Copilot",
             "Only an ASHA_HUB_SESSION_ID environment reports; ASHA_CONTROL_MANAGED is cleared so Control tasks stay liveness-only",
-            "Copilot has no turn-end hook: a finished turn stays working until the next event or the staleness rules; tool-started and permission-requested are not claimed; a finished report therefore settles to finished only after five quiet minutes (#109)",
+            "Copilot has no turn-end hook: a finished turn stays working until the next event or the staleness rules; tool-started and permission-requested are not claimed; a finished report therefore never settles: it reads finished once the observation is stale, and a close asks and waits instead of closing at once",
             "Copilot has no Stop block seam, so hub close requests are queued-only"
           ]
         },

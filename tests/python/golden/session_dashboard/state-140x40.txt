@@ -1,7 +1,7 @@
 ASHA CONTROL · Sessions                                                                                                             by state
-7 current; 1 ended; 1 need input
+7 current; 1 ended; 2 need input
 ▼ Needs you                                                          2│ asha / lint-sweep · codex · worker
-> ◆ asha/lint-sweep        codex    Answer in terminal (attach)     1m│ ◆ Answer in terminal (attach)
+> ▲ asha/lint-sweep        codex    Answer in terminal (attach)     1m│ ▲ Answer in terminal (attach)
   ▲ asha/docs-room         claude   Answer in Control               3m│ Run make lint in /home/pknull/Code/asha
 ▼ Working                                                            4│
   ● asha/issue-102         claude   Working                         4s│ session 00000000-0001
