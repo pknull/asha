@@ -185,7 +185,7 @@ WS_OFF="$(run_hook session-start.sh '{"session_id":"ws-off","cwd":"'"$PROJECT"'"
   || fail "legacy nudge-ws-context-off marker remains honored"
 rm -f "$PROJECT/Work/markers/nudge-ws-context-off" "$PROJECT/.asha/workspace.json"
 
-echo "--- verification-pass and style-audit hooks ---"
+echo "--- verification-pass hooks and project-file execution ---"
 
 PASS_TOKEN="old-value-$RANDOM-should-disappear"
 mkdir -p "$PROJECT/src"
@@ -308,79 +308,51 @@ else
 fi
 rm -f "$PROJECT/Work/markers/pass-declaration.json"
 
-cat > "$PROJECT/.asha/style-audit" <<'EOF'
+# Hooks run outside the Codex sandbox, so they must never execute a file the
+# project (and so a sandboxed agent) can write: no project-local style auditor
+# and no project .asha/.venv interpreter. Both are planted here and must stay
+# unexecuted while every handler that used them still runs.
+EXEC_MARKERS="$WORK/project-exec-markers"
+mkdir -p "$EXEC_MARKERS" "$PROJECT/.asha/.venv/bin"
+cat > "$PROJECT/.asha/style-audit" <<EOF
 #!/usr/bin/env bash
-ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
-printf '%s' "$1" > "$ROOT/Work/style-audit-arg"
-cat > "$ROOT/Work/style-audit-payload"
-case "$(cat "$ROOT/.asha/style-audit-mode" 2>/dev/null || true)" in
-  report) printf 'avoid flat cadence\n' ;;
-  slow) sleep 12; printf 'too late\n' ;;
-  *) : ;;
-esac
+touch "$EXEC_MARKERS/style-audit"
+printf 'avoid flat cadence\n'
 EOF
-chmod +x "$PROJECT/.asha/style-audit"
-printf 'report\n' > "$PROJECT/.asha/style-audit-mode"
+cat > "$PROJECT/.asha/.venv/bin/python3" <<EOF
+#!/usr/bin/env bash
+touch "$EXEC_MARKERS/venv-python3"
+exec python3 "\$@"
+EOF
+chmod +x "$PROJECT/.asha/style-audit" "$PROJECT/.asha/.venv/bin/python3"
+rm -f "$PROJECT/Work/session-state/claude-style-1.json"
+run_hook session-start.sh '{"session_id":"style-1","cwd":"'"$PROJECT"'"}' >/dev/null
 STYLE_PAYLOAD='{"session_id":"style-1","cwd":"'"$PROJECT"'","tool_name":"Edit","tool_input":{"file_path":"src/main.py"}}'
-STYLE_OUT="$(run_hook post-tool-use.sh "$STYLE_PAYLOAD")"
-printf '%s' "$STYLE_OUT" | jq -e \
-  '.hookSpecificOutput.hookEventName == "PostToolUse"
-   and (.hookSpecificOutput.additionalContext | contains("STYLE AUDIT FINDING") and contains("avoid flat cadence"))' \
-  >/dev/null 2>&1 \
-  && ok "executable style audit emits Claude PostToolUse additionalContext" \
-  || fail "executable style audit emits Claude PostToolUse additionalContext"
-[[ "$(cat "$PROJECT/Work/style-audit-arg")" == "src/main.py" ]] \
-  && jq -e '.tool_name == "Edit"' "$PROJECT/Work/style-audit-payload" >/dev/null 2>&1 \
-  && ok "style audit receives the edited path and full payload" \
-  || fail "style audit receives the edited path and full payload"
-
-printf 'empty\n' > "$PROJECT/.asha/style-audit-mode"
 [[ "$(run_hook post-tool-use.sh "$STYLE_PAYLOAD")" == '{}' ]] \
-  && ok "empty style-audit output is a no-op" \
-  || fail "empty style-audit output is a no-op"
-chmod -x "$PROJECT/.asha/style-audit"
-[[ "$(run_hook post-tool-use.sh "$STYLE_PAYLOAD")" == '{}' ]] \
-  && ok "non-executable style audit is a no-op" \
-  || fail "non-executable style audit is a no-op"
-mv "$PROJECT/.asha/style-audit" "$PROJECT/.asha/style-audit.absent"
-[[ "$(run_hook post-tool-use.sh "$STYLE_PAYLOAD")" == '{}' ]] \
-  && ok "absent style audit is a no-op" \
-  || fail "absent style audit is a no-op"
-mv "$PROJECT/.asha/style-audit.absent" "$PROJECT/.asha/style-audit"
-chmod +x "$PROJECT/.asha/style-audit"
-printf 'slow\n' > "$PROJECT/.asha/style-audit-mode"
-[[ "$(run_hook post-tool-use.sh "$STYLE_PAYLOAD")" == '{}' ]] \
-  && ok "timed-out style audit fails open without a nudge" \
-  || fail "timed-out style audit fails open without a nudge"
-
-printf 'report\n' > "$PROJECT/.asha/style-audit-mode"
-COPILOT_STYLE_PAYLOAD='{"sessionId":"style-copilot","cwd":"'"$PROJECT"'","toolName":"edit","toolArgs":"{\"path\":\"src/copilot.py\"}"}'
-COPILOT_POST="$(run_hook post-tool-use.sh "$COPILOT_STYLE_PAYLOAD" copilot)"
-COPILOT_STYLE="$(run_hook user-prompt-submit.sh \
+  && ok "Claude PostToolUse carries no project-local audit output" \
+  || fail "Claude PostToolUse carries no project-local audit output"
+run_hook user-prompt-submit.sh '{"session_id":"style-1","cwd":"'"$PROJECT"'","prompt":"go on"}' >/dev/null
+COPILOT_POST="$(run_hook post-tool-use.sh \
+  '{"sessionId":"style-copilot","cwd":"'"$PROJECT"'","toolName":"edit","toolArgs":"{\"path\":\"src/copilot.py\"}"}' copilot)"
+COPILOT_NEXT="$(run_hook user-prompt-submit.sh \
   '{"sessionId":"style-copilot","cwd":"'"$PROJECT"'","prompt":"continue"}' copilot)"
-[[ "$COPILOT_POST" == '{}' ]] \
-  && printf '%s' "$COPILOT_STYLE" | jq -e \
-    '.additionalContext | contains("STYLE AUDIT FINDING") and contains("src/copilot.py")' \
-    >/dev/null 2>&1 \
-  && ok "Copilot delivers style findings at the next prompt" \
-  || fail "Copilot delivers style findings at the next prompt"
-printf 'unrelated marker\n' > "$PROJECT/Work/markers/keep.md"
-COPILOT_HOSTILE_PAYLOAD='{"sessionId":"..","cwd":"'"$PROJECT"'","toolName":"edit","toolArgs":{"path":"src/hostile.py"}}'
-COPILOT_HOSTILE_POST="$(run_hook post-tool-use.sh "$COPILOT_HOSTILE_PAYLOAD" copilot)"
-COPILOT_HOSTILE_STYLE="$(run_hook user-prompt-submit.sh \
-  '{"sessionId":"..","cwd":"'"$PROJECT"'","prompt":"continue"}' copilot)"
-[[ "$COPILOT_HOSTILE_POST" == '{}' && -f "$PROJECT/Work/markers/keep.md" ]] \
-  && printf '%s' "$COPILOT_HOSTILE_STYLE" | jq -e \
-    '.additionalContext | contains("src/hostile.py")' >/dev/null 2>&1 \
-  && ok "Copilot style queue confines hostile session identifiers" \
-  || fail "Copilot style queue confines hostile session identifiers"
-rm -f "$PROJECT/Work/markers/keep.md"
-OPENCODE_STYLE="$(run_hook post-tool-use.sh \
+[[ "$COPILOT_POST" == '{}' && "$COPILOT_NEXT" == '{}' \
+   && ! -e "$PROJECT/Work/markers/style-audit" ]] \
+  && ok "Copilot queues and delivers no project-local audit output" \
+  || fail "Copilot queues and delivers no project-local audit output"
+OPENCODE_POST="$(run_hook post-tool-use.sh \
   '{"session_id":"style-opencode","cwd":"'"$PROJECT"'","tool_name":"apply_patch","tool_input":{"patchText":"*** Update File: src/open.py\n@@"}}' opencode)"
-[[ "$OPENCODE_STYLE" == *"STYLE AUDIT FINDING"* \
-   && "$OPENCODE_STYLE" == *"src/open.py"* ]] \
-  && ok "OpenCode apply_patch patchText produces pending style context" \
-  || fail "OpenCode apply_patch patchText produces pending style context"
+[[ "$OPENCODE_POST" == '{}' ]] \
+  && ok "OpenCode tool.execute.after receives no project-local audit output" \
+  || fail "OpenCode tool.execute.after receives no project-local audit output"
+run_hook session-end.sh '{"session_id":"style-1","cwd":"'"$PROJECT"'","reason":"logout"}' >/dev/null
+check "hooks never execute a project-local style auditor" test ! -e "$EXEC_MARKERS/style-audit"
+check "hooks never execute the project .asha/.venv interpreter" test ! -e "$EXEC_MARKERS/venv-python3"
+jq -e '.sealed_at | type == "string"' "$PROJECT/Work/session-state/claude-style-1.json" >/dev/null 2>&1 \
+  && ok "recovery hooks still run through the system python3" \
+  || fail "recovery hooks still run through the system python3"
+check "the style-audit handler is retired" test ! -e "$HANDLERS/style-audit.sh"
+rm -rf "$EXEC_MARKERS" "$PROJECT/.asha/.venv" "$PROJECT/.asha/style-audit"
 
 BEFORE="$(sha256sum "$PROJECT/Memory/activeContext.md" "$PROJECT/Memory/decisions.md")"
 LAST_ACTION_BEFORE="$(jq -r '.last_action' "$PROJECT/Work/session-state/claude-p1.json")"

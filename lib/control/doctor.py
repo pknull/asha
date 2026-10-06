@@ -428,7 +428,7 @@ def codex_hooks_probe(home: Path, asha_home: Path, *, user_home: Path,
                 return Probe("hooks", "unavailable", "Codex hooks registered; absent feature flag default unsupported for this native version; trust/execution unverified")
             feature_detail = "0.153.4 default-true evidence only"
         mixed = "; mixed foreign inline/JSON sources" if plan["mode"] == "json" and value.get("hooks", {}).keys() - {"state"} else ""
-        return Probe("hooks", "match", f"Codex {len(commands)} expected commands registered, executable paths verified; verification Stop and style PostToolUse checked; {feature_detail}{mixed}; native trust and execution NOT verified")
+        return Probe("hooks", "match", f"Codex {len(commands)} expected commands registered, executable paths verified; verification Stop and recovery PostToolUse checked; {feature_detail}{mixed}; native trust and execution NOT verified")
     except (OSError, ValueError, TypeError, KeyError, RecursionError, subprocess.TimeoutExpired) as exc:
         return Probe("hooks", "unavailable", "Codex hook inspection refused: " + _safe_detail(exc)[:460])
 

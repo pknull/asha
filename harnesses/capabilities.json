@@ -67,14 +67,6 @@
             "Advisory completion nudge only; the handler fails open"
           ]
         },
-        "style-audit": {
-          "support": "native",
-          "surface": "PostToolUse(Edit|Write|MultiEdit|apply_patch) -> post-tool-use.sh -> hookSpecificOutput.additionalContext",
-          "verifier": "doctor:hook-paths + tests:test-hooks/test-install/test-doctor",
-          "limitations": [
-            "Runs only an executable project-local .asha/style-audit and never blocks"
-          ]
-        },
         "control-status": {
           "support": "partial",
           "surface": "SessionStart -> session-start; UserPromptSubmit -> prompt-submitted; PostToolUse -> tool-completed; PostToolUseFailure -> tool-completed; Stop -> turn-stopped; SessionEnd -> session-ended",
@@ -218,15 +210,6 @@
           "limitations": [
             "Each rendered Stop command requires Codex's hash-bound interactive hook trust",
             "The advisory handler fails open"
-          ]
-        },
-        "style-audit": {
-          "support": "partial",
-          "surface": "PostToolUse(Edit|Write|MultiEdit|apply_patch) -> post-tool-use.sh -> hookSpecificOutput.additionalContext",
-          "verifier": "doctor:toml-hooks + tests:test-hooks/test-install/test-doctor",
-          "limitations": [
-            "PostToolUse interception remains incomplete for some unified_exec paths",
-            "Runs only an executable project-local .asha/style-audit and never blocks"
           ]
         },
         "control-status": {
@@ -385,15 +368,6 @@
             "The advisory handler fails open"
           ]
         },
-        "style-audit": {
-          "support": "partial",
-          "surface": "postToolUse queues style-audit output; next userPromptSubmitted returns top-level additionalContext",
-          "verifier": "doctor:guardrails + tests:test-hooks/test-install/test-doctor",
-          "limitations": [
-            "copilot-cli#2980 drops postToolUse additionalContext, requiring next-prompt delivery",
-            "Runs only an executable project-local .asha/style-audit and never blocks"
-          ]
-        },
         "control-status": {
           "support": "partial",
           "surface": "hub sessions: hooks/asha-recovery.json sessionStart -> session-start; userPromptSubmitted -> prompt-submitted; postToolUse -> tool-completed; sessionEnd -> session-ended (via control-event.sh); Control tasks: process liveness only",
@@ -540,15 +514,6 @@
           "limitations": [
             "Delivery occurs at the next system-context transform after idle",
             "The advisory handler fails open"
-          ]
-        },
-        "style-audit": {
-          "support": "partial",
-          "surface": "tool.execute.after -> post-tool-use.sh stdout -> pending system context",
-          "verifier": "doctor:opencode-plugin + tests:test-hooks/test-install/test-doctor",
-          "limitations": [
-            "Delivery occurs at the next system-context transform",
-            "Runs only an executable project-local .asha/style-audit and never blocks"
           ]
         },
         "control-status": {

@@ -104,20 +104,12 @@ is_asha_initialized() {
     [[ -n "$project_dir" ]] && [[ -f "$project_dir/.asha/config.json" ]]
 }
 
-# Get Python command (venv if available, else system)
+# Get the system Python command. Hooks can run outside a harness sandbox, so they
+# never prefer an interpreter inside the project tree, which a sandboxed agent
+# can write. The project-dir argument callers pass is ignored.
 # Returns python path on stdout, or empty string if not found
 # Always returns 0 (safe under set -e)
 get_python_cmd() {
-    local project_dir="${1:-}"
-    [[ -n "$project_dir" ]] || project_dir=$(detect_project_dir)
-
-    # Check project's .asha/.venv first
-    if [[ -n "$project_dir" ]] && [[ -x "$project_dir/.asha/.venv/bin/python3" ]]; then
-        echo "$project_dir/.asha/.venv/bin/python3"
-        return 0
-    fi
-
-    # Fallback to system python
     if command -v python3 >/dev/null 2>&1; then
         echo "python3"
         return 0
