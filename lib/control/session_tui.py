@@ -3,7 +3,8 @@
 The pure parts live beside it: ``session_view`` (the retained model),
 ``session_layout`` (regions and renders), ``session_keys`` (footer and key
 sheet), ``session_actions`` (row actions) and ``session_refresh`` (change-driven
-reads). This module owns curses.
+reads). This module owns curses; ``session_modals`` holds the prompts and forms
+it shares with the legacy TUI.
 """
 from __future__ import annotations
 try:
@@ -20,7 +21,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .config import load_config
 from .session_hub import Hub, listed
-from . import session_actions, session_layout, session_preview, session_refresh, session_title, session_view
+from . import (
+    session_actions, session_layout, session_modals, session_preview, session_refresh, session_title,
+    session_view,
+)
 from .session_actions import launch_selection  # noqa: F401  (re-exported; #95 tests)
 from .session_keys import footer, key_sheet, sheet_lines as _sheet_lines, sheet_offset  # noqa: F401
 from .session_presentation import present  # noqa: F401  (re-exported for callers and tests)
@@ -44,8 +48,7 @@ def lines(snapshot, *, selected=0, width=100, height=30, message='', anchor=None
 
 
 def _span_attribute(role, tier, selected, coloured):
-    from .tui import _attribute
-    attr = _attribute(curses, tier, coloured)
+    attr = session_modals._attribute(curses, tier, coloured)
     if role in {'heading', 'section'}:
         attr |= curses.A_BOLD
         return attr | (curses.A_REVERSE if selected else 0)
@@ -73,7 +76,6 @@ def _paint(screen, snapshot, *, selected=0, coloured=False, message='', anchor=N
 
 
 def run_tui(env):
-    from .tui import _TuiShutdown
     def fallback():
         print('asha control: a usable terminal is required; use `asha control session list --json`.', file=sys.stderr)
         return 2
@@ -86,13 +88,13 @@ def run_tui(env):
     config = load_config(env)
     previous = {}
     def shutdown(signum, frame):
-        raise _TuiShutdown(signum)
+        raise session_modals._TuiShutdown(signum)
     try:
         for signum in (signal.SIGTERM, signal.SIGHUP):
             previous[signum] = signal.signal(signum, shutdown)
         try:
             return curses.wrapper(_loop, config, dict(env))
-        except _TuiShutdown as exc:
+        except session_modals._TuiShutdown as exc:
             return 128 + exc.signum
         except curses.error:
             return fallback()
@@ -137,11 +139,10 @@ class Dashboard:
     """The event loop's state: the retained view, the page in flight and the display toggles."""
 
     def __init__(self, screen, config, env):
-        from . import tui
         screen.timeout(TICK_MS)
         self.screen, self.config, self.env = screen, config, env
-        self.model = tui.TuiModel([])
-        self.model.coloured = tui.init_colours(curses)
+        self.model = session_modals.SessionModel()
+        self.model.coloured = session_modals.init_colours(curses)
         self.hub = Hub(config, env=env)
         self.ctx = session_actions.Context(screen, curses, self.model, config, env, self.hub)
         # The view is retained across refreshes (#102): rows keep their stable
@@ -345,9 +346,9 @@ class Dashboard:
             tui.run_tui(self.env, initial_mode='initiatives')
         finally:
             curses.reset_prog_mode()
-            self.model.coloured = tui.init_colours(curses)
+            self.model.coloured = session_modals.init_colours(curses)
             self.screen.timeout(TICK_MS)
-            tui._repaint_after_suspend(self.screen)
+            session_modals._repaint_after_suspend(self.screen)
             self.refresher.request_page()
 
     def handle(self, key):

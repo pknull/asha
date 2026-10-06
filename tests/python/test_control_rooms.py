@@ -34,7 +34,7 @@ from lib.control.rooms import (
 from lib.control.tmux import PaneFacts, TmuxError
 from lib.control.tmux import TmuxAdapter
 from lib.control.socket_reaper import TmuxSocketReaper
-from lib.control import cli, tui
+from lib.control import cli, session_modals, tui
 
 
 class FakeTmux:
@@ -345,10 +345,10 @@ class RoomTests(unittest.TestCase):
             "lib.control.orchestration.projects.list_projects_across",
             return_value=project_payload,
         ), unittest.mock.patch.object(
-            tui, "_draw_modal_frame",
+            session_modals, "_draw_modal_frame",
             side_effect=lambda _screen, _curses, frame: frames.append(frame),
         ), unittest.mock.patch.object(
-            tui, "_read_modal_key", side_effect=lambda *_args: next(keys),
+            session_modals, "_read_modal_key", side_effect=lambda *_args: next(keys),
         ), unittest.mock.patch(
             "lib.control.rooms.open_room", return_value=launched,
         ) as open_call, unittest.mock.patch("lib.control.tui._refresh_initiatives"):

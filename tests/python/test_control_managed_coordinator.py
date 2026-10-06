@@ -66,7 +66,7 @@ class ManagedCoordinatorTests(ExecutionFixture, unittest.TestCase):
         self.assertFalse(any(d['kind'] == 'managed-permission' for d in initiative_demand(view)))
 
     def test_approve_key_opens_selected_initiatives_exact_tool_request(self):
-        from lib.control import tui
+        from lib.control import session_modals, tui
         from lib.control.native_requests import NativeRequests
         from lib.control.orchestration.tui_model import InitiativesScreen
         generation = self.session['generation']
@@ -93,7 +93,7 @@ class ManagedCoordinatorTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(intent.kind, tui.IntentKind.INIT_APPROVE)
         for decision in (None, 'allow'):
             with mock.patch('lib.control.sessions.refuse_managed_operator'), \
-                 mock.patch.object(tui, '_native_permission_prompt', return_value=decision) as prompt, \
+                 mock.patch.object(session_modals, '_native_permission_prompt', return_value=decision) as prompt, \
                  mock.patch.object(tui, '_approve_review_budget_prompt', side_effect=AssertionError('plan route')):
                 message = tui._execute_initiative_intent(intent, stdscr=None, curses_module=None,
                     model=model, config=self.config.control, env=self.env, store=None, journals=None, jj=None)

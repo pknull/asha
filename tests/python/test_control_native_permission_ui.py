@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from lib.control import tui
+from lib.control import session_modals, tui
 from tests.python.test_control_tui_focus import FakeCurses, FakeScreen
 
 
@@ -13,7 +13,7 @@ class NativePermissionUiTests(unittest.TestCase):
     def test_wide_keys_decide_and_scroll_keeps_every_row_inside_screen(self):
         screen = FakeScreen([338, 360, 339, 262, "a"], height=8, width=30)
         frames = []
-        with mock.patch.object(tui, "_draw_modal_frame", side_effect=lambda _s, _c, frame: frames.append(frame)):
+        with mock.patch.object(session_modals, "_draw_modal_frame", side_effect=lambda _s, _c, frame: frames.append(frame)):
             self.assertEqual(tui._native_permission_prompt(screen, FakeCurses(), self.request), "allow")
         for frame in frames:
             self.assertLessEqual(len(frame.rows), 8)
@@ -23,7 +23,7 @@ class NativePermissionUiTests(unittest.TestCase):
 
     def test_idle_poll_does_not_redraw_or_dim_the_invocation(self):
         screen = FakeScreen([-1, -1, "d"], height=15, width=80)
-        with mock.patch.object(tui, "_draw_modal_frame") as draw:
+        with mock.patch.object(session_modals, "_draw_modal_frame") as draw:
             self.assertEqual(tui._native_permission_prompt(screen, FakeCurses(), self.request), "deny")
         self.assertEqual(draw.call_count, 1)
         self.assertIn("content", draw.call_args.args[2].row_roles)

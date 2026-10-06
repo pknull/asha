@@ -161,11 +161,11 @@ class CodexNativeTests(unittest.TestCase):
         self.assertEqual(self.native.get(request["request_id"])["state"], "answered")
 
     def test_control_native_question_routes_to_same_turn(self):
-        from lib.control import tui
+        from lib.control import session_modals, tui
         request = self.open()
         model = tui.TuiModel()
         with mock.patch("lib.control.sessions.refuse_managed_operator"), \
-             mock.patch.object(tui, "_prompt_line", side_effect=[request["request_id"], "Quiet"]):
+             mock.patch.object(session_modals, "_prompt_line", side_effect=[request["request_id"], "Quiet"]):
             tui._execute_intent(model.dispatch_key("M"), stdscr=None, curses_module=None,
                 model=model, config=self.config, env={}, store=None, journals=None, jj=None)
         self.assertEqual(json.loads(self.native.get(request["request_id"])["answer"]),

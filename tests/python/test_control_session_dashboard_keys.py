@@ -3,7 +3,7 @@ import io
 import unittest
 from unittest.mock import MagicMock, patch
 
-from lib.control import session_actions, session_title, session_tui, session_view, tui
+from lib.control import session_actions, session_modals, session_title, session_tui, session_view, tui
 from tests.python.test_control_session_dashboard import row
 
 KEY_RESIZE, KEY_LEFT, KEY_RIGHT = 410, 260, 261
@@ -47,7 +47,7 @@ def run(keys, rows, *, size=(24, 100), hub=None, title=None, config=None):
          patch.object(session_tui, 'ThreadPoolExecutor', return_value=pool), \
          patch.object(session_tui, 'curses', FakeCurses), \
          patch.object(session_tui, '_title_writer', return_value=writer), \
-         patch.object(tui, 'init_colours', return_value=False), \
+         patch.object(session_modals, 'init_colours', return_value=False), \
          patch.object(session_tui, '_paint', side_effect=lambda s, snap, **kw: painted.append((snap, kw))):
         screen = Screen(keys, size)
         self_check = session_tui._loop(screen, object() if config is None else config, {})
@@ -92,7 +92,7 @@ class AutoFoldControllerTests(unittest.TestCase):
              patch.object(session_tui, 'ThreadPoolExecutor', return_value=pool), \
              patch.object(session_tui, 'curses', FakeCurses), \
              patch.object(session_tui, '_title_writer', return_value=session_title.TitleWriter(None, enabled=False)), \
-             patch.object(tui, 'init_colours', return_value=False), \
+             patch.object(session_modals, 'init_colours', return_value=False), \
              patch.object(session_tui, '_paint', side_effect=lambda s, snap, **kw: painted.append((snap, kw))):
             dash = session_tui.Dashboard(Screen([], size=(9, 40)), object(), {})
             dash.poll()
@@ -160,7 +160,7 @@ class GroupingKeyTests(unittest.TestCase):
 
     def test_row_actions_are_inert_on_a_folded_heading(self):
         hub = MagicMock()
-        with patch.object(tui, '_prompt_line', return_value='yes'):
+        with patch.object(session_modals, '_prompt_line', return_value='yes'):
             run([KEY_LEFT, ord('x'), ord('m'), ord('s')], self.ROWS, hub=hub)
         hub.close.assert_not_called()
         hub.send.assert_not_called()
@@ -218,7 +218,7 @@ class LaunchKeyTests(unittest.TestCase):
                     seen.update(session)
                     return session['launch'](project='/p', harness='codex', prompt='Do it',
                                              model='gpt-5', effort=None)
-                with patch.object(tui, '_project_launch_form', side_effect=form):
+                with patch.object(session_modals, '_project_launch_form', side_effect=form):
                     _, painted = run([key], [row('a')], hub=hub)
                 self.assertEqual(seen['prompt_label'], label)
                 hub.launch.assert_called_once_with(project='/p', prompt='Do it', harness='codex', profile=profile,
@@ -229,7 +229,7 @@ class LaunchKeyTests(unittest.TestCase):
 
     def test_a_cancelled_form_launches_nothing(self):
         hub = MagicMock()
-        with patch.object(tui, '_project_launch_form', return_value='session launch cancelled'):
+        with patch.object(session_modals, '_project_launch_form', return_value='session launch cancelled'):
             _, painted = run([ord('n')], [row('a')], hub=hub)
         hub.launch.assert_not_called()
         self.assertEqual(painted[-1][1]['message'], 'session launch cancelled')
@@ -250,8 +250,8 @@ class LaunchFormTests(unittest.TestCase):
              patch('lib.control.orchestration.projects.list_projects_across', return_value=payload), \
              patch('lib.control.rooms.resolve_project', return_value={'root': '/proj'}), \
              patch('lib.control.rooms.room_harness_available', side_effect=lambda name, env: name in {'claude', 'codex'}), \
-             patch.object(tui, '_draw_modal_frame', side_effect=lambda _s, _c, frame: frames.append(frame)), \
-             patch.object(tui, '_read_modal_key', side_effect=lambda *_: next(stream)):
+             patch.object(session_modals, '_draw_modal_frame', side_effect=lambda _s, _c, frame: frames.append(frame)), \
+             patch.object(session_modals, '_read_modal_key', side_effect=lambda *_: next(stream)):
             screen = MagicMock()
             screen.getmaxyx.return_value = (18, 80)
             form = dict(title='New project job', prompt_label='Assignment', launch=launch, hint='optional')

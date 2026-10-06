@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from lib.control import session_tui, tui
+from lib.control import session_modals, session_tui, tui
 from lib.control.tui_style import BAD, GOOD, INERT, MACHINE, TIER_PAIR, WAITING
 
 
@@ -81,7 +81,7 @@ class SessionColourTests(unittest.TestCase):
                 pool.submit.return_value.result.return_value = snapshot('working')
                 with patch.object(session_tui, 'Hub'), \
                      patch.object(session_tui, 'ThreadPoolExecutor', return_value=pool), \
-                     patch.object(tui, 'init_colours', return_value=enabled) as init, \
+                     patch.object(session_modals, 'init_colours', return_value=enabled) as init, \
                      patch.object(session_tui, '_paint') as paint:
                     self.assertEqual(session_tui._loop(screen, object(), {}), 0)
                 init.assert_called_once_with(session_tui.curses)
