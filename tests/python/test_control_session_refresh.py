@@ -479,7 +479,7 @@ class DashboardRefreshTests(RefreshFixture):
     """The curses loop drives the refresher; keys never force a page."""
 
     def dashboard(self, config):
-        from lib.control import session_title, session_tui, tui
+        from lib.control import session_modals, session_title, session_tui
         from tests.python.test_control_session_dashboard_keys import FakeCurses, Screen
         self.terminal = RecordingTmux(self.tmux)
         patches = [mock.patch.object(session_tui, 'ThreadPoolExecutor', return_value=mock.MagicMock(
@@ -487,7 +487,7 @@ class DashboardRefreshTests(RefreshFixture):
                    mock.patch.object(session_tui, 'curses', FakeCurses),
                    mock.patch.object(session_tui, '_title_writer',
                                      return_value=session_title.TitleWriter(None, enabled=False)),
-                   mock.patch.object(tui, 'init_colours', return_value=False),
+                   mock.patch.object(session_modals, 'init_colours', return_value=False),
                    mock.patch.object(session_refresh, 'terminal_inventory',
                                      side_effect=lambda deadline: (self.terminal, [])),
                    mock.patch.object(session_refresh, 'Hub', self.counting),

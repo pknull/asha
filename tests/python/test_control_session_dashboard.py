@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from lib.control import session_tui, session_view, tui
+from lib.control import session_modals, session_tui, session_view, tui
 
 
 def row(sid='one', **changes):
@@ -184,7 +184,7 @@ class LoopTests(unittest.TestCase):
         with patch.object(session_tui, 'Hub', return_value=hub), \
              patch.object(session_tui, 'ThreadPoolExecutor', return_value=pool), \
              patch.object(session_tui, 'curses', FakeCurses), \
-             patch.object(tui, 'init_colours', return_value=False), \
+             patch.object(session_modals, 'init_colours', return_value=False), \
              patch.object(session_tui, '_paint', side_effect=lambda s, snap, **kw: painted.append((snap, kw))):
             self.assertEqual(session_tui._loop(Screen(keys), object(), {}), 0)
         return pool, hub, painted
@@ -204,7 +204,7 @@ class LoopTests(unittest.TestCase):
         hub = MagicMock()
         hub.owns.return_value = True
         hub.show.return_value = row('b', activity='needs-input')
-        with patch.object(tui, '_prompt_line', return_value='hello'), \
+        with patch.object(session_modals, '_prompt_line', return_value='hello'), \
              patch('lib.control.sessions.refuse_managed_operator'):
             pool, hub, painted = self.run_loop([FakeCurses.KEY_DOWN, ord('m')], data, hub=hub)
         self.assertEqual(pool.submit.call_count, 1)
@@ -226,7 +226,7 @@ class LoopTests(unittest.TestCase):
              patch.object(session_tui, 'ThreadPoolExecutor', return_value=pool), \
              patch.object(session_tui, 'curses', FakeCurses), \
              patch.object(session_tui.time, 'monotonic', side_effect=lambda: next(clock)), \
-             patch.object(tui, 'init_colours', return_value=False), \
+             patch.object(session_modals, 'init_colours', return_value=False), \
              patch.object(session_tui, '_paint', side_effect=lambda s, snap, **kw: painted.append(snap)):
             session_tui._loop(Screen([-1]), object(), {})
         final = painted[-1]
@@ -246,7 +246,7 @@ class LoopTests(unittest.TestCase):
              patch.object(session_tui, 'ThreadPoolExecutor', return_value=pool), \
              patch.object(session_tui, 'curses', FakeCurses), \
              patch.object(session_tui.time, 'monotonic', side_effect=lambda: next(clock)), \
-             patch.object(tui, 'init_colours', return_value=False), \
+             patch.object(session_modals, 'init_colours', return_value=False), \
              patch.object(session_tui, '_paint', side_effect=lambda s, snap, **kw: painted.append((snap, kw))):
             session_tui._loop(Screen([-1]), object(), {})
         snap, kw = painted[-1]
@@ -323,8 +323,8 @@ class ActionMembershipTests(unittest.TestCase):
              patch.object(session_tui, 'curses', FakeCurses), \
              patch.object(session_tui.time, 'monotonic', side_effect=lambda: screen.now), \
              patch.object(session_tui.time, 'time', side_effect=lambda: 1000 + screen.now), \
-             patch.object(tui, 'init_colours', return_value=False), \
-             patch.object(tui, '_prompt_line', return_value='yes'), \
+             patch.object(session_modals, 'init_colours', return_value=False), \
+             patch.object(session_modals, '_prompt_line', return_value='yes'), \
              patch('lib.control.sessions.refuse_managed_operator'), \
              patch.object(session_tui, '_paint', side_effect=lambda s, snap, **kw: painted.append(snap)):
             session_tui._loop(screen, SimpleNamespace(), {})

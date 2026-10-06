@@ -259,7 +259,7 @@ class SessionTests(unittest.TestCase):
         # This test process stands in for both roles; independent role tests
         # prove that the actual operator CLI refuses owner ancestry.
         with mock.patch("lib.control.sessions.refuse_managed_operator"), \
-             mock.patch("lib.control.tui._prompt_line", side_effect=[request_id, "Chapter two"]):
+             mock.patch("lib.control.session_modals._prompt_line", side_effect=[request_id, "Chapter two"]):
             tui._execute_intent(intent, stdscr=None, curses_module=None, model=model,
                                 config=self.config, env=self.env, store=None, journals=None, jj=None)
         self.assertEqual(overview(self.config)["questions"], 0)

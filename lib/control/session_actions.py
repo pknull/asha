@@ -8,6 +8,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from . import session_modals
 from .session_hub import attach_refusal
 from .session_presentation import memory_label
 
@@ -20,16 +21,13 @@ _CLOSE_LABELS = {'x': 'Close (asks for a Memory save, then closes) ', 'X': 'Forc
 class Context:
     screen: Any
     curses: Any
-    model: Any             # tui.TuiModel, for the shared modal helpers
+    model: Any             # session_modals.SessionModel, for the shared modal helpers
     config: Any
     env: dict
     hub: Any
 
     def prompt(self, label, title):
-        from . import tui
-        height, width = self.screen.getmaxyx()
-        self.model.resize(height, width)
-        return tui._prompt_line(self.screen, self.curses, self.model, label, title=title, maximum=4000)
+        return session_modals._prompt_line(self.screen, self.curses, self.model, label, title=title, maximum=4000)
 
 
 def launch_selection(model_text, effort_text):
@@ -39,7 +37,6 @@ def launch_selection(model_text, effort_text):
 
 def launch(ctx, key):
     """Open the project launch form for a job (`n`) or a Room (`o`); returns (message, session id)."""
-    from . import tui
     room = key == ord('o')
     started = {}
 
@@ -52,24 +49,23 @@ def launch(ctx, key):
     form = dict(title='Open project Room' if room else 'New project job',
                 prompt_label='Topic' if room else 'Assignment', launch=submit,
                 hint='Model and effort are optional; blank keeps the harness default.')
-    message = tui._project_launch_form(ctx.screen, ctx.curses, ctx.model, ctx.config, ctx.env, session=form)
+    message = session_modals._project_launch_form(ctx.screen, ctx.curses, ctx.model, ctx.config, ctx.env,
+                                                  session=form)
     return message, started.get('sid')
 
 
 def attach(ctx, row):
-    from . import tui
     from .rooms import RoomStore, attach_room
     if row['transport'] == 'structured':
-        return tui._managed_session_view(ctx.screen, ctx.curses, ctx.config, row['session_id'])
+        return session_modals._managed_session_view(ctx.screen, ctx.curses, ctx.config, row['session_id'])
     target = ctx.hub.attach(row['session_id']) if row['transport'] == 'terminal' else attach_room(
         RoomStore(ctx.config), row['room_id'], tmux=ctx.hub.tmux)
-    return tui._popup_room_command(ctx.screen, ctx.curses, ctx.config, ctx.env, ctx.hub.tmux,
-                                   target['attach_argv'], target['attach'], target['name']) \
+    return session_modals._popup_room_command(ctx.screen, ctx.curses, ctx.config, ctx.env, ctx.hub.tmux,
+                                              target['attach_argv'], target['attach'], target['name']) \
         or 'Session detached; work continues'
 
 
 def answer(ctx, row):
-    from . import tui
     from .session_store import SessionStore
     if row['transport'] != 'structured':
         return attach(ctx, row)
@@ -77,12 +73,11 @@ def answer(ctx, row):
         requests = sessions.snapshot(row['session_id'])['requests']
     request = next((r for r in requests if r['state'] == 'pending'), None)
     if request and request['kind'] == 'native-permission':
-        return tui._decide_managed_permission(ctx.screen, ctx.curses, ctx.model, ctx.config, ctx.env,
-                                              request['request_id'])
+        return session_modals._decide_managed_permission(ctx.screen, ctx.curses, ctx.model, ctx.config, ctx.env,
+                                                         request['request_id'])
     if request:
-        tui._execute_intent(tui.TuiIntent(tui.IntentKind.SESSION_QUESTIONS, task_id=request['request_id']),
-                            stdscr=ctx.screen, curses_module=ctx.curses, model=ctx.model, config=ctx.config,
-                            env=ctx.env, store=None, journals=None, jj=None)
+        session_modals._answer_session_request(ctx.screen, ctx.curses, ctx.model, ctx.config, ctx.env,
+                                               request['request_id'])
         return ctx.model.message or ''
     return 'No input request is recorded; Enter opens the conversation'
 
