@@ -46,7 +46,7 @@ SOURCES = ('explicit-save', 'close', 'handoff', 'attestation')
 
 def insert(c, row, source, receipt):
     """Retain one successful publication or attestation for this incarnation."""
-    from .session_experience import canonical
+    from .session_guidance import canonical
     if source not in SOURCES:
         raise StoreError('unknown publication source')
     receipt = dict(receipt, source=source, hub_session_id=row['session_id'], hub_generation=row['generation'],
@@ -60,16 +60,16 @@ def insert(c, row, source, receipt):
 
 def record(hub, row, source, receipt):
     """Insert a handoff's publication or attestation row for the acting incarnation."""
-    from .session_experience import Experiences
+    from .session_guidance import active_incarnation
     hub.initialize()
     with hub.database() as db, db.transaction(write=True) as c:
-        Experiences.current(c, row)
+        active_incarnation(c, row)
         return insert(c, row, source, receipt)
 
 
 def record_publication(hub, actor, receipt):
     """Retain an explicit save's receipt issued from validated bytes under the Memory lock."""
-    from .session_experience import Experiences, canonical
+    from .session_guidance import active_incarnation, canonical
     if (receipt.get('source') != 'explicit-save' or receipt.get('status') != 'published'
             or receipt.get('project_id') != actor['project_id']
             or receipt.get('hub_session_id') != actor['session_id']
@@ -77,7 +77,7 @@ def record_publication(hub, actor, receipt):
         raise StoreError('publication linkage scope differs')
     hub.initialize()
     with hub.database() as db, db.transaction(write=True) as c:
-        Experiences.current(c, actor)
+        active_incarnation(c, actor)
         c.execute('INSERT INTO hub_memory_publications VALUES(?,?,?,?,?,?,?)',
                   (receipt['publication_id'], actor['session_id'], actor['generation'], actor['project_id'],
                    assignment_epoch(actor), time.time(), canonical(receipt)))
@@ -86,34 +86,6 @@ def record_publication(hub, actor, receipt):
 
 def _available(c):
     return c.execute("SELECT 1 FROM sqlite_master WHERE name='hub_memory_publications'").fetchone() is not None
-
-
-def verify_publication(hub, actor, publication):
-    """A submitted JSON file cannot manufacture a controller publication receipt."""
-    from .session_experience import Experiences, canonical
-    with hub.database() as db, db.transaction() as c:
-        Experiences.current(c, actor)
-        saved = c.execute('SELECT * FROM hub_memory_publications WHERE publication_id=?',
-                          (publication.get('publication_id'),)).fetchone() if _available(c) else None
-    if (not saved or saved['session_id'] != actor['session_id'] or saved['generation'] != actor['generation']
-            or saved['project_id'] != actor['project_id']
-            or saved['receipt'] != canonical({k: v for k, v in publication.items()
-                                          if k not in {'completion', 'hub_publication_status', 'hub_publication_error'}})):
-        raise StoreError('verified explicit-save publication receipt required for this Room generation')
-    return dict(saved)
-
-
-def saved_current_assignment(hub, row):
-    """Read-only C6 assessment suppression: only an explicit save counts (D3), never an attestation."""
-    if row['profile'] != 'room' or not hub.initialized():
-        return False
-    with hub.database() as db, db.transaction() as c:
-        if not _available(c):
-            return False
-        return c.execute("SELECT 1 FROM hub_memory_publications WHERE session_id=? AND generation=? "
-                         "AND project_id=? AND assignment_epoch=? AND json_extract(receipt, '$.source')='explicit-save' "
-                         "LIMIT 1",
-                         (row['session_id'], row['generation'], row['project_id'], assignment_epoch(row))).fetchone() is not None
 
 
 def latest_saved_at(hub, row, *, since=None):

@@ -370,12 +370,11 @@ class Hub:
 
     def initialize(self):
         with self.database(create=True) as db, db.transaction(write=True) as c:
-            from .session_experience import SCHEMA as EXPERIENCE_SCHEMA
+            from .session_guidance import SCHEMA as GUIDANCE_SCHEMA
             from .session_publication import SCHEMA as PUBLICATION_SCHEMA
-            for statement in (*SCHEMA, *EXPERIENCE_SCHEMA, *PUBLICATION_SCHEMA):
+            # Experience tables from before N2 are left in place, never created or read.
+            for statement in (*SCHEMA, *GUIDANCE_SCHEMA, *PUBLICATION_SCHEMA):
                 c.execute(statement)
-            if EXPERIENCE_SCHEMA and 'close_request_id' not in {r[1] for r in c.execute('PRAGMA table_info(hub_experience_captures)')}:
-                c.execute('ALTER TABLE hub_experience_captures ADD COLUMN close_request_id TEXT')
 
     @staticmethod
     def _save(c, row):
@@ -397,7 +396,7 @@ class Hub:
         with self.database() as db, db.transaction() as c:
             return c.execute('SELECT 1 FROM hub_sessions WHERE session_id=?', (sid,)).fetchone() is not None
 
-    def launch(self, *, project, prompt, name=None, harness='claude', profile='worker', session_id=None, transport='terminal', learning_ids=None, result_contract=None,
+    def launch(self, *, project, prompt, name=None, harness='claude', profile='worker', session_id=None, transport='terminal', learning_ids=None,
                model=None, effort=None):
         from .sessions import refuse_managed_operator
         refuse_managed_operator(self.config, self.env)
@@ -429,10 +428,6 @@ class Hub:
         # Only requested values enter the spec, so an omitted selection keeps
         # the idempotency key and every native argv exactly as before.
         spec.update(selection)
-        if result_contract:
-            if transport != 'structured' or result_contract != 'asha.session-result.v1':
-                raise StoreError('explicit result contract requires structured execution')
-            spec['result_contract'] = result_contract
         if learning_ids is not None:
             spec['learning_ids'] = learning_ids
         self.initialize()
@@ -474,9 +469,6 @@ class Hub:
             brief += ('\n\nOptional session tools: `asha control session report --state needs-input --text "question"` '
                       'or `--state finished --text "result"`; `asha control session messages` reads queued context. '
                       'Work normally using this repository and your native harness. No initiative or per-turn report is required.')
-            from .session_experience import Experiences
-            if Experiences(self).completion_enabled(row):
-                brief += '\n\n' + Experiences.completion_text()
         try:
             # Friendly labels may repeat. Rooms retain every incarnation.
             room_name = f"session-{row['session_id']}-{row['generation']}"
@@ -555,13 +547,6 @@ class Hub:
         first rereads changed native records and stores the result (#111)."""
         row = self.get(sid)
         native_ids = None
-        capture = (row.get('closure') or {}).get('capture') or row.get('capture') or {}
-        if capture.get('report_id'):
-            with self.database() as db, db.transaction() as c:
-                if c.execute("SELECT 1 FROM sqlite_master WHERE name='hub_experience_reviews'").fetchone():
-                    review = c.execute('SELECT status FROM hub_experience_reviews WHERE report_id=? ORDER BY created_at DESC,review_id DESC LIMIT 1',
-                                       (capture['report_id'],)).fetchone()
-                    row['experience_review'] = review['status'] if review else 'unknown'
         from .session_guidance import history
         row['guidance'] = history(self, sid)
         row['guidance_complete'] = len(row['guidance']) <= 100
@@ -848,9 +833,6 @@ class Hub:
             live = self._live(row)
             if wait == 0 or not live or self._finished_and_saved(row):
                 # Nothing to wait for (D7: a current finished report with a save closes at once).
-                if row['lifecycle'] in ACTIVE_LIFECYCLES and not live:
-                    from .session_experience import Experiences
-                    row = Experiences(self).reconcile_completion(row)
                 return self._stop(row, close=True, closure_record=self._closed_record(row, record))
             record = self._deliver(row, record)
             self._update(sid, lifecycle='closing', closure=record)
@@ -984,9 +966,6 @@ class Hub:
         if (row['lifecycle'] != 'closing' or record.get('request_id') != request_id
                 or record.get('generation') != row['generation']):
             return self.show(sid)
-        if not self._live(row):
-            from .session_experience import Experiences
-            row = Experiences(self).reconcile_completion(row)
         return self._stop(row, close=True, closure_record=self._closed_record(row, record))
 
     def _closed_record(self, row, record):
@@ -994,12 +973,10 @@ class Hub:
         return dict(record, state='closed', saved_at=latest_saved_at(self, row), terminated_at=time.time())
 
     def _new_closure(self, row, wait):
-        from .session_experience import Experiences
         record = closure.new_closure(row, wait=wait)
-        # The selection this request was made under; statistics attribute the
-        # close to it even after a later resume or reroute (#95).
+        # The selection this request was made under, kept with the close
+        # even after a later resume or reroute (#95).
         record['selection'] = selection_evidence(row)
-        record['capture'] = Experiences(self).close_capture(row, record['request_id'])
         return record
 
     def _adopt_prompt(self, row):
@@ -1021,53 +998,18 @@ class Hub:
                 changes['assignment_epoch'] = str(uuid.uuid4())
             return self._update(current['session_id'], expected_generation=row['generation'], **changes)
 
-    def report(self, *, state, body=None, native_id=None, experience_file=None,
-               experience_ref=None, key=None, supersedes=None):
-        """Optional completion assessment; capture failures never erase task status."""
+    def report(self, *, state, body=None, native_id=None):
+        """An explicit report from the acting session; finished is never gated (D3)."""
         if state not in REPORT_STATES:
             raise StoreError('report state must be needs-input, finished or working')
         actor = self.structured_actor()[0] if self.env.get('ASHA_MANAGED_SESSION_ID') else self.actor()
-        if (experience_file or experience_ref or supersedes) and state != 'finished':
-            raise StoreError('experience requires an explicit finished report')
-        if (experience_file or experience_ref) and not key:
-            raise StoreError('experience completion requires a stable --key')
         with self._action_lock(actor['session_id']):
-            from .session_experience import Experiences
             row = self.get(actor['session_id'])
             if row['generation'] != actor['generation'] or row['lifecycle'] not in ACTIVE_LIFECYCLES:
                 raise StoreError('stale or inactive session reporter')
             row = self._adopt_prompt(row)
             # Finished is ungated (D3): the row shows whether this generation saved.
-            experiences = Experiences(self)
-            capture = None
-            request = row.get('experience_request') or {}
-            if (request.get('generation') != row['generation']
-                    or request.get('assignment_epoch') != row.get('assignment_epoch')):
-                request = {}
-            attachment = bool(experience_file or experience_ref)
-            followup = attachment and request.get('key') == key
-            if state == 'finished':
-                if not attachment and experiences.completion_enabled(row):
-                    if not request:
-                        issued = str(uuid.uuid4())
-                        request = {'key': issued, 'generation': row['generation'], 'status': 'pending',
-                                   'assignment_epoch': row.get('assignment_epoch'),
-                                   'text': experiences.completion_text(issued)}
-                    key = request['key']
-                capture = experiences.optional_capture(row, source='completion', key=key or str(uuid.uuid4()),
-                    experience_file=experience_file, experience_ref=experience_ref, supersedes=supersedes,
-                    requested=bool(request))
-                if followup and capture.get('report_id'):
-                    request = dict(request, status='answered')
-            # Issued-key attachments amend capture, never the original task result.
-            reported_body = None if followup else body
-            result = self._report(row, state, reported_body, native_id=native_id)
-            if capture is not None:
-                changes = {'capture': capture}
-                if request:
-                    changes['experience_request'] = request
-                result = self._update(row['session_id'], expected_generation=row['generation'], **changes)
-            return result
+            return self._report(row, state, body, native_id=native_id)
 
     def _deliver(self, row, record):
         """Queue the close request at the supported seam: the next structured turn, or a hub message."""
@@ -1158,7 +1100,7 @@ class Hub:
             from .session_store import SessionStore
             if not self._has_structured_record(sid):
                 row = self._update(sid, lifecycle='starting', generation=row['generation'] + 1,
-                                   learning_ids=learning_ids, capture={}, closure=None,
+                                   learning_ids=learning_ids, closure=None,
                                    report=None, prompt_since_report=False,
                                    closure_history=row.get('closure_history', []) +
                                    ([row['closure']] if row.get('closure') else []))
@@ -1172,7 +1114,7 @@ class Hub:
             manifest = guidance.planned(manifest, prompt, block)
             def retained(c, message):
                 current = json.loads(c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (sid,)).fetchone()[0])
-                current.update(generation=next_row['generation'], lifecycle='open', closure=None, capture={},
+                current.update(generation=next_row['generation'], lifecycle='open', closure=None,
                                current_assignment=prompt, report=None, prompt_since_report=False,
                                closure_history=current.get('closure_history', []) + ([current['closure']] if current.get('closure') else []))
                 self._save(c, current)
@@ -1391,9 +1333,6 @@ class Hub:
                 changes['native_binding'] = dict(binding, ended=True)
             changes['native_id'] = native_id
             changes['native_ids'] = session_usage.remember(row, native_id)
-        if event == 'session-ended':
-            from .session_experience import Experiences
-            Experiences(self).reconcile_completion(row, observed_exit=True)
         result = self._update(row['session_id'], expected_generation=row['generation'], **changes)
         result['observation'] = 'applied'
         return result
@@ -1415,7 +1354,7 @@ class Hub:
                 raise StoreError('stale or inactive session reporter')
             standing = report_of(current) or {}
             if state == 'finished' and body is None and standing.get('state') == 'finished':
-                body = standing.get('text')   # an experience follow-up keeps the reported result
+                body = standing.get('text')   # a bodiless repeat keeps the reported result
             changes = dict(report=None if state == 'working' else dict(state=state, text=body, at=time.time()),
                            prompt_since_report=False)
             if state == 'finished' and body:
@@ -1490,8 +1429,7 @@ class Hub:
                 'paths': {name: (memory['destination'] + '/' + name) if memory['destination'] else None
                           for name in closure.MEMORY_FILES}}
 
-    def handoff(self, request_id, *, outcome=None, detail=None, active_file=None, decisions_file=None, expected=None,
-                experience_file=None, experience_ref=None, supersedes=None, key=None):
+    def handoff(self, request_id, *, outcome=None, detail=None, active_file=None, decisions_file=None, expected=None):
         """Save project Memory (or attest), optionally answering a pending close request.
 
         Any save lands as a publication row; a pending close closes on the
@@ -1504,21 +1442,8 @@ class Hub:
             if row['generation'] != actor['generation'] or row['lifecycle'] not in ACTIVE_LIFECYCLES:
                 raise StoreError('stale or inactive session reporter')
             if request_id is None:
-                if any((experience_file, experience_ref, supersedes, key)):
-                    raise StoreError('completion experience belongs on session report --state finished')
                 return self._finalize_handoff(row, outcome=outcome, detail=detail, active_file=active_file,
                                               decisions_file=decisions_file, expected=expected)
-            closure.validate_handoff_request(row.get('closure'), row, request_id)
-            from .session_experience import Experiences
-            capture = None
-            if not any((experience_file, experience_ref, supersedes, key)):
-                capture = Experiences(self).retained_close_capture(row, request_id)
-            if capture is None:
-                capture = Experiences(self).optional_capture(row, source='close', key=key or request_id, close_request_id=request_id,
-                    requested=bool(row['closure'].get('capture', {}).get('requested')),
-                    experience_file=experience_file, experience_ref=experience_ref, supersedes=supersedes)
-            row = self._update(row['session_id'], expected_generation=row['generation'],
-                closure_fn=lambda record, current: dict(record, capture={**record.get('capture', {}), **capture}))
             return self._handoff(row, request_id, outcome=outcome, detail=detail, active_file=active_file,
                                  decisions_file=decisions_file, expected=expected)
 
@@ -1599,6 +1524,5 @@ class Hub:
                      if current and current.get('request_id') == request_id else current)
         return {'session_id': row['session_id'], 'request_id': request_id, 'outcome': outcome,
                 'closure_state': 'closing', 'memory': updated['memory'], 'handoff': updated['handoff'],
-                'capture': updated.get('capture', {'status': 'disabled', 'report_id': None}),
                 'git_invoked': False, **saved}
 

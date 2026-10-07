@@ -109,12 +109,6 @@ def quiesce(config, env):
 
 def run_turn(store, session, message, *, env, root, transport_factory=None,
              cancelled=lambda: False):
-    from .experience_review import owned, run_review_turn
-    with store.db.transaction() as c:
-        review = owned(c, session['session_id'])
-    if review:
-        return run_review_turn(store, session, message, review, env=env, root=root,
-                               transport_factory=transport_factory, cancelled=cancelled)
     sid, generation, turn = session["session_id"], session["generation"], message["turn_id"]
     child_env = dict(env)
     for key in list(child_env):
@@ -151,8 +145,6 @@ def run_turn(store, session, message, *, env, root, transport_factory=None,
     success = False
     reason = None
     transport = None
-    from .session_experience import StructuredResult
-    result_envelope = StructuredResult(guidance_hub, guidance_row, message['turn_id']) if guidance_row else None
     try:
         from .session_ipc import SessionRequestServer
         from contextlib import ExitStack
@@ -188,10 +180,6 @@ def run_turn(store, session, message, *, env, root, transport_factory=None,
                 requests.check()
                 return cancelled() or bool(store.get(sid)["stop_requested"]) or connection_admission(store.db)["mode"] == "stopped"
             for kind, payload in transport.events(prompt, cancelled=should_stop):
-                if result_envelope:
-                    payload = result_envelope.event(kind, payload)
-                    if payload is None:
-                        continue
                 store.observe(sid, generation, turn, kind, payload)
                 if kind == 'progress' and payload.get('subtype') == 'native-input-acknowledged':
                     from .session_hub import Hub
@@ -307,9 +295,6 @@ def ensure_owners(config, *, env=None):
         if key.startswith(("TMUX", "ASHA_CONTROL_", "ASHA_MANAGED_", "ASHA_ORCHESTRATION_")) or key == "ASHA_COORDINATOR_LAUNCH":
             values.pop(key)
     values.update(ASHA_HOME=str(config.asha_home), ASHA_CONFIG=str(config.config_path))
-    from .experience_review import reconcile
-    from .session_hub import Hub
-    reconcile(Hub(config, env=values))
     started = 0
     for sid, child in list(_OWNER_CHILDREN.items()):
         if child.poll() is not None:

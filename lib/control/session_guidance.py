@@ -1,16 +1,71 @@
 """Bounded active-learning selections at native assignment seams."""
 from __future__ import annotations
+import hashlib
 import json
 import time
 import uuid
-from .session_experience import canonical, sha, safe_content, string, silenced
+from pathlib import Path
+from .session_closure import secure_path, secure_project_root
 from .store import StoreError
 from .session_selection import evidence as selection_evidence
+
+SCHEMA = (
+    '''CREATE TABLE IF NOT EXISTS hub_guidance_exposures (
+       exposure_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES hub_sessions(session_id),
+       generation INTEGER NOT NULL, delivery_key TEXT NOT NULL, project_id TEXT NOT NULL,
+       status TEXT NOT NULL, manifest TEXT NOT NULL, created_at REAL NOT NULL,
+       UNIQUE(session_id,generation,delivery_key))''',
+    'CREATE INDEX IF NOT EXISTS hub_guidance_project ON hub_guidance_exposures(project_id,created_at,exposure_id)',
+)
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False)
+
+
+def sha(value):
+    return hashlib.sha256(value if isinstance(value, bytes) else value.encode('utf-8')).hexdigest()
+
+
+def string(value, maximum=4000):
+    if not isinstance(value, str) or not value.strip() or len(value.encode()) > maximum or '\x00' in value:
+        raise ValueError('invalid bounded contract text')
+    return value
+
+
+def safe_content(value):
+    """Best-effort known-secret exclusion; rejected bytes never enter diagnostics."""
+    from recovery_state import _redact
+    if isinstance(value, str):
+        if _redact(value) != value:
+            raise ValueError('known secret-bearing content omitted')
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            safe_content(key)
+            safe_content(item)
+    elif isinstance(value, list):
+        for item in value:
+            safe_content(item)
+
+
+def silenced(project):
+    try:
+        return secure_path(secure_project_root(Path(project)), 'Work/markers/silence').exists()
+    except (OSError, ValueError):
+        return True  # Unsafe project routing cannot authorize learning persistence.
+
+
+def active_incarnation(c, row):
+    """The session row inside ``c``, refused unless it is still this active incarnation."""
+    fresh = c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (row['session_id'],)).fetchone()
+    found = json.loads(fresh[0]) if fresh else {}
+    if found.get('generation') != row['generation'] or found.get('lifecycle') not in {'starting', 'open', 'closing'}:
+        raise StoreError('stale or inactive session reporter')
+    return found
 
 
 def resolve(hub, row, selections):
     import learnings_manager as lm
-    from .session_experience import Experiences
     automatic = selections is None and row['profile'] == 'worker'
     selection = 'automatic' if automatic else 'explicit' if selections else 'none'
     if automatic:
@@ -31,7 +86,6 @@ def resolve(hub, row, selections):
     if not isinstance(selections, list) or (not automatic and len(selections) > 20):
         raise StoreError('at most 20 explicit selections may be inspected; at most three supplied')
     manifest = {'selection': selection, 'selected': selections, 'supplied': [], 'excluded': [], 'harness': row['harness'],
-                'policy_revision': Experiences(hub).policy(row['project_id'])['revision'],
                 'harness_version': None, 'version_provenance': 'unknown', **selection_evidence(row)}
     block = ''
     seen = set()
@@ -118,8 +172,7 @@ def delivery(hub, row, key, body):
     Immutable queued messages retain custody digests. The rendered input has its
     own digest; changes exclude obsolete rules rather than substitute new semantics.
     """
-    from .session_experience import Experiences
-    if not Experiences(hub).available():
+    if not hub.initialized():
         return body, None
     with hub.database() as db, db.transaction() as c:
         if not c.execute("SELECT 1 FROM sqlite_master WHERE name='hub_guidance_exposures'").fetchone():
@@ -159,9 +212,8 @@ def offered(hub, row, key, manifest):
     """
     if silenced(row['project']):
         return False
-    from .session_experience import Experiences
     with hub.database() as db, db.transaction(write=True) as c:
-        Experiences.current(c, row)
+        active_incarnation(c, row)
         found = c.execute("SELECT * FROM hub_guidance_exposures WHERE session_id=? AND generation=? AND delivery_key=? AND status='queued'",
                           (row['session_id'], row['generation'], key)).fetchone()
         if not found or silenced(row['project']):
@@ -204,13 +256,12 @@ def carry_queued_in(c, row, previous_generation):
 
 
 def supplied(hub, row, key, manifest=None):
-    from .session_experience import Experiences
-    if not Experiences(hub).available() or silenced(row['project']):
+    if not hub.initialized() or silenced(row['project']):
         return False
     with hub.database() as db, db.transaction(write=True) as c:
         if not c.execute("SELECT 1 FROM sqlite_master WHERE name='hub_guidance_exposures'").fetchone():
             return False
-        fresh = Experiences.current(c, row)
+        fresh = active_incarnation(c, row)
         if fresh['generation'] != row['generation']:
             raise StoreError('guidance receipt is stale')
         if manifest is None:

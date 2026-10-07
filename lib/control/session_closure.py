@@ -160,15 +160,6 @@ def request_text(row: dict, record: dict) -> str:
     else:
         lines.append(f"Project memory is unavailable ({memory['reason']}). Report the blocker with "
                      f"`asha control session handoff --request {rid} --outcome blocked --detail REASON --json`.")
-    capture = record.get('capture', {})
-    if capture.get('requested'):
-        lines.append("Include one bounded JSON assessment (asha.session-experience.v1, at most 16 KiB, "
-                     "three observations/four evidence items) with --experience-file FILE. Assessment is "
-                     "observations, none-observed, or insufficient-evidence. Report facts, hypotheses and "
-                     "uncertainty separately. Capture is independent of no-durable-update and never delays close. "
-                     "Use --experience-ref REPORT_ID for unchanged findings; corrections use --supersedes REPORT_ID --key NEW_UUID.")
-        if row.get('capture', {}).get('report_id'):
-            lines.append('Previously captured report receipt: ' + row['capture']['report_id'])
     lines.append("Then end your turn. The session is terminated when the save lands or its wait runs out.")
     return "\n".join(lines)
 

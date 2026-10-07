@@ -4,7 +4,6 @@ Controller fixtures; the native flags are the installed CLIs' own spellings
 (claude 2.1.283, codex 0.157.0, copilot 1.0.83, opencode 1.18.29 --help).
 """
 import json
-import time
 import unittest
 from pathlib import Path
 
@@ -305,76 +304,24 @@ if __name__ == "__main__":
     unittest.main()
 
 
-from tests.python.test_control_session_experience import ExperienceFixture  # noqa: E402
-
-
-class SelectionExperienceTests(ExperienceFixture):
+class SelectionEvidenceTests(ClosureFixture):
+    """Guidance manifests and close requests keep the selection they were made under (#95)."""
     def launch(self, **changes):
         return super().launch(**{"model": "opus", "effort": "high", **changes})
 
-    def envelope(self):
-        with self.hub.database() as db, db.transaction() as c:
-            return json.loads(c.execute('SELECT envelope FROM hub_experiences ORDER BY created_at DESC LIMIT 1').fetchone()[0])
-
-    def test_envelope_and_guidance_manifest_carry_the_selection_evidence(self):
-        self.capture()
-        envelope = self.envelope()
-        self.assertEqual(envelope['model'], {'requested': 'opus', 'effective': None, 'provenance': 'requested'})
-        self.assertEqual(envelope['effort'], {'requested': 'high', 'effective': None, 'provenance': 'requested'})
-        self.assertIsNone(envelope['harness_version'])
+    def test_guidance_manifest_carries_the_selection_evidence(self):
         from lib.control import session_guidance as guidance
-        _block, manifest = guidance.resolve(self.hub, self.hub.get(self.sid), [])
-        self.assertEqual(manifest['model']['requested'], 'opus')
+        sid = self.launch()['session_id']
+        _block, manifest = guidance.resolve(self.hub, self.hub.get(sid), [])
+        self.assertEqual(manifest['model'], {'requested': 'opus', 'effective': None, 'provenance': 'requested'})
         self.assertEqual(manifest['effort']['provenance'], 'requested')
 
-    def test_stats_model_filter_matches_requested_or_effective_with_provenance(self):
-        self.capture()
-        hit = self.experience.stats(self.pid, model='opus')
-        self.assertEqual(hit['completions']['explicit_reports'], 1)
-        self.assertEqual(hit['models']['opus']['completions'], 1)
-        self.assertEqual(hit['models']['opus']['provenance'], {'requested': 2})
-        self.assertEqual(hit['current_sessions'], {'opus': {'sessions': 1, 'provenance': {'requested': 1}}})
-        self.assertEqual(self.experience.stats(self.pid, model='sonnet')['completions']['explicit_reports'], 0)
-        self.assertEqual(self.experience.stats(self.pid, model='unknown')['completions']['explicit_reports'], 0)
-
-    def test_historical_reports_keep_the_model_retained_in_their_envelope(self):
-        # QA #95: a later reroute or resume must not move earlier reports between cohorts.
-        self.hub._update(self.sid, selection_reported={'model': 'model-A'})
-        self.capture()
-        self.assertEqual(self.envelope()['model']['effective'], 'model-A')
-        captured_at = time.time()
-        self.assertEqual(self.experience.stats(self.pid, model='model-A')['completions']['explicit_reports'], 1)
-        self.hub._update(self.sid, selection_reported={'model': 'model-B'})
-        for window in ({}, {'until': captured_at}):
-            with self.subTest(window=window):
-                a = self.experience.stats(self.pid, model='model-A', **window)
-                self.assertEqual(a['completions']['explicit_reports'], 1)
-                self.assertEqual(a['models']['model-A']['provenance'], {'reported': 2})
-                b = self.experience.stats(self.pid, model='model-B', **window)
-                self.assertEqual(b['completions']['explicit_reports'], 0)
-                self.assertNotIn('model-B', b['models'])
-        # The current inventory is labelled as such and follows the live row.
-        self.assertEqual(self.experience.stats(self.pid)['current_sessions'],
-                         {'model-B': {'sessions': 1, 'provenance': {'reported': 1}}})
-
     def test_close_requests_keep_the_selection_they_were_requested_under(self):
-        self.hub._update(self.sid, selection_reported={'model': 'model-A'})
-        self.hub.request_close(self.sid, wait=60)
-        self.assertEqual(self.hub.get(self.sid)['closure']['selection']['model']['effective'], 'model-A')
-        self.hub._update(self.sid, selection_reported={'model': 'model-B'})
-        closes = self.experience.stats(self.pid, model='model-A')['capture']['closure_states']
-        self.assertEqual(sum(closes.values()), 1)
-        self.assertEqual(self.experience.stats(self.pid, model='model-B')['capture']['closure_states'], {})
-
-
-class UnselectedExperienceTests(ExperienceFixture):
-    def test_old_rows_without_a_selection_read_as_unknown(self):
-        self.capture()
-        stats = self.experience.stats(self.pid, model='unknown')
-        self.assertEqual(stats['completions']['explicit_reports'], 1)
-        self.assertEqual(stats['models']['unknown']['completions'], 1)
-        self.assertEqual(stats['current_sessions'], {'unknown': {'sessions': 1, 'provenance': {'unknown': 1}}})
-        self.assertEqual(self.experience.stats(self.pid)['completions']['explicit_reports'], 1)
+        sid = self.launch()['session_id']
+        self.hub._update(sid, selection_reported={'model': 'model-A'})
+        self.hub.request_close(sid, wait=60)
+        self.hub._update(sid, selection_reported={'model': 'model-B'})
+        self.assertEqual(self.hub.get(sid)['closure']['selection']['model']['effective'], 'model-A')
 
 
 class TuiLaunchFormTests(unittest.TestCase):

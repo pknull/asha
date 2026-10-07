@@ -78,7 +78,7 @@ class RetiredSurfaceTests(unittest.TestCase):
     def test_control_doctor_runs_the_surviving_probes_only(self):
         from lib.control.doctor import DEFAULT_PROBES
         self.assertEqual(set(DEFAULT_PROBES), {
-            "python", "configuration", "session-experience", "supervisor-service",
+            "python", "configuration", "supervisor-service",
             "tmux", "harness", "gh", "rooms-registry", "managed-sessions", "hooks", "tui",
         })
         payload = {"contract": "asha.control-doctor.v1", "ok": True, "limitations": [],

@@ -21,6 +21,12 @@ SESSION_ID_VERBS = frozenset({'show', 'attach', 'close', 'stop', 'resume', 'send
 # selecting a session; legacy Room names stay selectable where Rooms are.
 _ID_PREFIX = re.compile(r'[0-9a-f-]{4,36}')
 _ID_CHARACTERS = re.compile(r'[0-9a-f-]+')
+# Retired 2026-10-07 (Keeper, subtraction N2). Records already captured stay
+# in the Control database; nothing reads or writes them.
+EXPERIENCE_RETIRED = (
+    'asha control session experience: session experience capture, review and adoption were '
+    'retired on 2026-10-07; report results with `asha control session report --state finished --text RESULT`'
+)
 
 
 class _UnavailableTerminal:
@@ -246,8 +252,9 @@ def dispatch(argv, *, env):
     config = load_config(env)
     hub = Hub(config, env=env)
     if verb == 'experience':
-        from .experience_cli import dispatch as experience_dispatch
-        return experience_dispatch(hub, argv[1:])
+        # Retired (N2); refused by name so the word never falls through to another meaning.
+        print(EXPERIENCE_RETIRED, file=sys.stderr)
+        return 2
     def is_managed(sid):
         from .session_store import SessionStore, SessionsUninitialized
         try:
@@ -270,7 +277,6 @@ def dispatch(argv, *, env):
         parser.add_argument('--profile', default='worker', choices=['worker', 'room'])
         parser.add_argument('--session-id')
         parser.add_argument('--transport', default='terminal', choices=['terminal', 'structured'])
-        parser.add_argument('--result-contract', choices=['asha.session-result.v1'])
         parser.add_argument('--model', help='native model for this session; omitted means the harness default')
         parser.add_argument('--effort', help='native reasoning effort; omitted means the harness default')
     elif verb in SESSION_ID_VERBS:
@@ -337,11 +343,9 @@ def dispatch(argv, *, env):
         learning.add_argument('--learning', dest='learning_ids', action='append', default=None)
         learning.add_argument('--no-learning', dest='learning_ids', action='store_const', const=[])
     if verb in {'report', 'handoff'}:
-        group = parser.add_mutually_exclusive_group()
-        group.add_argument('--experience-file')
-        group.add_argument('--experience-ref')
-        parser.add_argument('--supersedes')
-        parser.add_argument('--key')
+        # Accepted and ignored for one release: workers briefed before N2 still pass them.
+        for obsolete in ('--experience-file', '--experience-ref', '--supersedes', '--key'):
+            parser.add_argument(obsolete, help=argparse.SUPPRESS)
     args = parser.parse_args(argv[1:])
     try:
         if verb in SESSION_ID_VERBS:
@@ -393,9 +397,7 @@ def dispatch(argv, *, env):
                 return 0
         elif verb in {'report', 'event'}:
             if verb == 'report':
-                result = hub.report(state=args.state, body=args.text, native_id=args.native_id,
-                    experience_file=args.experience_file, experience_ref=args.experience_ref,
-                    supersedes=args.supersedes, key=args.key)
+                result = hub.report(state=args.state, body=args.text, native_id=args.native_id)
             else:
                 result = hub.observe(args.event, body=args.text, native_id=args.native_id, cwd=args.cwd,
                                      background_tasks=args.background_tasks, emitted_at=args.emitted_at,
@@ -434,8 +436,7 @@ def dispatch(argv, *, env):
                 expected = {'activeContext.md': parse_digest(args.expected_active),
                             'decisions.md': parse_digest(args.expected_decisions)}
                 result = hub.handoff(args.request, outcome=args.outcome, detail=args.detail,
-                                     active_file=args.active_file, decisions_file=args.decisions_file, expected=expected,
-                                     experience_file=args.experience_file, experience_ref=args.experience_ref, supersedes=args.supersedes, key=args.key)
+                                     active_file=args.active_file, decisions_file=args.decisions_file, expected=expected)
         elif verb == 'messages':
             sid = args.session_id or hub.actor()['session_id']
             result = hub.message_page(sid, offset=args.offset, limit=args.limit)

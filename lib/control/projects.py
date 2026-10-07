@@ -214,17 +214,6 @@ def load_user_config(env: Mapping[str, str] | None = None) -> dict[str, Any]:
     return config if isinstance(config, dict) else {}
 
 
-def experience_default(env: Mapping[str, str] | None = None) -> tuple[str, str, str | None]:
-    config = load_user_config(env)
-    if "session_experience" not in config:
-        return "off", "builtin", None
-    value = config["session_experience"]
-    mode = value.get("default_mode") if isinstance(value, dict) else None
-    if isinstance(mode, str) and mode in {"off", "capture", "review"}:
-        return mode, "default", None
-    return "off", "builtin", "session_experience.default_mode must be off, capture or review; builtin off applies"
-
-
 def configured_roots(env: Mapping[str, str] | None = None) -> list[str]:
     """Bounded project roots from the shared, read-only user-config loader."""
     roots = load_user_config(env).get("project_roots")

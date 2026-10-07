@@ -104,6 +104,38 @@ class AutomaticGuidance(ClosureFixture):
                 self.assertEqual(row['guidance'][0]['status'], 'supplied')
                 self.hub.stop(row['session_id'])
 
+    def test_incompatible_or_stale_guidance_is_excluded(self):
+        # Moved from the retired experience end-to-end journey (N2).
+        row = self.launch(harness='codex', learning_ids=[])
+        learning = lm.Learning('codex-only', 'On Codex', 'Check the native seam', state='active',
+                               applicability={'harnesses': ['codex']})
+        lm.save(learning, project_dir=self.project)
+        block, manifest = guidance.resolve(self.hub, dict(row, harness='claude'), ['codex-only', 'missing'])
+        self.assertEqual(block, '')
+        self.assertEqual(len(manifest['excluded']), 2)
+        block, manifest = guidance.resolve(self.hub, dict(row, harness='codex'), ['codex-only@' + '0' * 64])
+        self.assertEqual(block, '')
+        self.assertEqual(manifest['excluded'][0]['reason'], 'stale-version')
+
+
+class ExistingDatabase(ClosureFixture):
+    def test_legacy_finished_report_with_existing_schema(self):
+        # Moved from the retired experience regressions (N2). Historical launches
+        # predate guidance manifests. Reproduce that setup without asking today's
+        # launch path to write a deliberately absent table.
+        with mock.patch('lib.control.session_guidance.SCHEMA', ()), \
+             mock.patch('lib.control.session_guidance.retain'):
+            row = self.launch()
+        with self.hub.database() as db, db.transaction() as c:
+            tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertNotIn('hub_guidance_exposures', tables)
+        with self.acting_as(row['session_id']):
+            self.hub.handoff(None, outcome='no-durable-update', detail='Reviewed legacy assignment')
+            self.assertEqual(self.hub.report(state='finished', body='Done')['report']['state'], 'finished')
+        with self.hub.database() as db, db.transaction() as c:
+            tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertIn('hub_guidance_exposures', tables)
+
 
 if __name__ == '__main__':
     unittest.main()
