@@ -176,11 +176,9 @@ All four use the same coherent publication reader, validator, recovery writer,
 and learning manager. The hook transports differ; the authority model does
 not.
 
-## Optional session experience
+## Retired session experience
 
-[Session experience and reviewed learning](session-experience.md) documents the
-dormant project policy, bounded report/close capture, one-turn review custody,
-explicit-save dispositions, selected guidance and coverage metrics. Policy defaults
-to off; native automatic review remains gated pending separately approved probes.
-Ordinary and scope-none Memory publication require both pre-draft snapshot digests;
-close remains independent of successful capture or completed review.
+Session experience capture, review and adoption were retired on 2026-10-07
+(subtraction N2); records captured before then stay unread in the Control
+database. Ordinary and scope-none Memory publication require both pre-draft
+snapshot digests.

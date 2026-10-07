@@ -328,7 +328,7 @@ for save_workflow in \
 	     && grep -q 'save_none.py' "$save_workflow" \
 	     && grep -q -- '--expected-active' "$save_workflow" \
 	     && grep -q -- '--expected-decisions' "$save_workflow" \
-	     && grep -q 'experience dispose' "$save_workflow" \
+	     && ! grep -q 'session experience' "$save_workflow" \
 	     && grep -q -- '--scope none' "$save_workflow" \
 	     && grep -q 'identity_status=skipped' "$save_workflow" \
 	     && grep -q 'do not invoke `git diff`' "$save_workflow" \

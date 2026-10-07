@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 2.7.0
+**Version**: 2.8.0
 
 Compact explicit memory publication, bounded crash recovery, reviewed learning
 lifecycle, policy guardrails, guarded loops, and workspace management.
@@ -133,6 +133,13 @@ for the repository; workspace state answers what coordinates the repositories.
   checks required by `AGENTS.md`.
 
 ## Version history
+
+### 2.8.0
+
+Session experience capture retired (subtraction N2): `/session:save` no longer
+reads experience policy, reviews reports or records dispositions (former steps
+2 and 6); save-authored learning proposals are unchanged. The `operate-control`
+skill drops the capture, policy and review guidance and keeps selected guidance.
 
 ### 2.7.0
 

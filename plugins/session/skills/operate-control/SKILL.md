@@ -111,12 +111,6 @@ Silence proves none of these. Read results
 before conveying them as conclusions. Message pages expose `complete` and
 `next_offset`; use `messages --offset N` to read subsequent pages.
 
-When effective experience policy is enabled, a finished report without an
-assessment returns a bounded request and controller `--key`. Follow up with
-`report --state finished --experience-file FILE --key KEY` to attach capture
-without replacing the task result. Identical retries reuse the receipt.
-An unanswered request followed by exit records `exited-before-capture`.
-
 ## Close, stop and resume
 
 `session stop ID` stops the owned process now and retains history. `session
@@ -137,10 +131,8 @@ remains a separate explicit decision. Dashboard `q` only exits the UI; it does
 not stop workers or the supervisor. `M` filters input requests; `A` includes
 retained history.
 
-Rooms that explicitly saved after their latest assignment in the same generation
-omit the close experience assessment (`explicit-save-published`); an attestation
-does not. Treat `memory_saved_at` and `closure.guidance` as evidence; never infer
-a save from prose.
+Treat `memory_saved_at` and `closure.guidance` as evidence; never infer a save
+from prose.
 
 Worker assignments include the project-memory startup/completion contract across
 harnesses without chair context. `report --state finished` is never gated; the
@@ -148,17 +140,6 @@ row reads finished, saved or unsaved. Publication blockers use `handoff
 --outcome blocked`; silence or scope refusal is not a no-update attestation.
 Structured paths bind to their managed turn; native delivery and permissions
 remain separately qualified.
-
-Experience policy resolves project override, user `session_experience.default_mode`
-in `~/.asha/config.json`, then builtin off. `experience policy --read-only --project
-PROJECT --json` inspects mode/source/revision; `--mode MODE` changes it in one
-transaction, optional `--revision` uses compare-and-set, and `--clear` follows the
-default again. Policy mutations remain chair/Keeper-only. No config opens the
-native review release gate. Explicit save reviews at most five selected unreviewed
-reports after publication, excludes its own lineage and records advisory-save-review
-results before disposition. Verified Rooms can review/dispose only their own
-project, with a retained explicit-save receipt for disposal. Follow the save skill;
-skip experience reads when off or silenced. Writes retain native approvals.
 
 `session resume ID --text CONTINUATION` preserves a terminal session's hub
 identity. Claude/Codex reuse a captured native conversation ID when available;
@@ -208,21 +189,15 @@ them and `asha initiative export` writes every Control record as JSON Lines.
 Never migrate, resume or delete them; new staged work runs as workers and
 Rooms.
 
-## Session experience evidence
+## Selected guidance
 
-Capture and Memory close outcomes are independent. Workers may add
-`--experience-file FILE --key UUID` to finished reports, or add an experience
-file/reference to a close handoff. Corrections use `--supersedes REPORT_ID --key
-NEW_UUID`. Never reconstruct transcripts for missing capture.
-`experience list/show/packet/pending/unreviewed/guidance/stats` inspect retained
-evidence. Guidance is selected automatically unless `--learning ID[@DIGEST]` or
-`--no-learning` overrides selection, within the three-rule and 3 KiB limits.
-Check exclusions and delivery manifests; queued context is not supplied context
-and supplied guidance is not proof of use.
+Worker guidance is selected automatically from active learnings unless
+`--learning ID[@DIGEST]` or `--no-learning` overrides selection, within the
+three-rule and 3 KiB limits. `session show ID --json` lists each delivery's
+manifest under `guidance`; check exclusions there. Queued context is not
+supplied context and supplied guidance is not proof of use.
 When `session messages` returns `delivery_digest`, acknowledge that exact body
 with `session ack-message MESSAGE_ID --delivery-digest DIGEST`. Ordinary
 acknowledgements without the optional digest leave guidance supply unknown.
-Review utilities are single-turn and advisory. Native automatic review is gated off
-until the outstanding approved enforcement probe; unavailable backends remain
-unsupported. Explicit-save disposition is the only adoption path. Read
-`docs/session-experience.md` for contracts, silence, budgets and recovery.
+Session experience capture was retired on 2026-10-07 (N2); records captured
+before then stay in the Control database unread.

@@ -238,9 +238,6 @@ Run suites in a scrubbed environment. Each item below has cost a full run:
   a sandbox rewrites the live install.
 - Run the baseline on an unchanged checkout in its own workspace, never on the
   working copy you are editing.
-- `test_experience_review_limits` concurrency (`DatabaseBusyError`) is a known
-  flake under full-suite load; rerun it alone before treating it as a
-  regression.
 
 ## Focused documentation
 

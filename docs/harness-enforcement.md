@@ -273,11 +273,9 @@ Treat `supported`, `partial`, and `unsupported` in the capability matrix as
 claims requiring those tests. Documentation does not upgrade a harness
 primitive that the host cannot enforce.
 
-## Optional session experience
+## Retired session experience
 
-[Session experience and reviewed learning](session-experience.md) documents the
-dormant project policy, bounded report/close capture, one-turn review custody,
-explicit-save dispositions, selected guidance and coverage metrics. Policy defaults
-to off; native automatic review remains gated pending separately approved probes.
-Ordinary and scope-none Memory publication require both pre-draft snapshot digests;
-close remains independent of successful capture or completed review.
+Session experience capture, review and adoption, with their native review gate,
+were retired on 2026-10-07 (subtraction N2); see
+[the session hub](session-hub.md#retired-session-experience-capture). Selected
+guidance remains.
