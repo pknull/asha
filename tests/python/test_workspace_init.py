@@ -292,7 +292,7 @@ class BootstrapCases(InitFixture):
     def test_atomic_replacement_failure_rolls_back_all_scaffold_files(self):
         self.repo("frontend")
         self.repo("service")
-        real_replace = wi.wk._replace_file
+        real_replace = wi._replace_file
         calls = []
 
         def fail_second(source, destination):
@@ -301,11 +301,22 @@ class BootstrapCases(InitFixture):
                 raise OSError("fixture replacement failure")
             return real_replace(source, destination)
 
-        with mock.patch.object(wi.wk, "_replace_file", side_effect=fail_second):
+        with mock.patch.object(wi, "_replace_file", side_effect=fail_second):
             report = self.init()
         self.assertFalse(report["ok"])
         self.assertEqual(report["errors"][0]["code"], "bootstrap_write_failed")
         self.assertFalse((self.ws / ".asha").exists())
+        self.assertFalse((self.ws / "AGENTS.md").exists())
+        self.assertFalse((self.ws / ".gitignore").exists())
+
+    def test_failed_ignore_probe_rolls_back_bootstrap(self):
+        self.repo("frontend")
+        self.repo("service")
+        with mock.patch.object(wi, "_confirm_ignore", return_value="missing"):
+            report = self.init()
+        self.assertFalse(report["ok"], report)
+        self.assertEqual("private_ignore_unconfirmed", report["errors"][0]["code"])
+        self.assertFalse((self.ws / ".asha" / "workspace.json").exists())
         self.assertFalse((self.ws / "AGENTS.md").exists())
         self.assertFalse((self.ws / ".gitignore").exists())
 
@@ -646,6 +657,18 @@ class DoctorCases(InitFixture):
         self.assertTrue((self.ws / "knowledge" / "README.md").is_file())
         self.assertTrue((self.ws / "knowledge" / wi.wk.INDEX_FILE).is_file())
         self.assertTrue(wi.doctor_workspace(self.ws)["ok"])
+
+    def test_failed_ignore_probe_rolls_back_doctor_fix(self):
+        ignore = self.ws / ".gitignore"
+        ignore.write_text("custom/\n", encoding="utf-8")
+        claude = self.ws / "CLAUDE.md"
+        claude.write_text("drifted\n", encoding="utf-8")
+        with mock.patch.object(wi, "_confirm_ignore", return_value="missing"):
+            report = wi.doctor_workspace(self.ws, fix=True)
+        self.assertFalse(report["ok"], report)
+        self.assertIn("private_ignore_unconfirmed", {item["code"] for item in report["errors"]})
+        self.assertEqual("custom/\n", ignore.read_text())
+        self.assertEqual("drifted\n", claude.read_text())
 
     def test_doctor_invalid_manifest_fails_without_fixing_it(self):
         manifest = self.ws / ".asha" / "workspace.json"

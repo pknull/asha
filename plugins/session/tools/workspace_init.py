@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import uuid
 from collections import deque
 from pathlib import Path, PurePosixPath
@@ -61,7 +63,73 @@ def _json_bytes(value: Any) -> bytes:
 
 
 def _sha(content: bytes) -> str:
-    return wk._sha_bytes(content)
+    return hashlib.sha256(content).hexdigest()
+
+
+def _read_json(path: Path) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        return None, str(exc)
+    if not isinstance(value, dict):
+        return None, "root must be an object"
+    return value, None
+
+
+def _stage_temp(destination: Path, content: bytes) -> Path:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    try:
+        os.fchmod(fd, 0o644)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+    return Path(tmp_name)
+
+
+def _replace_file(source: Path, destination: Path) -> None:
+    """Patch seam used by transaction failure tests."""
+    os.replace(source, destination)
+
+
+def _restore_write_set(originals: dict[Path, Optional[bytes]]) -> None:
+    """Put every member of an applied write-set back as it was before."""
+    for path in sorted(originals, key=lambda item: str(item), reverse=True):
+        old = originals[path]
+        if old is None:
+            path.unlink(missing_ok=True)
+            continue
+        tmp = _stage_temp(path, old)
+        os.replace(tmp, path)
+
+
+def _atomic_write_set(write_set: dict[Path, bytes]) -> tuple[bool, Optional[str], dict[Path, Optional[bytes]]]:
+    """Apply a write-set with process-local best-effort rollback, not crash atomicity."""
+    staged: dict[Path, Path] = {}
+    originals: dict[Path, Optional[bytes]] = {}
+    applied: list[Path] = []
+    try:
+        for destination, content in write_set.items():
+            originals[destination] = destination.read_bytes() if destination.exists() else None
+            staged[destination] = _stage_temp(destination, content)
+        for destination in sorted(staged, key=lambda p: str(p)):
+            _replace_file(staged[destination], destination)
+            applied.append(destination)
+        return True, None, originals
+    except OSError as exc:
+        _restore_write_set({path: originals[path] for path in applied})
+        return False, str(exc), originals
+    finally:
+        for tmp in staged.values():
+            tmp.unlink(missing_ok=True)
 
 
 def _inert_label(value: Any, *, limit: int = 160) -> str:
@@ -363,7 +431,7 @@ def _load_project_config(root: Path, *, required: bool = False
         return None, _issue("path_escape", "project config path escapes workspace", path=rel)
     config: dict[str, Any] = {}
     if required or path.exists():
-        loaded, why = wk._read_json(path)
+        loaded, why = _read_json(path)
         if why or loaded is None:
             return None, _issue("config_invalid", f"project config is unavailable or invalid: {why}", path=rel)
         config = loaded
@@ -427,7 +495,7 @@ def _load_metadata(root: Path) -> tuple[Optional[dict[str, Any]], Optional[dict[
         return None, _issue("ownership_path_unsafe", "workspace init metadata path escapes or traverses a symlink", path=OWNERSHIP_PATH.as_posix())
     if not path.exists():
         return None, None
-    data, why = wk._read_json(path)
+    data, why = _read_json(path)
     if why or data is None or data.get("version") != SCHEMA_VERSION \
             or not isinstance(data.get("owned"), dict) \
             or not isinstance(data.get("adopted"), dict):
@@ -661,7 +729,7 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
         report["errors"] = [_issue("path_escape", "knowledge ownership path escapes or traverses a symlink", path=knowledge_owner_rel)]
         return report
     if existing_ko_path.exists():
-        loaded, why = wk._read_json(existing_ko_path)
+        loaded, why = _read_json(existing_ko_path)
         if why or loaded is None or not isinstance(loaded.get("files"), dict):
             report["errors"] = [_issue("knowledge_ownership_invalid", f"knowledge ownership metadata is invalid: {why or 'wrong schema'}", path=knowledge_owner_rel)]
             return report
@@ -866,14 +934,14 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
         _remove_created_dirs(created_dirs)
         report["errors"] = [_issue("directory_create_failed", str(exc), path=str(directory))]
         return report
-    ok, why, originals = wk._atomic_write_set(write_set)
+    ok, why, originals = _atomic_write_set(write_set)
     if not ok:
         _remove_created_dirs(created_dirs)
         report["errors"] = [_issue("bootstrap_write_failed", f"atomic bootstrap write failed: {why}")]
         return report
     ignore_state = _confirm_ignore(resolved, manifest["memory"]["personal_root"], no_git)
     if ignore_state not in {"confirmed", "configured-no-git"}:
-        wk._restore_write_set(originals)
+        _restore_write_set(originals)
         _remove_created_dirs(created_dirs)
         report["errors"] = [_issue("private_ignore_unconfirmed", "private-root ignore probe failed; bootstrap rolled back")]
         return report
@@ -1116,7 +1184,7 @@ def _doctor_fix(root: Path, report: dict[str, Any]) -> tuple[bool, list[str], Op
         return False, [], _issue("fix_path_unsafe", "knowledge ownership path is no longer safe")
     knowledge_owned: dict[str, str] = {}
     if knowledge_root is not None and knowledge_owner_path.exists():
-        knowledge_meta, why = wk._read_json(knowledge_owner_path)
+        knowledge_meta, why = _read_json(knowledge_owner_path)
         if why or knowledge_meta is None or not isinstance(knowledge_meta.get("files"), dict):
             return False, [], _issue("knowledge_ownership_invalid", f"cannot repair knowledge layout: {why or 'wrong schema'}")
         knowledge_owned = dict(knowledge_meta["files"])
@@ -1180,13 +1248,13 @@ def _doctor_fix(root: Path, report: dict[str, Any]) -> tuple[bool, list[str], Op
     except OSError as exc:
         _remove_created_dirs(created_dirs)
         return False, [], _issue("fix_directory_failed", str(exc), path=str(directory))
-    ok, why, originals = wk._atomic_write_set(write_set)
+    ok, why, originals = _atomic_write_set(write_set)
     if not ok:
         _remove_created_dirs(created_dirs)
         return False, [], _issue("fix_write_failed", f"atomic doctor fix failed: {why}")
     ignore_state = _confirm_ignore(root, manifest["memory"]["personal_root"], metadata.get("git_mode") == "none")
     if ignore_state not in {"confirmed", "configured-no-git"}:
-        wk._restore_write_set(originals)
+        _restore_write_set(originals)
         _remove_created_dirs(created_dirs)
         return False, [], _issue("private_ignore_unconfirmed", "ignore repair could not be verified; changes rolled back")
     return bool(write_set), sorted(set(fixed)), None
