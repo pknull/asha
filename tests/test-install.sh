@@ -1445,7 +1445,7 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr.decode())
         self.assert_shims(HARNESSES)
 
-    def test_mixed_failure_reuses_current_routing_and_keeps_failed_target(self):
+    def test_mixed_failure_reuses_current_routing_and_writes_requested_default(self):
         self.route()
         self.codex.write_bytes(b'broken = [')
         artifact = self.home/'.codex/skills/keep/SKILL.md'
@@ -1460,12 +1460,14 @@ class LauncherTests(unittest.TestCase):
             self.assertIn((h+': ok').encode(), p.stdout, p.stderr.decode())
         self.assertEqual(snapshot(self.home/'.codex'), before)
         self.assertEqual((snapshot(self.bin), self.cfg.read_bytes(), self.cfg.stat().st_mode), routing)
-        # Failed default requests do not rewrite a compatible shared config.
+        # Routing is reversible by reinstalling, so an adapter's failure does
+        # not gate it: the requested default is written and the run still fails.
         p = self.run_install('--target', 'codex', '--bin', 'copilot', '--default', 'codex', '--only', 'test')
         self.assertEqual(p.returncode, 1, p.stderr.decode())
-        self.assertEqual(self.cfg.read_bytes(), routing[1])
+        self.assertIn(b'codex: FAILED', p.stdout)
+        self.assertEqual(json.loads(self.cfg.read_text())['default_harness'], 'codex')
 
-    def test_stale_foreign_broken_dispatchers_and_root_refuse(self):
+    def test_stale_broken_and_root_routing_follow_force_and_a_foreign_dispatcher_survives(self):
         for kind in ('stale', 'foreign', 'broken', 'root'):
             with self.subTest(kind=kind):
                 dispatcher = self.bin/'asha'
@@ -1478,28 +1480,37 @@ class LauncherTests(unittest.TestCase):
                 self.cfg.write_text(json.dumps({'asha_root':str(self.home/'old') if kind == 'root' else str(ROOT),
                     'default_harness':'codex', 'foreign':42})+'\n')
                 self.codex.write_bytes(b'bad = [')
-                before = snapshot(self.bin), self.cfg.read_bytes(), snapshot(self.home/'.codex')
+                native = snapshot(self.home/'.codex')
                 p = self.run_install('--target', 'both', '--bin', 'all', '--force', '--only', 'test')
                 self.assertEqual(p.returncode, 1, p.stderr.decode())
                 self.assertIn(b'claude: ok', p.stdout)
-                self.assertIn(b'launcher routing refused', p.stderr)
-                self.assertEqual((snapshot(self.bin), self.cfg.read_bytes(), snapshot(self.home/'.codex')), before)
+                self.assertNotIn(b'launcher routing refused', p.stderr)
+                self.assertEqual(snapshot(self.home/'.codex'), native)
+                self.assertEqual(json.loads(self.cfg.read_text())['asha_root'], str(ROOT))
+                if kind == 'foreign':
+                    # The ledger rule stands: a foreign real file is never deleted.
+                    self.assertIn(b'not recorded as Asha-generated', p.stderr)
+                    self.assertEqual(dispatcher.read_bytes(), b'foreign dispatcher\n')
+                else:
+                    self.assertEqual(os.path.realpath(dispatcher), os.path.realpath(ROOT/'bin/asha'))
 
-    def test_unrequested_consumers_versus_requested_unattempted_default(self):
+    def test_requested_default_is_written_and_default_without_bin_is_not(self):
         self.route()
-        before = self.cfg.read_bytes()
         # Codex is unattempted but independently requested by --default.
         p = self.run_install('--bin', 'all', '--default', 'codex', '--only', 'test')
         self.assertEqual(p.returncode, 0, p.stderr.decode())
         self.assertEqual(json.loads(self.cfg.read_text())['default_harness'], 'codex')
-        saved = snapshot(self.bin), self.cfg.read_bytes()
+        links = snapshot(self.bin)
+        # Other harnesses' shims do not hold the default in place.
         p = self.run_install('--target', 'claude', '--bin', 'claude', '--default', 'claude', '--only', 'test')
-        self.assertEqual(p.returncode, 1, p.stderr.decode())
-        self.assertEqual((snapshot(self.bin), self.cfg.read_bytes()), saved)
-        # No --bin: explicit --default keeps the pre-existing no-write behavior.
-        p = self.run_install('--target', 'claude', '--default', 'claude', '--only', 'test')
         self.assertEqual(p.returncode, 0, p.stderr.decode())
-        self.assertEqual(self.cfg.read_bytes(), saved[1])
+        self.assertEqual(json.loads(self.cfg.read_text())['default_harness'], 'claude')
+        self.assertEqual(snapshot(self.bin), links)
+        # No --bin: explicit --default keeps the pre-existing no-write behavior.
+        saved = self.cfg.read_bytes()
+        p = self.run_install('--target', 'claude', '--default', 'codex', '--only', 'test')
+        self.assertEqual(p.returncode, 0, p.stderr.decode())
+        self.assertEqual(self.cfg.read_bytes(), saved)
 
     def test_all_attempted_failed_dry_run_and_source_repeat_no_sticky_state(self):
         self.route()
@@ -1549,61 +1560,25 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(p.returncode, 1, p.stderr.decode())
         self.assertEqual(snapshot(self.bin), before)
 
-    def test_unknown_consumer_blocks_shared_redirect_even_with_bin_all(self):
+    def test_unknown_consumers_do_not_hold_the_dispatcher_or_default(self):
         self.route(self.home/'old/bin/asha')
-        (self.bin/'custom-wrapper').symlink_to('asha')
+        aliases = ('custom-wrapper', '.custom-wrapper', '..custom-wrapper', 'asha-unknown')
+        for name in aliases: (self.bin/name).symlink_to('asha')
         before = snapshot(self.bin), self.cfg.read_bytes()
-        p = self.run_install('--bin','all','--force','--only','test')
+        # Retargeting a symlink that points elsewhere still needs --force.
+        p = self.run_install('--bin','all','--only','test')
         self.assertEqual(p.returncode, 1, p.stderr.decode())
-        self.assertIn(b'launcher routing refused', p.stderr)
+        self.assertIn(b'refusing to overwrite symlink pointing elsewhere', p.stderr)
         self.assertEqual((snapshot(self.bin), self.cfg.read_bytes()), before)
-
-    def test_unknown_default_consumers_are_not_authorized_by_known_bin_all(self):
-        self.route()
-        for name in ('custom-wrapper', '.custom-wrapper', '..custom-wrapper', 'asha-unknown'):
-            alias = self.bin/name
-            alias.symlink_to('asha')
-            try:
-                for flags in ((), ('--force',), ('--force', '--dry-run')):
-                    with self.subTest(name=name, flags=flags):
-                        before = snapshot(self.bin), snapshot(self.home/'.codex'), snapshot(self.home/'.asha')
-                        p = self.run_install('--bin','all','--default','codex','--only','test', *flags)
-                        self.assertEqual(p.returncode, 1, p.stderr.decode())
-                        self.assertIn(b'default change would redirect a protected consumer', p.stderr)
-                        # Identity bootstrap is outside launcher rollback scope;
-                        # routing bytes/mode and the unattempted adapter are not.
-                        self.assertEqual(snapshot(self.bin), before[0])
-                        self.assertEqual(snapshot(self.home/'.codex'), before[1])
-                        self.assertEqual(snapshot(self.home/'.asha')['config.json'], before[2]['config.json'])
-                # A protected alias is compatible with an unchanged default.
-                before = snapshot(self.bin), self.cfg.read_bytes(), self.cfg.stat().st_mode
-                p = self.run_install('--bin','all','--default','claude','--only','test')
-                self.assertEqual(p.returncode, 0, p.stderr.decode())
-                self.assertEqual((snapshot(self.bin), self.cfg.read_bytes(), self.cfg.stat().st_mode), before)
-            finally:
-                alias.unlink()
-
-    def test_hidden_consumers_block_stale_dispatcher_without_changing_shell_options(self):
-        self.route(self.home/'old/bin/asha')
-        for name in ('.custom-wrapper', '..custom-wrapper'):
-            alias = self.bin/name
-            alias.symlink_to('asha')
-            try:
-                for flags in (('--force',), ('--force', '--dry-run')):
-                    with self.subTest(name=name, flags=flags):
-                        before = snapshot(self.bin), self.cfg.read_bytes(), self.cfg.stat().st_mode
-                        p = self.run_install('--bin','all','--only','test', *flags)
-                        self.assertEqual(p.returncode, 1, p.stderr.decode())
-                        self.assertIn(b'dispatcher change would redirect a protected consumer', p.stderr)
-                        self.assertEqual((snapshot(self.bin), self.cfg.read_bytes(), self.cfg.stat().st_mode), before)
-                p = self.source('DRY_RUN=0; FORCE=1; VERBOSE=0; '
-                    'for mode in -u -s; do shopt "$mode" dotglob; before=$(shopt -p); '
-                    'source "$1/lib/installer-launchers.sh"; '
-                    'if install_bin all; then exit 90; else rc=$?; fi; '
-                    '[[ $rc == 1 && "$(shopt -p)" == "$before" ]] || exit 91; done')
-                self.assertEqual(p.returncode, 0, p.stderr.decode())
-            finally:
-                alias.unlink()
+        p = self.run_install('--bin','all','--default','codex','--only','test','--force','--dry-run')
+        self.assertEqual(p.returncode, 0, p.stderr.decode())
+        self.assertEqual((snapshot(self.bin), self.cfg.read_bytes()), before)
+        p = self.run_install('--bin','all','--default','codex','--only','test','--force')
+        self.assertEqual(p.returncode, 0, p.stderr.decode())
+        self.assertEqual(os.path.realpath(self.bin/'asha'), os.path.realpath(ROOT/'bin/asha'))
+        for name in aliases: self.assertEqual(os.readlink(self.bin/name), 'asha')
+        self.assert_shims(HARNESSES)
+        self.assertEqual(json.loads(self.cfg.read_text())['default_harness'], 'codex')
 
 unittest.main(argv=['u8-install'], verbosity=2)
 PY_U8_INSTALL

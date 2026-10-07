@@ -214,21 +214,16 @@ hook trust stays native and user-controlled; slot counts and a workspace trust
 fixture are not hook loading/execution proof. Native acceptance remains the
 operator's separate live step.
 
-The parent install/uninstall engines own launcher outcomes. Failed attempted
-adapters are distinct from unattempted harnesses requested independently by
-`--bin` or `--default`: documented `./install.sh --bin all` still requests all
-four shims with the default Claude target, and sourced `install_bin` needs no
-adapter-result prerequisite. Failed targets cannot retarget their shims or
-default. Shared dispatcher/root/default changes must reuse compatible routing
-or refuse nonzero when they would redirect failed or unrequested existing
-consumers; successful other adapters are not rolled back. `--default` without
-bin installation retains its existing no-default-write behavior. Uninstall
-removes only proven-owned shims for successful selected adapters, including
-`--target all`, and retains the dispatcher for protected, foreign or unknown
-survivors. Outcome state is invocation-local, including repeated sourced calls.
-Hidden immediate bin entries count as consumers too. An unknown invocation
-that depends on the default remains protected even when all known harnesses
-are requested; compatible routing with an unchanged default remains reusable.
+The parent install/uninstall engines own launcher outcomes. `--bin` installs
+the dispatcher and the requested shims, and `--default` records the default
+harness, whether or not an adapter in the same run failed: routing is
+reversible by reinstalling, so a failed adapter does not hold it back, and the
+run still exits nonzero. A dispatcher or shim symlink that points elsewhere is
+retargeted only with `--force`; a foreign real file in its place is never
+replaced. `--default` without bin installation retains its existing
+no-default-write behavior. Uninstall removes only proven-owned shims for
+successful selected adapters, including `--target all`, and retains the
+dispatcher for protected, foreign or unknown survivors.
 The source-only launcher helper is `lib/installer-launchers.sh`; public entry
 points and Bash 3.2 compatibility are retained.
 
