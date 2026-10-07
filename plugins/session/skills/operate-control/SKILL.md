@@ -18,9 +18,9 @@ another project context, or a persistent conversation benefits the Keeper.
 
 First read `asha control session list --json`. Summarize work and requests
 briefly; qualify `complete: false`. No record means no observed work, not proof
-that no unmanaged harness exists. Resolve a project through `asha initiative
-projects --match NAME --json`, or its known canonical path. Ask once for
-ambiguous projects; ordinary sessions do not require jj.
+that no unmanaged harness exists. Resolve a project through
+`asha control projects --match NAME --json`, or its known canonical path. Ask
+once for ambiguous projects; ordinary sessions do not require jj.
 
 ```bash
 asha control session launch --project PROJECT --prompt ASSIGNMENT --harness claude --json

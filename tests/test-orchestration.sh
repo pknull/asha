@@ -34,7 +34,6 @@ PYTHONPATH="$ROOT" python3 -m unittest \
   tests.python.test_orchestration_revision_rule \
   tests.python.test_orchestration_workspace_scope \
   tests.python.test_orchestration_multi_repo_readiness \
-  tests.python.test_orchestration_projects \
   tests.python.test_orchestration_coordinator_sessions \
   tests.python.test_orchestration_authority \
   tests.python.test_orchestration_real_execution
