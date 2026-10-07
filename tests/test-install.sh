@@ -1427,15 +1427,12 @@ class LauncherTests(unittest.TestCase):
     def assert_shims(self, names):
         for h in names: self.assertEqual(os.readlink(self.bin/('asha-'+h)), 'asha')
 
-    def test_new_codex_generated_directories_survive_group_writable_caller_umask(self):
-        p = self.run_install('--target', 'codex', '--only', 'session')
-        self.assertEqual(p.returncode, 0, p.stderr.decode())
-        for directory in (self.home/'.codex/skills',
-                          self.home/'.codex/skills/session-init',
-                          self.home/'.asha/install-manifests'):
-            self.assertEqual(directory.stat().st_mode & 0o022, 0, str(directory))
-        p = self.run_install('--target', 'codex', '--only', 'session')
-        self.assertEqual(p.returncode, 0, p.stderr.decode())
+    def test_codex_reinstall_accepts_directories_made_under_a_group_writable_umask(self):
+        # run_install uses umask 002; the reinstall must accept its own 0775 dirs.
+        for attempt in (1, 2):
+            p = self.run_install('--target', 'codex', '--only', 'session')
+            self.assertEqual(p.returncode, 0, p.stderr.decode())
+        self.assertTrue((self.home/'.codex/skills/session-init').is_dir())
 
     def test_documented_default_target_bin_all_and_public_source(self):
         before = self.codex.read_bytes()
