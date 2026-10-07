@@ -77,8 +77,8 @@ _SEMANTIC_EVENT_HARNESSES = frozenset({"claude", "codex"})
 def supervisor_service_status(
     values: Mapping[str, str], *, runner=None, which=None,
 ) -> dict[str, bool | None]:
-    # Keep the supervisor's orchestration dependency graph out of doctor import.
-    from .orchestration.supervisor_daemon import supervisor_service_status as inspect
+    # Keep the supervisor service and its unit logic out of doctor import.
+    from .supervisor_service import supervisor_service_status as inspect
     return inspect(values, runner=runner, which=which)
 
 
@@ -89,7 +89,7 @@ def _python_probe(config) -> Probe:
 
 
 def _experience_configuration_probe(config, *, env=None) -> Probe:
-    from .orchestration.projects import experience_default
+    from .projects import experience_default
     values = dict(os.environ if env is None else env)
     if config is not None:
         values['HOME'] = str(config.home)

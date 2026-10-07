@@ -34,8 +34,7 @@ class _UnavailableTerminal:
 
 def terminal_inventory(deadline):
     """One bounded tmux inventory, or a stand-in that refuses, plus its error."""
-    from .tmux import TmuxAdapter
-    from .orchestration.observation import BoundedTmux
+    from .tmux import BoundedTmux, TmuxAdapter
     try:
         return BoundedTmux(TmuxAdapter(), deadline).inventory(), []
     except (ValueError, OSError) as exc:
@@ -161,7 +160,7 @@ def resolve_session(config, hub, selector, *, room_names=False):
     if len(found) == 1:
         return next(iter(found))
     if found:
-        from .orchestration.messages import terminal_safe
+        from .text import terminal_safe
         shown = [f'{sid} ({terminal_safe(label[:48])})' for sid, label in sorted(found.items())]
         more = f'; and {len(shown) - 10} more' if len(shown) > 10 else ''
         raise StoreError(f'session prefix {selector!r} is ambiguous; it matches ' + '; '.join(shown[:10]) + more +
@@ -203,7 +202,7 @@ def attach_terminal(attached, *, tmux, env):
     anywhere else tmux attaches this terminal, and refuses to nest by itself.
     Both forms keep the fail-closed ownership check of the printed command.
     """
-    from .orchestration.messages import terminal_safe
+    from .text import terminal_safe
     from .rooms import room_switch_argv
     argv = attached['attach_argv']
     if same_server(tmux, attached['pane_id'], env):

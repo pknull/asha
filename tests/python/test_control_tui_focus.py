@@ -217,10 +217,10 @@ class ControlTuiFocusTests(unittest.TestCase):
 
         project, payload = self._room_payload()
         with mock.patch(
-            "lib.control.orchestration.projects.resolve_roots",
+            "lib.control.projects.resolve_roots",
             return_value=([str(project.parent)], "test"),
         ), mock.patch(
-            "lib.control.orchestration.projects.list_projects_across",
+            "lib.control.projects.list_projects_across",
             return_value=payload,
         ), mock.patch(
             "lib.control.rooms.room_harness_available",
@@ -334,10 +334,10 @@ class ControlTuiFocusTests(unittest.TestCase):
         curses_module = FakeCurses()
         launched = {"name": "Draft 2", "project_name": "My Novel"}
         with mock.patch(
-            "lib.control.orchestration.projects.resolve_roots",
+            "lib.control.projects.resolve_roots",
             return_value=([str(project.parent)], "test"),
         ), mock.patch(
-            "lib.control.orchestration.projects.list_projects_across",
+            "lib.control.projects.list_projects_across",
             return_value=payload,
         ), mock.patch(
             "lib.control.rooms.room_harness_available",
@@ -363,10 +363,10 @@ class ControlTuiFocusTests(unittest.TestCase):
         project, payload = self._room_payload()
         screen = FakeScreen([10, 10, *"oX?", 27])
         with mock.patch(
-            "lib.control.orchestration.projects.resolve_roots",
+            "lib.control.projects.resolve_roots",
             return_value=([str(project.parent)], "test"),
         ), mock.patch(
-            "lib.control.orchestration.projects.list_projects_across",
+            "lib.control.projects.list_projects_across",
             return_value=payload,
         ), mock.patch(
             "lib.control.rooms.room_harness_available",
@@ -394,10 +394,10 @@ class ControlTuiFocusTests(unittest.TestCase):
         ])
         launched = {"name": "AAS room", "project_name": "AAS"}
         with mock.patch(
-            "lib.control.orchestration.projects.resolve_roots",
+            "lib.control.projects.resolve_roots",
             return_value=([], "test"),
         ), mock.patch(
-            "lib.control.orchestration.projects.list_projects_across",
+            "lib.control.projects.list_projects_across",
             return_value={"projects": []},
         ), mock.patch(
             "lib.control.rooms.room_harness_available",
@@ -416,10 +416,10 @@ class ControlTuiFocusTests(unittest.TestCase):
         invalid = str(Path(self.env["HOME"]) / "not-initialized")
         screen = FakeScreen([*invalid, 10, 27])
         with mock.patch(
-            "lib.control.orchestration.projects.resolve_roots",
+            "lib.control.projects.resolve_roots",
             return_value=([], "test"),
         ), mock.patch(
-            "lib.control.orchestration.projects.list_projects_across",
+            "lib.control.projects.list_projects_across",
             return_value={"projects": []},
         ), mock.patch(
             "lib.control.rooms.room_harness_available",
@@ -487,10 +487,10 @@ class ControlTuiFocusTests(unittest.TestCase):
         ])
         launched = {"name": "Draft Room", "project_name": "Second"}
         with mock.patch(
-            "lib.control.orchestration.projects.resolve_roots",
+            "lib.control.projects.resolve_roots",
             return_value=([str(first.parent)], "test"),
         ), mock.patch(
-            "lib.control.orchestration.projects.list_projects_across",
+            "lib.control.projects.list_projects_across",
             return_value=payload,
         ), mock.patch(
             "lib.control.rooms.room_harness_available",
@@ -528,10 +528,10 @@ class ControlTuiFocusTests(unittest.TestCase):
         ], height=24)
         launched = {"name": "Bounded", "project_name": "project-127"}
         with mock.patch(
-            "lib.control.orchestration.projects.resolve_roots",
+            "lib.control.projects.resolve_roots",
             return_value=([str(Path(self.env["HOME"]) / "many")], "test"),
         ), mock.patch(
-            "lib.control.orchestration.projects.list_projects_across",
+            "lib.control.projects.list_projects_across",
             return_value={"projects": projects},
         ), mock.patch(
             "lib.control.rooms.room_harness_available",
@@ -570,10 +570,10 @@ class ControlTuiFocusTests(unittest.TestCase):
         project, payload = self._room_payload()
         screen = FakeScreen([10, *"Draft", 9, 10, *"prompt", 9, 27])
         with mock.patch(
-            "lib.control.orchestration.projects.resolve_roots",
+            "lib.control.projects.resolve_roots",
             return_value=([str(project.parent)], "test"),
         ), mock.patch(
-            "lib.control.orchestration.projects.list_projects_across",
+            "lib.control.projects.list_projects_across",
             return_value=payload,
         ), mock.patch(
             "lib.control.rooms.room_harness_available",
@@ -599,10 +599,10 @@ class ControlTuiFocusTests(unittest.TestCase):
             with self.subTest(name=name):
                 screen = FakeScreen([10, *name, 10, 27], width=160)
                 with mock.patch(
-                    "lib.control.orchestration.projects.resolve_roots",
+                    "lib.control.projects.resolve_roots",
                     return_value=([str(project.parent)], "test"),
                 ), mock.patch(
-                    "lib.control.orchestration.projects.list_projects_across",
+                    "lib.control.projects.list_projects_across",
                     return_value=payload,
                 ), mock.patch(
                     "lib.control.rooms.room_harness_available",

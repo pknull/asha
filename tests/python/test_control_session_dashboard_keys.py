@@ -246,8 +246,8 @@ class LaunchFormTests(unittest.TestCase):
         payload = {'projects': [{'root': '/proj', 'name': 'Proj', 'directory': 'proj', 'project_id': 'proj-id',
                                  'asha_project': True}]}
         stream = iter(keys)
-        with patch('lib.control.orchestration.projects.resolve_roots', return_value=(['/'], 'test')), \
-             patch('lib.control.orchestration.projects.list_projects_across', return_value=payload), \
+        with patch('lib.control.projects.resolve_roots', return_value=(['/'], 'test')), \
+             patch('lib.control.projects.list_projects_across', return_value=payload), \
              patch('lib.control.rooms.resolve_project', return_value={'root': '/proj'}), \
              patch('lib.control.rooms.room_harness_available', side_effect=lambda name, env: name in {'claude', 'codex'}), \
              patch.object(session_modals, '_draw_modal_frame', side_effect=lambda _s, _c, frame: frames.append(frame)), \

@@ -29,7 +29,7 @@ class ClosureFixture(unittest.TestCase):
         from lib.control.session_hub import Hub
         self.hub = Hub(self.config, env=self.env, tmux=self.tmux)
         self.supervisor = self.enterContext(mock.patch(
-            'lib.control.orchestration.supervisor_daemon.start_supervisor',
+            'lib.control.supervisor_service.start_supervisor',
             return_value=({'message': 'started'}, 0)))
         # Closure never commits, pushes or integrates: any git invocation is a failure.
         original_run, original_popen = subprocess.run, subprocess.Popen

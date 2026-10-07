@@ -32,7 +32,7 @@ from .store import (
     _open_existing_file, _registry_lock,
 )
 from .tmux import TmuxAdapter, TmuxError, validate_command_argv
-from .orchestration.projects import display_name, list_projects_across, resolve_roots
+from .projects import display_name, list_projects_across, resolve_roots
 
 
 ROOM_CONTRACT = "asha.room.v1"

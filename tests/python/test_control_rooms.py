@@ -339,10 +339,10 @@ class RoomTests(unittest.TestCase):
             "asha_project": True,
         }]}
         with unittest.mock.patch(
-            "lib.control.orchestration.projects.resolve_roots",
+            "lib.control.projects.resolve_roots",
             return_value=([str(self.project.parent)], "test"),
         ), unittest.mock.patch(
-            "lib.control.orchestration.projects.list_projects_across",
+            "lib.control.projects.list_projects_across",
             return_value=project_payload,
         ), unittest.mock.patch.object(
             session_modals, "_draw_modal_frame",

@@ -62,8 +62,8 @@ def owner(sid):
 
 
 def supervisor():
-    from lib.control.orchestration.config import load_config
-    from lib.control.orchestration.supervisor_daemon import run_supervisor
+    from lib.control.config import load_config
+    from lib.control.supervisor_service import run_supervisor
     real_popen = subprocess.Popen
     def launch(argv, **kwargs):
         if argv[:3] == [sys.executable, '-m', 'lib.control.sessions'] and argv[3] == 'owner':

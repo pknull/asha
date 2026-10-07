@@ -2488,18 +2488,13 @@ MAX_SESSION_NAME_BYTES = 200
 
 def validate_message_anchor(value: Any) -> dict[str, Any]:
     if isinstance(value, dict) and value.get("kind") == "managed-session-v1":
-        anchor = _object(value, "managed coordinator anchor", frozenset({
-            "kind", "session_id", "state_dir", "owner_pid", "process_start_identity", "generation",
-        }))
-        canonical_uuid(anchor["session_id"], "managed session_id")
-        _integer(anchor["owner_pid"], "managed owner pid", minimum=1, maximum=MAX_PID)
-        _integer(anchor["generation"], "managed owner generation", minimum=1)
-        _text(anchor["process_start_identity"], "managed owner identity", maximum=MAX_PROCESS_IDENTITY_BYTES)
-        path = anchor["state_dir"]
-        _text(path, "managed state directory", maximum=MAX_PATH_BYTES)
-        if not is_canonical_absolute_path(path, resolved=True):
-            raise ModelError("managed state directory must be canonical and absolute")
-        return copy.deepcopy(anchor)
+        # The managed half lives with the session store, which live Control uses.
+        from ..session_store import validate_managed_anchor
+        from ..store import StoreError
+        try:
+            return validate_managed_anchor(value)
+        except StoreError as exc:
+            raise ModelError(str(exc)) from exc
     anchor = _object(value, "coordinator anchor", _COORDINATOR_ANCHOR_KEYS)
     _optional_text(anchor["tmux_socket"], "coordinator anchor tmux_socket", maximum=MAX_PATH_BYTES)
     _text(anchor["session"], "coordinator anchor session", maximum=MAX_SESSION_NAME_BYTES)

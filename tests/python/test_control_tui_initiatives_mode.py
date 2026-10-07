@@ -419,7 +419,7 @@ class InitiativesLoopTests(ExecutionFixture, unittest.TestCase):
                                   "asha_project": True, "project_id": "project-one"}]}
         with mock.patch("lib.control.managed_launch.harness_available", return_value=True), \
              mock.patch("lib.control.managed_launch.launch_managed", return_value=launched) as launch, \
-             mock.patch("lib.control.orchestration.projects.list_projects_across", return_value=projects), \
+             mock.patch("lib.control.projects.list_projects_across", return_value=projects), \
              mock.patch("lib.control.tui._popup_session") as popup:
             _screen, model = self.run_loop([ord("n"), 10, 10, *map(ord, "update termart"), 10, ord("q")])
         self.assertEqual(launch.call_args.kwargs['project'], str(self.repo))

@@ -514,15 +514,14 @@ class Hub:
                         c.execute('SELECT 1 FROM managed_sessions WHERE session_id=?', (sid,)).fetchone())
 
     def _wake_structured(self, sid):
-        from .orchestration.config import from_control
-        from .orchestration.supervisor_daemon import start_supervisor
+        from .supervisor_service import start_supervisor
         # Admission is an operator runtime preference, never an initiative gate.
         from .runtime import admission
         mode = admission(self.config)['mode']
         warning = None
         if mode == 'running':
             try:
-                outcome, code = start_supervisor(from_control(self.config), self.env)
+                outcome, code = start_supervisor(self.config, self.env)
                 if code:
                     warning = outcome.get('message', 'Supervisor could not start')
             except (ValueError, OSError) as exc:

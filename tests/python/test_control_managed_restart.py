@@ -58,9 +58,8 @@ class ManagedRestartTests(unittest.TestCase):
                     self.assertTrue(process_live(owner['owner_pid'], owner['owner_identity']))
                     self.assertTrue(process_live(provider_pid, provider_identity))
                     replacement = start()
-                    from lib.control.orchestration.config import from_control
-                    from lib.control.orchestration.supervisor_daemon import supervisor_status
-                    until(lambda: supervisor_status(from_control(config))[0].get('pid') == replacement.pid,
+                    from lib.control.supervisor_service import supervisor_status
+                    until(lambda: supervisor_status(config)[0].get('pid') == replacement.pid,
                           'replacement supervisor did not claim its lock')
                     time.sleep(1.1)  # One actual replacement tick, below UI update bound.
                     current = store.get(sid)

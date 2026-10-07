@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 from lib.control.orchestration import cli
-from lib.control.orchestration.projects import (
+from lib.control.projects import (
     PROJECT_LIST_CONTRACT, ProjectIndexError, configured_roots, display_name,
     list_projects, list_projects_across, resolve_roots,
 )

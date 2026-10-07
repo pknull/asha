@@ -1006,7 +1006,7 @@ def _project_launch_form(
     callable receives the accepted values and returns the status message; a
     refusal it raises stays on the form beside the field.
     """
-    from .orchestration.projects import list_projects_across, resolve_roots
+    from .projects import list_projects_across, resolve_roots
     from .rooms import (
         RoomError, _room_name, open_room, resolve_project,
         room_harness_available,

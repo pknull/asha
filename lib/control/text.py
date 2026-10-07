@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
+from typing import Any
 
 
 ZWJ = "\u200d"
@@ -241,3 +242,17 @@ def terminal_text_is_complete(value: str) -> bool:
         if regional and (len(regional) not in {1, 2} or len(regional) != len(visible)):
             return False
     return True
+
+
+def terminal_safe(value: Any) -> Any:
+    """Escape C0/C1, bidi/format controls and surrogates even in text output."""
+    if isinstance(value, str):
+        return "".join(
+            f"\\u{ord(c):04x}" if unicodedata.category(c) in {"Cc", "Cf", "Cs"} else c
+            for c in value
+        )
+    if isinstance(value, dict):
+        return {terminal_safe(k): terminal_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [terminal_safe(v) for v in value]
+    return value

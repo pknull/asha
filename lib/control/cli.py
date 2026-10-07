@@ -2025,7 +2025,7 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             if tail and tail[0] == "event":
                 return _event_command(tail[1:], values)
             if tail and tail[0] == "supervisor":
-                from .orchestration.supervisor_daemon import supervisor_main
+                from .supervisor_service import supervisor_main
                 return supervisor_main(tail[1:], env=values)
             if tail and tail[0] == "session":
                 from .sessions import main as session_main

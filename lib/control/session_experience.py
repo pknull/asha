@@ -355,7 +355,7 @@ class Experiences:
         return bool(identities.intersection({source['session_id'], source.get('native_id'), envelope.get('native_session_id')}))
 
     def default_policy(self, pid, *, epoch=0):
-        from .orchestration.projects import experience_default
+        from .projects import experience_default
         mode, source, _ = experience_default(self.hub.env)
         # Nonpositive fingerprints cannot collide with new project overrides.
         # User config is external, read-only state: returning to a previous mode

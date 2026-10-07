@@ -5,15 +5,18 @@ authoritative for plans, work attempts, approvals and accepted evidence.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
 import time
+import unicodedata
 import uuid
 from pathlib import Path
 from typing import Any
 from types import SimpleNamespace
 
+from .config import is_canonical_absolute_path
 from .database import ControlDatabase
 from .harness import caller_descends_from, process_identity, verify_process, _process_stat_fields
 from .store import StoreError
@@ -98,10 +101,59 @@ def anchor_for(state_dir, session):
             "owner_pid": session["owner_pid"], "process_start_identity": session["owner_identity"]}
 
 
+_ANCHOR_KEYS = frozenset({
+    "kind", "session_id", "state_dir", "owner_pid", "process_start_identity", "generation",
+})
+_MAX_PID = 2**22
+_MAX_GENERATION = 2**63 - 1
+
+
+def _anchor_integer(value, name, maximum):
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
+        raise StoreError(f"{name} must be an integer from 1 through {maximum}")
+
+
+def _anchor_text(value, name, maximum):
+    if not isinstance(value, str):
+        raise StoreError(f"{name} must be text")
+    if any(unicodedata.category(char) in {"Cc", "Cf", "Cs"} for char in value):
+        raise StoreError(f"{name} must not contain Unicode control characters")
+    if not 1 <= len(value.encode("utf-8")) <= maximum:
+        raise StoreError(f"{name} must contain 1-{maximum} UTF-8 bytes")
+
+
+def validate_managed_anchor(value):
+    """Validate a managed-session anchor's shape; the engine's wording, without the engine."""
+    if not isinstance(value, dict):
+        raise StoreError("managed coordinator anchor must be an object")
+    missing, extra = _ANCHOR_KEYS - value.keys(), value.keys() - _ANCHOR_KEYS
+    if missing:
+        raise StoreError(f"managed coordinator anchor is missing {len(missing)} required field(s)")
+    if extra:
+        raise StoreError(f"managed coordinator anchor has {len(extra)} unexpected field(s)")
+    if value["kind"] != "managed-session-v1":
+        raise StoreError("managed coordinator anchor kind must be managed-session-v1")
+    session_id = value["session_id"]
+    if not isinstance(session_id, str):
+        raise StoreError("managed session_id must be a canonical UUID string")
+    try:
+        canonical = str(uuid.UUID(session_id)) == session_id
+    except ValueError:
+        canonical = False
+    if not canonical:
+        raise StoreError("managed session_id must be a canonical UUID")
+    _anchor_integer(value["owner_pid"], "managed owner pid", _MAX_PID)
+    _anchor_integer(value["generation"], "managed owner generation", _MAX_GENERATION)
+    _anchor_text(value["process_start_identity"], "managed owner identity", 200)
+    _anchor_text(value["state_dir"], "managed state directory", 4096)
+    if not is_canonical_absolute_path(value["state_dir"], resolved=True):
+        raise StoreError("managed state directory must be canonical and absolute")
+    return copy.deepcopy(value)
+
+
 def verify_anchor(anchor, *, caller=False):
     """Labels never prove a role: compare retained owner and live process incarnation."""
-    from .orchestration.model import validate_message_anchor
-    validate_message_anchor(anchor)
+    validate_managed_anchor(anchor)
     config = SimpleNamespace(tasks_dir=Path(anchor["state_dir"]) / "tasks")
     with SessionStore(config) as store:
         session = store.get(anchor["session_id"])

@@ -122,7 +122,7 @@ class C1PolicyDefaults(DefaultsFixture):
         self.assertIn('session_experience.default_mode', output.stdout)
 
     def test_invalid_config_shapes_never_enable_and_configured_roots_still_resolve(self):
-        from lib.control.orchestration.projects import configured_roots
+        from lib.control.projects import configured_roots
         for value in [None, [], {}, {'default_mode': 'enabled'}, {'default_mode': 1}]:
             self.config_default(value)
             with mock.patch.object(self.experience, 'available', return_value=False):

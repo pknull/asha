@@ -2460,7 +2460,7 @@ def _initiative_command(
     if command == "projects":
         options = _parse_options(tail, repeat={"root"}, flags={"json"})
         _only(options, {"root", "depth", "match", "json"}, "projects")
-        from .projects import DEFAULT_DEPTH, list_projects_across, resolve_roots
+        from ..projects import DEFAULT_DEPTH, list_projects_across, resolve_roots
 
         depth_option = options.get("depth")
         try:
