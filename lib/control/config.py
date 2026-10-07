@@ -41,9 +41,9 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-# Retired settings (best-effort close, D5): accepted and ignored for one
-# release so an existing config still loads.
-IGNORED_CONTROL_KEYS = frozenset({"idle_delivery", "no_handoff_close"})
+# Retired settings (best-effort close, D5; session preview, N9): accepted and
+# ignored for one release so an existing config still loads.
+IGNORED_CONTROL_KEYS = frozenset({"idle_delivery", "no_handoff_close", "session_preview"})
 # How long a close waits for a Memory save before it terminates (D5).
 # control.workspace_trust stays a validated key so existing configuration keeps
 # loading; the task substrate that read it was retired (L-b).
@@ -66,10 +66,6 @@ class ControlConfig:
     session_prefix: str
     event_staleness_seconds: int
     workspace_trust: str
-    # The dashboard's read-only pane preview (#102 phase 3); off unless opted in,
-    # because the operator's own tmux hooks and command aliases can run commands
-    # on a tmux read that Control cannot prevent (docs/session-hub.md).
-    session_preview: bool = False
     close_wait_seconds: int = CLOSE_WAIT_DEFAULT
 
 
@@ -327,7 +323,7 @@ def load_config(
         raise ConfigError("control must be an object")
     supported_control = {
         "workspace_root", "default_harness", "tmux", "event_staleness_seconds",
-        "workspace_trust", "session_preview", "close_wait_seconds",
+        "workspace_trust", "close_wait_seconds",
     } | IGNORED_CONTROL_KEYS
     unknown_control = set(control) - supported_control
     if unknown_control:
@@ -400,9 +396,6 @@ def load_config(
     if not 1 <= raw_staleness <= 86400:
         raise ConfigError("control.event_staleness_seconds must be from 1 through 86400")
 
-    session_preview = control.get("session_preview", False)
-    if not isinstance(session_preview, bool):
-        raise ConfigError("control.session_preview must be true or false")
     close_wait = control.get("close_wait_seconds", CLOSE_WAIT_DEFAULT)
     if isinstance(close_wait, bool) or not isinstance(close_wait, int) or not 0 <= close_wait <= CLOSE_WAIT_LIMIT:
         raise ConfigError(f"control.close_wait_seconds must be an integer from 0 through {CLOSE_WAIT_LIMIT}")
@@ -436,6 +429,5 @@ def load_config(
         session_prefix=session_prefix,
         event_staleness_seconds=raw_staleness,
         workspace_trust=workspace_trust,
-        session_preview=session_preview,
         close_wait_seconds=close_wait,
     )
