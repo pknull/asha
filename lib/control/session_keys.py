@@ -33,7 +33,7 @@ def row_keys(row):
 
 def footer(row, *, width, peek=False):
     """One state-aware line: the keys that matter for the selected row (#102)."""
-    from .tui import _cell_width
+    from .session_modals import _cell_width
     keys = (['Esc back'] if peek else []) + row_keys(row)
     while keys and _cell_width('  '.join(keys + [TAIL])) > width:
         keys.pop()

@@ -7,7 +7,7 @@ import os
 import unittest
 from pathlib import Path
 
-from lib.control import session_layout, session_view, tui
+from lib.control import session_layout, session_modals, session_view
 from lib.control.session_view import ViewModel, merge, with_changes
 
 GOLDEN = Path(__file__).resolve().parent / 'golden' / 'session_dashboard'
@@ -89,7 +89,7 @@ class BoundsTests(unittest.TestCase):
                     with self.subTest(grouping=grouping, width=width, height=height, selected=selected):
                         rendered = render(data, width=width, height=height, selected=selected)
                         self.assertLessEqual(len(rendered), height)
-                        self.assertTrue(all(tui._cell_width(line) <= width for line in rendered), rendered)
+                        self.assertTrue(all(session_modals._cell_width(line) <= width for line in rendered), rendered)
                         self.assertTrue(all('\x1b' not in line for line in rendered))
                         if height >= 8:
                             self.assertEqual(len(rendered), height)
@@ -105,7 +105,7 @@ class BoundsTests(unittest.TestCase):
                     with self.subTest(grouping=grouping, width=width, selected=selected):
                         rendered = render(data, width=width, height=24, selected=selected)
                         for line in rendered:
-                            self.assertLessEqual(tui._cell_width(line), width, line)
+                            self.assertLessEqual(session_modals._cell_width(line), width, line)
                         self.assertTrue(any('…' in line for line in rendered))
 
 

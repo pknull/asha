@@ -2,7 +2,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from lib.control import session_modals, session_tui, tui
+from lib.control import session_modals, session_tui
 from lib.control.tui_style import BAD, GOOD, INERT, MACHINE, TIER_PAIR, WAITING
 
 
@@ -61,13 +61,13 @@ class SessionColourTests(unittest.TestCase):
     def test_eight_colour_terminal_uses_supported_shared_pairs(self):
         module = FakeCurses()
         module.COLORS = 8
-        self.assertTrue(tui.init_colours(module))
+        self.assertTrue(session_modals.init_colours(module))
         self.assertTrue(all(0 <= fg < 8 for fg, _ in module.pairs.values()))
 
     def test_palette_initialization_failure_falls_back_to_monochrome(self):
         module = FakeCurses()
         module.init_pair = MagicMock(side_effect=module.error('unsupported'))
-        self.assertFalse(tui.init_colours(module))
+        self.assertFalse(session_modals.init_colours(module))
         self.paint(snapshot('working', 'needs-input'), coloured=False)
 
     def test_loop_initializes_palette_and_passes_result_to_painter(self):
@@ -110,7 +110,7 @@ class SessionColourTests(unittest.TestCase):
                 self.assertEqual(len(status), 2)
                 self.assertEqual(status[1][2].strip(), step)
                 for write in status:
-                    self.assertEqual(write[3], tui._attribute(FakeCurses, tier, True))
+                    self.assertEqual(write[3], session_modals._attribute(FakeCurses, tier, True))
 
     def test_selection_background_does_not_reverse_status_colour(self):
         screen = self.paint(snapshot('working', 'needs-input'), selected=1)
@@ -128,9 +128,9 @@ class SessionColourTests(unittest.TestCase):
         screen = self.paint(data)
         self.assertTrue(screen.writes[0][3] & FakeCurses.A_BOLD)
         metadata = next(w for w in screen.writes if 'queued messages' in w[2])
-        self.assertEqual(metadata[3], tui._attribute(FakeCurses, INERT, True))
+        self.assertEqual(metadata[3], session_modals._attribute(FakeCurses, INERT, True))
         error = next(w for w in screen.writes if 'Observation incomplete' in w[2])
-        self.assertEqual(error[3], tui._attribute(FakeCurses, BAD, True))
+        self.assertEqual(error[3], session_modals._attribute(FakeCurses, BAD, True))
 
     def test_monochrome_retains_words_selection_and_urgent_bold(self):
         data = snapshot('needs-input', 'failed', 'finished')
@@ -145,7 +145,7 @@ class SessionColourTests(unittest.TestCase):
         for y in range(24):
             line, at = '', 0
             for x, text in sorted(lines.get(y, [])):
-                line, at = line + ' ' * (x - at) + text, x + tui._cell_width(text)
+                line, at = line + ' ' * (x - at) + text, x + session_modals._cell_width(text)
             painted.append(line)
         self.assertEqual(painted, session_tui.lines(data, width=99, height=24))
 
@@ -157,7 +157,7 @@ class SessionColourTests(unittest.TestCase):
                 screen = self.paint(data, selected=50, width=width, height=height)
                 for y, x, text, _ in screen.writes:
                     self.assertLess(y, height)
-                    self.assertLessEqual(x + tui._cell_width(text), max(0, width - 1))
+                    self.assertLessEqual(x + session_modals._cell_width(text), max(0, width - 1))
                     self.assertNotIn('\x1b', text)
                 if height >= 8 and width >= 40:
                     row = next(w for w in screen.writes if w[1] == 0 and w[2].startswith('> '))
@@ -170,7 +170,7 @@ class SessionColourTests(unittest.TestCase):
     def test_summary_emphasizes_outstanding_input(self):
         screen = self.paint(snapshot('working', 'needs-input'))
         summary = next(w for w in screen.writes if w[0] == 1)
-        self.assertEqual(summary[3], tui._attribute(FakeCurses, WAITING, True))
+        self.assertEqual(summary[3], session_modals._attribute(FakeCurses, WAITING, True))
 
     def test_curses_resize_error_does_not_abort_the_painter(self):
         screen = Screen()

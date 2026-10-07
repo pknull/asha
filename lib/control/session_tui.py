@@ -141,7 +141,8 @@ class Dashboard:
     def __init__(self, screen, config, env):
         screen.timeout(TICK_MS)
         self.screen, self.config, self.env = screen, config, env
-        self.model = session_modals.SessionModel()
+        # A prompt repaints this dashboard's own live view behind it (L-b).
+        self.model = session_modals.SessionModel(backdrop=lambda: self.paint())
         self.model.coloured = session_modals.init_colours(curses)
         self.hub = Hub(config, env=env)
         self.ctx = session_actions.Context(screen, curses, self.model, config, env, self.hub)

@@ -15,7 +15,6 @@ def bounded_process(
     error_type: type[ValueError], deadline_seconds: float = 60,
     env: dict[str, str] | None = None,
     input_data: bytes | None = None,
-    umask: int | None = None,
 ) -> tuple[int, bytes, bytes]:
     """Capture each pipe incrementally without allocating beyond ``limit``."""
     try:
@@ -27,8 +26,6 @@ def bounded_process(
             stdin=subprocess.PIPE if input_data is not None else None,
             shell=False,
             env=env,
-            # Set in the child only; the parent's umask is process-wide.
-            umask=-1 if umask is None else umask,
         )
     except OSError as exc:
         raise error_type(f"command invocation failed: {exc}") from exc
@@ -106,7 +103,6 @@ def capture_bytes(
     deadline_seconds: float = 60,
     env: dict[str, str] | None = None,
     input_data: bytes | None = None,
-    umask: int | None = None,
 ) -> tuple[int, bytes, bytes]:
     """Run one exact argv through an injected or production bounded runner."""
     if runner is None:
@@ -115,7 +111,6 @@ def capture_bytes(
             deadline_seconds=deadline_seconds,
             env=env,
             input_data=input_data,
-            umask=umask,
         )
     try:
         kwargs: dict[str, Any] = {
@@ -130,8 +125,6 @@ def capture_bytes(
             kwargs["env"] = env
         if input_data is not None:
             kwargs["input"] = input_data
-        if umask is not None:
-            kwargs["umask"] = umask
         result = runner(argv, **kwargs)
     except (OSError, subprocess.SubprocessError) as exc:
         raise error_type(f"command invocation failed: {exc}") from exc
@@ -145,26 +138,3 @@ def capture_bytes(
         raise error_type("command output exceeded the bounded adapter limit")
     return result.returncode, stdout, stderr
 
-
-def checked_bytes(
-    argv: list[str], *, cwd: Path | None, limit: int,
-    runner: Callable[..., Any] | None, error_type: type[ValueError],
-    env: dict[str, str] | None = None,
-    umask: int | None = None,
-) -> bytes:
-    """Return bounded stdout or raise a bounded adapter-specific failure."""
-    returncode, stdout, stderr = capture_bytes(
-        argv,
-        cwd=cwd,
-        limit=limit,
-        runner=runner,
-        error_type=error_type,
-        env=env,
-        umask=umask,
-    )
-    if returncode != 0:
-        detail = stderr[:4096].decode("utf-8", errors="replace").strip()
-        raise error_type(
-            f"command failed ({returncode}): {detail or 'no diagnostic'}"
-        )
-    return stdout

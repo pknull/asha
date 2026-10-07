@@ -93,8 +93,7 @@ class RecordRegistry:
         The caller still validates each selected record and its lifecycle.
         """
         ControlDatabase._limit(limit)
-        known = {"tasks": ("creating", "running", "ended", "failed", "archived"),
-                 "rooms": ("creating", "open", "ended")}.get(self.domain)
+        known = {"rooms": ("creating", "open", "ended")}.get(self.domain)
         if (self.scope != "registry" or not isinstance(states, (tuple, list))
                 or not 1 <= len(states) <= 32
                 or any(not isinstance(state, str) or not state or len(state) > 128 for state in states)

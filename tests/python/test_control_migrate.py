@@ -14,7 +14,6 @@ from unittest import mock
 
 from lib.control import migrate
 from lib.control.config import ConfigError, load_config, migration_layout
-from lib.control.store import TaskStore
 
 
 def _tree_digest(root: Path) -> str:
@@ -146,14 +145,13 @@ class PreflightTests(LegacyFixture):
             self.assertEqual(self.migrate("--yes"), 2)
         self.assertFalse((self.home / ".asha/state").exists())
 
-    def test_group_writable_asha_home_refuses_with_the_remediation(self) -> None:
+    def test_a_group_writable_asha_home_passes_preflight(self) -> None:
+        # Same-user tamper defense left with the namespace predicate (L-b,
+        # threat model 2026-10-05): the Keeper's own modes never refuse.
         (self.home / ".asha").mkdir(mode=0o775)
-        import io, contextlib
-        stderr = io.StringIO()
-        with mock.patch("lib.control.tmux.TmuxAdapter.list_sessions", return_value=[]), \
-                contextlib.redirect_stderr(stderr):
-            self.assertEqual(self.migrate("--yes"), 2)
-        self.assertIn("chmod g-w,o-w", stderr.getvalue())
+        (self.home / ".asha").chmod(0o775)
+        with mock.patch("lib.control.tmux.TmuxAdapter.list_sessions", return_value=[]):
+            self.assertEqual(self.migrate("--dry-run"), 0)
 
     def test_foreign_new_state_refuses_to_merge(self) -> None:
         (self.home / ".asha/state/control").mkdir(parents=True, mode=0o700)
@@ -201,11 +199,9 @@ class FullRunTests(LegacyFixture):
         self.assertTrue(layout["marker"].is_file())
         marker = json.loads(layout["marker"].read_text())
         self.assertEqual(marker["status"], "complete")
-        # Registry is empty and TRUTHFUL: zero tasks, zero skipped.
+        # The task registry is empty: its husks are retired below.
         config = load_config(self.env)
-        store = TaskStore(config)
-        self.assertEqual(store.list(), [])
-        self.assertEqual(store.skipped, [])
+        self.assertEqual(sorted((layout["new_control"] / "tasks").glob("*.json")), [])
         # Husks retired with a manifest.
         retired = sorted((layout["new_control"]).glob("retired-*/manifest.json"))
         self.assertEqual(len(retired), 1)

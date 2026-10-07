@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-from lib.control import session_modals, tui
+from lib.control import session_modals
 from tests.python.control_curses_fakes import FakeCurses, FakeScreen
 
 
@@ -14,20 +14,20 @@ class NativePermissionUiTests(unittest.TestCase):
         screen = FakeScreen([338, 360, 339, 262, "a"], height=8, width=30)
         frames = []
         with mock.patch.object(session_modals, "_draw_modal_frame", side_effect=lambda _s, _c, frame: frames.append(frame)):
-            self.assertEqual(tui._native_permission_prompt(screen, FakeCurses(), self.request), "allow")
+            self.assertEqual(session_modals._native_permission_prompt(screen, FakeCurses(), self.request), "allow")
         for frame in frames:
             self.assertLessEqual(len(frame.rows), 8)
-            self.assertTrue(all(tui._cell_width(row) <= 29 for row in frame.rows))
+            self.assertTrue(all(session_modals._cell_width(row) <= 29 for row in frame.rows))
         self.assertNotEqual(frames[0].rows, frames[1].rows)
         self.assertEqual(frames[0].rows, frames[-1].rows)
 
     def test_idle_poll_does_not_redraw_or_dim_the_invocation(self):
         screen = FakeScreen([-1, -1, "d"], height=15, width=80)
         with mock.patch.object(session_modals, "_draw_modal_frame") as draw:
-            self.assertEqual(tui._native_permission_prompt(screen, FakeCurses(), self.request), "deny")
+            self.assertEqual(session_modals._native_permission_prompt(screen, FakeCurses(), self.request), "deny")
         self.assertEqual(draw.call_count, 1)
         self.assertIn("content", draw.call_args.args[2].row_roles)
-        self.assertEqual(tui._modal_row_attribute(FakeCurses(), "content"), 0)
+        self.assertEqual(session_modals._modal_row_attribute(FakeCurses(), "content"), 0)
         self.assertIn("/tmp/project", "\n".join(draw.call_args.args[2].rows))
 
     def test_small_screen_and_resize_never_decide(self):
@@ -39,7 +39,7 @@ class NativePermissionUiTests(unittest.TestCase):
                 screen.height, screen.width = 12, 80
             return key
         screen.get_wch = read
-        self.assertEqual(tui._native_permission_prompt(screen, FakeCurses(), self.request), "deny")
+        self.assertEqual(session_modals._native_permission_prompt(screen, FakeCurses(), self.request), "deny")
 
     def test_escape_cancels_without_a_decision(self):
-        self.assertIsNone(tui._native_permission_prompt(FakeScreen(["\x1b"]), FakeCurses(), self.request))
+        self.assertIsNone(session_modals._native_permission_prompt(FakeScreen(["\x1b"]), FakeCurses(), self.request))

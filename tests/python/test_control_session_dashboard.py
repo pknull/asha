@@ -3,7 +3,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from lib.control import session_modals, session_tui, session_view, tui
+from lib.control import session_modals, session_tui, session_view
 
 
 def row(sid='one', **changes):
@@ -26,7 +26,7 @@ class FooterTests(unittest.TestCase):
                 with self.subTest(width=width, state=state and state['activity']):
                     text = session_tui.footer(state, width=width)
                     self.assertNotIn('\n', text)
-                    self.assertLessEqual(tui._cell_width(text), width)
+                    self.assertLessEqual(session_modals._cell_width(text), width)
                     self.assertTrue(text.endswith('? keys  q quit'))
 
     def test_rendered_dashboard_ends_with_the_single_footer_line(self):
@@ -61,7 +61,7 @@ class FooterTests(unittest.TestCase):
         text = '\n'.join(rendered)
         for key in ('Enter', 'x ', 'X ', 's ', 'r ', 'm ', 'n ', 'o ', 'M ', 'A ', 'q '):
             self.assertIn(key, text)
-        self.assertTrue(all(tui._cell_width(line) <= 60 for line in rendered))
+        self.assertTrue(all(session_modals._cell_width(line) <= 60 for line in rendered))
         self.assertLessEqual(len(session_tui.lines(data, width=30, height=6, keys=True)), 6)
 
 
@@ -93,7 +93,7 @@ class KeySheetPagingTests(unittest.TestCase):
                     self.assertIn(label, text)
                 for page in pages:
                     self.assertLessEqual(len(page), 12)
-                    self.assertTrue(all(tui._cell_width(line) <= width for line in page))
+                    self.assertTrue(all(session_modals._cell_width(line) <= width for line in page))
                     self.assertIn('Up/Down', page[-1])
 
     def test_a_sheet_that_fits_is_not_paged(self):

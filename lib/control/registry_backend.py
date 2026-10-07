@@ -13,14 +13,10 @@ from .store import StoreError
 
 
 BACKEND_CONTRACT = "asha.control-registry-backend.v1"
+# Rooms are the last registry on the selectable backend; the task, initiative,
+# journal, prune, colocation and ownership stores were retired (L-b).
 _STORES = {
-    "tasks": ("sqlite_tasks", "SQLiteTaskStore"),
     "rooms": ("sqlite_rooms", "SQLiteRoomStore"),
-    "initiatives": ("orchestration.sqlite_store", "SQLiteInitiativeStore"),
-    "creation-journals": ("sqlite_journals", "SQLiteCreationJournalStore"),
-    "prunes": ("sqlite_auxiliary", "SQLitePruneRecordStore"),
-    "repository-inits": ("sqlite_colocation", "SQLiteColocationIntentStore"),
-    "ownership": ("sqlite_ownership", "SQLiteOwnershipStore"),
 }
 
 

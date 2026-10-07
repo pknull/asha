@@ -3,7 +3,7 @@ import io
 import unittest
 from unittest.mock import MagicMock, patch
 
-from lib.control import session_actions, session_modals, session_title, session_tui, session_view, tui
+from lib.control import session_actions, session_modals, session_title, session_tui, session_view
 from tests.python.test_control_session_dashboard import row
 
 KEY_RESIZE, KEY_LEFT, KEY_RIGHT = 410, 260, 261
@@ -255,7 +255,7 @@ class LaunchFormTests(unittest.TestCase):
             screen = MagicMock()
             screen.getmaxyx.return_value = (18, 80)
             form = dict(title='New project job', prompt_label='Assignment', launch=launch, hint='optional')
-            result = tui._project_launch_form(screen, self.Curses(), MagicMock(), object(), {}, session=form)
+            result = session_modals._project_launch_form(screen, self.Curses(), MagicMock(), object(), {}, session=form)
         return result, frames
 
     def test_blank_model_and_effort_mean_the_harness_default(self):
