@@ -1,14 +1,14 @@
 """Private, bounded actor-to-owner requests over Unix sockets.
 
-The endpoint is a selector, not a credential. Linux peer credentials and a peer
-pidfd bind the caller to a live process; ancestry and retained generation/turn
-checks bind it to the owner. Only the trusted owner opens the operational store.
+The endpoint is a selector, not a credential. It offers only ``ask``; retained
+generation/turn checks bind a request to the owner's running turn. Neither end
+inspects the peer process: the local user is trusted (threat model, 2026-10-05).
+Only the trusted owner opens the operational store.
 """
 from __future__ import annotations
 
 import json
 import os
-import select
 import socket
 import stat
 import struct
@@ -17,7 +17,6 @@ import time
 import uuid
 from contextlib import ExitStack
 
-from .harness import caller_descends_from, process_identity, verify_process
 from .database import DatabaseError, DatabaseBusyError, BUSY_TIMEOUT_SECONDS
 from .session_store import SessionStore, identifier, text, digest
 from .store import StoreError, _directory_fd, _managed_start
@@ -27,9 +26,6 @@ PROTOCOL = "asha.session.request.v1"
 MAX_FRAME = 128 * 1024
 FRAME_TIMEOUT = 3.0
 CLIENT_TIMEOUT = 10.0
-# Linux UAPI asm-generic/socket.h. Python builds predating this option do not
-# expose its name; kernels without it are explicitly unsupported.
-SO_PEERPIDFD = getattr(socket, "SO_PEERPIDFD", 77)
 
 
 def _unique(pairs):
@@ -102,38 +98,6 @@ def _address(fd, name):
     return f"/proc/self/fd/{fd}/{name}"
 
 
-def _peer(connection):
-    pid, uid, _gid = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
-    try:
-        handle = connection.getsockopt(socket.SOL_SOCKET, SO_PEERPIDFD)
-    except OSError as exc:
-        raise StoreError("managed request IPC requires Linux peer pidfd support") from exc
-    try:
-        os.set_inheritable(handle, False)
-    except OSError:
-        os.close(handle)
-        raise
-    return pid, uid, handle
-
-
-def _peer_live(handle):
-    poll = select.poll()
-    poll.register(handle, select.POLLIN)
-    return not poll.poll(0)
-
-
-def capability_probe():
-    """Probe the actual kernel contract without opening or changing Control state."""
-    try:
-        left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-        with left, right:
-            _pid, _uid, handle = _peer(left)
-            os.close(handle)
-        return {"supported": True, "protocol": PROTOCOL, "peer_identity": "Linux SO_PEERCRED + SO_PEERPIDFD"}
-    except (StoreError, OSError, AttributeError) as exc:
-        return {"supported": False, "protocol": PROTOCOL, "reason": str(exc)}
-
-
 class SessionRequestServer:
     """One per-turn endpoint, with a separate bounded I/O thread and DB handle."""
 
@@ -156,9 +120,6 @@ class SessionRequestServer:
 
     def __enter__(self):
         try:
-            probe = capability_probe()
-            if not probe["supported"]:
-                raise StoreError(probe["reason"])
             with SessionStore(self.config) as store:
                 with store.db.transaction() as c:
                     store._owner(c, self.sid, self.generation)
@@ -215,15 +176,8 @@ class SessionRequestServer:
             self.ready.set()
 
     def _handle(self, store, connection):
-        handle = None
         request_id = None
         try:
-            pid, uid, handle = _peer(connection)
-            if uid != os.geteuid() or not _peer_live(handle):
-                raise StoreError("session request peer is foreign or gone")
-            identity = process_identity(pid)
-            if not identity or not caller_descends_from(os.getpid(), start_pid=pid):
-                raise StoreError("session request peer is outside the owner ancestry")
             request = _receive(connection, time.monotonic() + FRAME_TIMEOUT)
             request_id = request.get("request_id")
             expected = {"protocol", "kind", "session_id", "generation", "turn_id", "request_id", "question"}
@@ -233,8 +187,6 @@ class SessionRequestServer:
                 raise StoreError("session request selects a different session or turn")
             if type(request["generation"]) is not int or request["generation"] != self.generation:
                 raise StoreError("session request generation is stale")
-            if not _peer_live(handle) or not verify_process(pid, identity):
-                raise StoreError("session request peer changed before acceptance")
             result = store.request(self.sid, self.turn, request["question"],
                                    request_id=request_id, generation=self.generation)
             # The transaction commits before the response acknowledges custody.
@@ -245,9 +197,6 @@ class SessionRequestServer:
                 self.stopping.set()
             response = {"protocol": PROTOCOL, "request_id": request_id, "ok": False,
                         "error": str(exc)[:1000], "retryable": isinstance(exc, DatabaseBusyError)}
-        finally:
-            if handle is not None:
-                os.close(handle)
         try:
             _send(connection, response, time.monotonic() + FRAME_TIMEOUT)
         except (StoreError, OSError):
@@ -323,20 +272,11 @@ def _exchange(config, request, deadline):
             if fd is None:
                 raise StoreError("session request endpoint is unavailable")
             name = _name(request["session_id"], request["turn_id"])
-            metadata = os.stat(name, dir_fd=fd, follow_symlinks=False)
-            if not stat.S_ISSOCK(metadata.st_mode) or metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != 0o600:
-                raise StoreError("session request endpoint is not private and owned")
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
                 connection.settimeout(_remaining(deadline))
                 connection.connect(_address(fd, name))
-                pid, uid, peer_handle = _peer(connection)
-                try:
-                    if uid != os.geteuid() or not _peer_live(peer_handle) or not caller_descends_from(pid):
-                        raise StoreError("session request server is outside the actor ancestry")
-                    _send(connection, request, deadline, maximum=MAX_FRAME - 4096)
-                    response = _receive(connection, deadline)
-                finally:
-                    os.close(peer_handle)
+                _send(connection, request, deadline, maximum=MAX_FRAME - 4096)
+                response = _receive(connection, deadline)
     except OSError as exc:
         raise StoreError(f"session request transport unavailable: {exc}") from exc
     return response

@@ -148,15 +148,17 @@ class CodexNativeTests(unittest.TestCase):
         with self.assertRaises(StoreError):
             describe(payload)
 
-    def test_operator_cli_refuses_managed_owner_answers(self):
+    def test_operator_cli_refuses_managed_labels_but_not_the_owner_process(self):
         from lib.control.sessions import main
         request = self.open()
         args = ["answer-native", request["request_id"], "--digest", request["digest"],
                 "--answers", json.dumps({"answers": {"tone": {"answers": ["Quiet"]}}})]
         with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
-            self.assertEqual(main(args, env=self.env), 2)
+            self.assertEqual(main(args, env={**self.env, "ASHA_MANAGED_SESSION_ID": self.sid}), 2)
         self.assertEqual(self.native.get(request["request_id"])["state"], "pending")
-        with mock.patch("lib.control.sessions.refuse_managed_operator"), redirect_stdout(StringIO()):
+        # Threat model (2026-10-05): this process is the session owner, but
+        # without a role label it is the operator; ancestry is not consulted.
+        with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
             self.assertEqual(main(args, env=self.env), 0)
         self.assertEqual(self.native.get(request["request_id"])["state"], "answered")
 

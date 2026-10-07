@@ -47,16 +47,22 @@ class NativeRequestTests(unittest.TestCase):
             self.store.answer(request["request_id"], "yes", expected_digest=request["digest"])
         self.assertEqual(self.requests.get(request["request_id"])["state"], "pending")
 
-    def test_permission_cli_refuses_owner_even_with_role_labels_removed(self):
+    def test_permission_cli_refuses_role_labels_and_trusts_a_label_free_caller(self):
+        # Threat model (2026-10-05): role labels decide; the caller's process
+        # ancestry is not consulted. This process is also the session owner.
         from lib.control.sessions import main
         request = self.open()
         env = {"HOME": str(self.root), "ASHA_HOME": str(self.root / "asha"),
                "ASHA_CONFIG": str(self.root / "missing.json")}
         args = ["permission", request["request_id"], "--decision", "allow", "--digest", request["digest"]]
-        for values in (env, {**env, "ASHA_MANAGED_SESSION_ID": self.sid}):
-            with redirect_stderr(StringIO()), redirect_stdout(StringIO()):
+        for values in ({**env, "ASHA_MANAGED_SESSION_ID": self.sid}, {**env, "ASHA_SESSION_PROFILE": "worker"},
+                       {**env, "ASHA_HARNESS": "codex"}):
+            with self.subTest(values=values), redirect_stderr(StringIO()), redirect_stdout(StringIO()):
                 self.assertEqual(main(args, env=values), 2)
         self.assertEqual(self.requests.get(request["request_id"])["state"], "pending")
+        with redirect_stderr(StringIO()) as error, redirect_stdout(StringIO()):
+            self.assertEqual(main(args, env=env), 0, error.getvalue())
+        self.assertEqual(self.requests.get(request["request_id"])["answer"], "allow")
 
     def test_control_decides_native_request_without_enqueuing_a_model_turn(self):
         from unittest import mock
@@ -131,18 +137,6 @@ class NativeRequestTests(unittest.TestCase):
         self.store.stop(self.sid)
         self.requests.submitted(self.sid, self.generation, self.turn, request["request_id"])
         self.assertEqual(self.requests.get(request["request_id"])["response_state"], "submitted")
-
-    def test_operator_refusal_is_fail_closed_for_deep_or_unobservable_ancestry(self):
-        from unittest import mock
-        from lib.control.sessions import refuse_managed_operator
-        def parent(pid):
-            return ["S", str(pid + 1)]
-        for side_effect in (parent, lambda _pid: None):
-            with mock.patch("lib.control.sessions.verify_process", return_value=True), \
-                 mock.patch("lib.control.harness.os.getpid", return_value=1000000000), \
-                 mock.patch("lib.control.harness._process_stat_fields", side_effect=side_effect):
-                with self.assertRaisesRegex(StoreError, "cannot establish operator ancestry"):
-                    refuse_managed_operator(self.config, {})
 
     def test_generation_and_terminal_turn_fence_permission(self):
         request = self.open()

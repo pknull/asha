@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .config import load_config
 from .database import DatabaseBusyError
-from .harness import SANDBOXED_HARNESSES, HarnessError, caller_descends_from, verify_process
+from .harness import SANDBOXED_HARNESSES
 from .session_harness import CAPABILITIES, ClaudeTransport, CodexTransport, claude_argv, codex_argv
 from .session_store import SessionStore, SessionsUninitialized, process_live
 from .store import StoreError, _directory_fd, _managed_start
@@ -38,7 +38,12 @@ def overview(config, *, limit=100, deadline=None):
         return summary(store, limit=limit, deadline=deadline)
 
 
-def refuse_managed_operator(config, env, *, allow_legacy_reads=False):
+def refuse_managed_operator(config, env):
+    """Refuse the operator verbs to managed actors and workers by environment label.
+
+    Process ancestry is not consulted: the local user is trusted (threat model,
+    2026-10-05), and a sandboxed caller already cannot write Control state.
+    """
     if any(env.get(k) for k in ("ASHA_MANAGED_SESSION_ID", "ASHA_CONTROL_MANAGED", "ASHA_ORCHESTRATION_COORDINATOR_ID")):
         raise StoreError("managed actors cannot perform session operator actions")
     # K4 (2026-10-05): a worker on any harness, or a non-chair session on a
@@ -53,22 +58,6 @@ def refuse_managed_operator(config, env, *, allow_legacy_reads=False):
     if env.get("ASHA_HARNESS") in SANDBOXED_HARNESSES and profile != "chair":
         raise StoreError(f"non-chair sessions on the sandboxed {env['ASHA_HARNESS']} harness "
                          "cannot perform session operator actions")
-    if not (config.tasks_dir.parent / "control.sqlite3").exists():
-        return
-    from .database import ControlDatabase
-    with ControlDatabase(config, allow_legacy_reads=allow_legacy_reads) as database:
-        with database.transaction() as c:
-            if not c.execute("SELECT 1 FROM sqlite_master WHERE name='managed_sessions'").fetchone():
-                return  # Generic initialized database, no managed actors yet.
-            owners = c.execute("SELECT owner_pid,owner_identity FROM managed_sessions WHERE owner_pid IS NOT NULL").fetchall()
-        for pid, identity in owners:
-            if verify_process(pid, identity):
-                try:
-                    descendant = caller_descends_from(pid, require_complete=True)
-                except HarnessError as exc:
-                    raise StoreError("cannot establish operator ancestry: " + str(exc)) from exc
-                if descendant:
-                    raise StoreError("session owner ancestry refuses operator impersonation")
 
 
 def quiesce(config, env):
@@ -77,7 +66,7 @@ def quiesce(config, env):
     This compatibility path sends process-bound shutdown, never writes an older
     schema or silently migrates it. Each old owner records its own stop outcome.
     """
-    refuse_managed_operator(config, env, allow_legacy_reads=True)
+    refuse_managed_operator(config, env)
     from .database import ControlDatabase
     from .supervisor_service import stop_supervisor
     stopped, code = stop_supervisor(config)
@@ -451,7 +440,7 @@ def main(argv=None, *, env=None):
             print(json.dumps(quiesce(config, values)))
             return 0
         if args.command in {"migrate", "restore"}:
-            refuse_managed_operator(config, values, allow_legacy_reads=args.command == "migrate")
+            refuse_managed_operator(config, values)
             from .database import ControlDatabase
             if args.command == "restore":
                 result = {"restored": str(ControlDatabase.restore(config, Path(args.source))), "admission": "paused"}
@@ -483,8 +472,7 @@ def main(argv=None, *, env=None):
         if args.command in {"create", "send", "answer", "answer-native", "permission", "stop", "resume", "backup", "rebuild-search", "ack-events"}:
             refuse_managed_operator(config, values)
         if args.command == "doctor":
-            from .session_ipc import capability_probe
-            result = {"capabilities": CAPABILITIES, "actor_ipc": capability_probe(), "database": "not initialized"}
+            result = {"capabilities": CAPABILITIES, "database": "not initialized"}
             from .codex_actor import TOOL
             result['codex_actor'] = {'transport': 'app-server-dynamic-tool', 'tool': TOOL['name'],
                                     'experimental': True, 'scope': 'session-turn'}

@@ -162,8 +162,8 @@ def verify_anchor(anchor, *, caller=False):
     if session["state"] in {"stopped", "failed"} or session["stop_requested"]:
         raise StoreError("managed session is unavailable")
     pid = session["owner_pid"]
-    if not process_live(pid, session["owner_identity"]) or Path(f"/proc/{pid}").stat().st_uid != os.geteuid():
-        raise StoreError("managed owner is gone or foreign")
+    if not process_live(pid, session["owner_identity"]):
+        raise StoreError("managed owner is gone")
     if caller and not caller_descends_from(pid):
         raise StoreError("caller is outside the managed session owner")
     return session
