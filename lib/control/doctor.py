@@ -10,15 +10,16 @@ import shlex
 import shutil
 import stat
 import subprocess
+import tempfile
 import tomllib
 import unicodedata
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Any
 
-from .socket_reaper import TmuxSocketReaper
+from .process import capture_bytes
 from .store import StoreError
-from .tmux import TmuxAdapter, TmuxError
+from .tmux import MAX_OUTPUT_BYTES, TmuxAdapter, TmuxError
 
 
 @dataclass(frozen=True)
@@ -93,14 +94,14 @@ def _tmux_probe(config) -> Probe:
         version = stdout.decode("utf-8").strip()
         if re.fullmatch(r"tmux [0-9]+(?:\.[0-9]+)?[a-z]?", version) is None:
             return Probe("tmux", "unavailable", "tmux -V returned an unrecognized version")
-        socket = f"asha-doctor-probe-{os.getpid()}"
-        with TmuxSocketReaper(socket, executable=executable):
-            probe = TmuxAdapter(
-                executable=executable, socket=socket, config_file=Path("/dev/null"),
+        # list-commands starts a server that exits at once (no sessions) but
+        # leaves its socket file; a private -S socket goes with its directory.
+        with tempfile.TemporaryDirectory(prefix="asha-doctor-") as directory:
+            returncode, popup, stderr = capture_bytes(
+                [executable, "-S", str(Path(directory) / "probe"), "-f", "/dev/null",
+                 "list-commands", "display-popup"],
+                cwd=None, limit=MAX_OUTPUT_BYTES, runner=None, error_type=TmuxError,
             )
-            returncode, popup, stderr = probe._run_status([
-                "list-commands", "display-popup",
-            ])
             if returncode != 0:
                 return Probe(
                     "tmux", "unavailable",

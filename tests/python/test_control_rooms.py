@@ -33,7 +33,7 @@ from lib.control.rooms import (
 )
 from lib.control.tmux import PaneFacts, TmuxError
 from lib.control.tmux import TmuxAdapter
-from lib.control.socket_reaper import TmuxSocketReaper
+from tests.python.socket_reaper import TmuxSocketReaper
 from lib.control import cli
 
 

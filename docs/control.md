@@ -145,30 +145,19 @@ caller's own session and never fall back to another tmux client.
 
 ### Socket reaping
 
-Short-lived helpers that create a dedicated tmux server on their own `-L`
-socket (the confirm, finish, tail, doctor probe, and isolated test harnesses)
-reap that socket on every exit path through `lib/control/socket_reaper.py`.
-Before this, every such invocation left one socket file behind; 1,584
-accumulated in `/tmp/tmux-1000` between mid-August and 2 September 2026.
+Some tmux commands start a server when none is running (`list-commands` does
+on tmux 3.4); with no sessions it exits at once but leaves its socket file
+behind. 1,584 such files from short-lived helpers and test servers accumulated
+in `/tmp/tmux-1000` between mid-August and 2 September 2026.
 
-The reaper is fail-closed:
-
-- It handles only Asha-owned names (`is_asha_socket_name`: `asha-` followed
-  by up to 123 name characters). `default` and every other name are refused.
-- It kills the server, then proves the server is dead before unlinking. A
-  refused or indeterminate connect counts as live, since absence from the
-  socket table is not proof of death when a server lives in another mount
-  namespace. A live socket is never unlinked.
-- When `kill-server` cannot reconnect, it resolves the socket's holders
-  through procfs (`unix_socket_owners`) and signals only same-user processes
-  that hold that exact socket, re-verifying the owner at signal time. No
-  owner visible, or procfs unavailable, is a fail-closed no-op.
-- A failed close stays armed and retryable; the `atexit` hook is not
-  unregistered on failure.
-
-`TmuxSocketReaper(...).arm()` registers teardown for the lifetime of the
-process and `close()` runs it; `reap_isolated_tmux_socket` is the one-shot
-form. `lib/control/doctor.py` arms it on every exit path of its probe.
+The doctor's capability probe (`list-commands display-popup`) therefore runs on
+a private `-S` socket inside a temporary directory that is removed with it, and
+never touches the operator's default socket. Tests that start their own
+`-L asha-*` servers reap them through the test fixture
+`tests/python/socket_reaper.py`: it kills the server, proves it dead before
+unlinking (a refused or indeterminate connect counts as live), signals the
+socket's same-user holders when `kill-server` cannot reconnect, refuses every
+name outside `asha-…`, and stays armed and retryable after a failed close.
 
 No sweep utility exists. A sweep keyed on the `asha-` prefix alone would be
 unsafe, because namespace isolation can make a live server look unreachable.

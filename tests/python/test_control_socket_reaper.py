@@ -1,4 +1,4 @@
-"""Short-lived tmux socket teardown without requiring a live tmux server."""
+"""The test fixture's tmux socket teardown, without requiring a live tmux server."""
 
 from __future__ import annotations
 
@@ -12,12 +12,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from lib.control import doctor as control_doctor
-from lib.control.socket_reaper import (
-    SocketOwner,
+from tests.python.socket_reaper import (
     TmuxSocketReaper,
-    _signal_process_owner,
-    _signal_socket_owners,
     is_asha_socket_name,
     reap_isolated_tmux_socket,
     tmux_socket_path,
@@ -127,7 +123,7 @@ class SocketReaperUnitTests(unittest.TestCase):
             encoding="utf-8",
         )
         with mock.patch(
-            "lib.control.socket_reaper._socket_connects", return_value=True,
+            "tests.python.socket_reaper._socket_connects", return_value=True,
         ) as connects:
             self.assertTrue(unix_socket_is_live(path, proc_net_unix=table))
         connects.assert_called_once_with(path)
@@ -151,68 +147,8 @@ class SocketReaperUnitTests(unittest.TestCase):
             unix_socket_owners(
                 path, proc_net_unix=table, proc_root=proc, uid=os.getuid(),
             ),
-            (SocketOwner(pid=4321, uid=os.getuid(), start_ticks=123456),),
+            (4321,),
         )
-
-    def test_process_owner_signal_uses_pidfd_for_retained_identity(self) -> None:
-        proc = self.root / "proc"
-        self.process(proc, 4321, 123456)
-        owner = SocketOwner(pid=4321, uid=os.getuid(), start_ticks=123456)
-
-        with mock.patch(
-            "lib.control.socket_reaper.os.pidfd_open", return_value=87,
-        ) as open_pidfd, mock.patch(
-            "lib.control.socket_reaper.signal.pidfd_send_signal",
-        ) as send, mock.patch(
-            "lib.control.socket_reaper.os.close",
-        ) as close:
-            _signal_process_owner(owner, signal.SIGTERM, proc_root=proc)
-
-        open_pidfd.assert_called_once_with(4321)
-        send.assert_called_once_with(87, signal.SIGTERM)
-        close.assert_called_once_with(87)
-
-    def test_process_owner_signal_refuses_reused_pid(self) -> None:
-        owner = SocketOwner(pid=4321, uid=os.getuid(), start_ticks=123456)
-        replacement = SocketOwner(pid=4321, uid=os.getuid(), start_ticks=999999)
-
-        with mock.patch(
-            "lib.control.socket_reaper.os.pidfd_open", return_value=87,
-        ), mock.patch(
-            "lib.control.socket_reaper._process_identity", return_value=replacement,
-        ), mock.patch(
-            "lib.control.socket_reaper.signal.pidfd_send_signal",
-        ) as send, mock.patch("lib.control.socket_reaper.os.close") as close:
-            _signal_process_owner(owner, signal.SIGKILL)
-
-        send.assert_not_called()
-        close.assert_called_once_with(87)
-
-    def test_process_owner_signal_refuses_non_user_identity(self) -> None:
-        owner = SocketOwner(pid=4321, uid=os.getuid() + 1, start_ticks=123456)
-
-        with mock.patch(
-            "lib.control.socket_reaper.os.pidfd_open",
-        ) as open_pidfd, mock.patch(
-            "lib.control.socket_reaper.signal.pidfd_send_signal",
-        ) as send:
-            _signal_process_owner(owner, signal.SIGTERM)
-
-        open_pidfd.assert_not_called()
-        send.assert_not_called()
-
-    def test_socket_owner_is_revalidated_before_signaling(self) -> None:
-        owner = SocketOwner(pid=4321, uid=os.getuid(), start_ticks=123456)
-        probes = iter(((owner,), ()))
-        signaler = mock.Mock()
-
-        _signal_socket_owners(
-            self.root / "asha-owner-test", signal.SIGTERM,
-            owner_probe=lambda _path: next(probes),
-            process_signaler=signaler,
-        )
-
-        signaler.assert_not_called()
 
     def test_denied_kill_server_directly_terminates_exact_socket_owner(self) -> None:
         name = "asha-direct-kill-test"
@@ -224,13 +160,8 @@ class SocketReaperUnitTests(unittest.TestCase):
             name, environ=self.environ, uid=self.uid,
             runner=mock.Mock(side_effect=PermissionError("connect denied")),
             liveness_probe=lambda _path: next(live),
-            owner_probe=lambda path: (
-                (SocketOwner(4321, os.getuid(), 123456),)
-                if path == stale else ()
-            ),
-            process_signaler=lambda owner, signum: signals.append(
-                (owner.pid, signum)
-            ),
+            owner_probe=lambda path: (4321,) if path == stale else (),
+            process_signaler=lambda pid, signum: signals.append((pid, signum)),
             sleeper=lambda _seconds: None,
         )
 
@@ -255,16 +186,16 @@ class SocketReaperUnitTests(unittest.TestCase):
     def test_failed_close_remains_retryable_until_cleanup_succeeds(self) -> None:
         reaper = TmuxSocketReaper("asha-retry-test")
         with mock.patch(
-                "lib.control.socket_reaper.reap_isolated_tmux_socket",
+                "tests.python.socket_reaper.reap_isolated_tmux_socket",
                 side_effect=(False, True),
         ) as reap, mock.patch(
-                "lib.control.socket_reaper.atexit.register",
+                "tests.python.socket_reaper.atexit.register",
         ) as register, mock.patch(
-                "lib.control.socket_reaper.atexit.unregister",
+                "tests.python.socket_reaper.atexit.unregister",
         ) as unregister, mock.patch(
-                "lib.control.socket_reaper.signal.getsignal",
+                "tests.python.socket_reaper.signal.getsignal",
                 return_value=signal.SIG_DFL,
-        ), mock.patch("lib.control.socket_reaper.signal.signal"):
+        ), mock.patch("tests.python.socket_reaper.signal.signal"):
             reaper.arm()
             self.assertFalse(reaper.close())
             unregister.assert_not_called()
@@ -274,47 +205,11 @@ class SocketReaperUnitTests(unittest.TestCase):
         unregister.assert_called_once_with(reaper.close)
         self.assertEqual(reap.call_count, 2)
 
-    def test_doctor_reaps_the_capability_socket_on_every_inner_exit(self) -> None:
-        cases = (
-            ((1, b"", b"denied"), "unavailable"),
-            ((0, b"list-commands only\n", b""), "unavailable"),
-            ((0, b"display-popup (popup)\n", b""), "match"),
-            (OSError("probe failed"), "unavailable"),
-        )
-        for capability, expected in cases:
-            with self.subTest(capability=capability):
-                responses = iter(((0, b"tmux 3.4\n", b""), capability))
-
-                def run_status(_adapter, _args):
-                    response = next(responses)
-                    if isinstance(response, BaseException):
-                        raise response
-                    return response
-
-                with mock.patch(
-                    "lib.control.doctor.shutil.which", return_value="/usr/bin/tmux",
-                ), mock.patch.object(
-                    control_doctor.TmuxAdapter,
-                    "_run_status",
-                    autospec=True,
-                    side_effect=run_status,
-                ), mock.patch(
-                    "lib.control.socket_reaper.reap_isolated_tmux_socket",
-                    return_value=True,
-                ) as reap:
-                    result = control_doctor._tmux_probe(None)
-
-                self.assertEqual(result.outcome, expected)
-                reap.assert_called_once()
-                self.assertRegex(reap.call_args.args[0], r"^asha-doctor-probe-[0-9]+$")
-                self.assertEqual(reap.call_args.kwargs["executable"], "/usr/bin/tmux")
-
-
 class SocketReaperProcessTests(unittest.TestCase):
     CHILD = """
 import os, signal, sys, time
 from pathlib import Path
-from lib.control.socket_reaper import TmuxSocketReaper, tmux_socket_path
+from tests.python.socket_reaper import TmuxSocketReaper, tmux_socket_path
 
 name, root, ready, mode = sys.argv[1:]
 env = {"TMUX_TMPDIR": root}
