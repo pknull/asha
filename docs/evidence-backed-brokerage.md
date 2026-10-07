@@ -14,5 +14,4 @@ Neither executes the selected process, spawns an agent, writes memory, or
 publishes work.
 
 The former operational context-brief catalogue and memory steward/curator
-agents were removed in Memory v2. Canonical workspace knowledge lookup remains
-owned by the workspace knowledge tools rather than this broker.
+agents were removed in Memory v2.

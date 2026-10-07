@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased — subtraction N3: workspace knowledge, promotion, work-item and worktree tools removed (session 2.9.0)
+
+- `asha workspace knowledge|promote|work-item|worktree` and their cores
+  (`workspace_knowledge.py`, `workspace_workitems.py`, `workspace_worktree.py`)
+  are removed with their tests (Keeper value call N3, 2026-10-07): about 3,700
+  production and 1,700 test lines. The old nouns refuse by name with exit 2;
+  `asha workspace status|init|discover|doctor` remain.
+- Existing `knowledge/` folders are untouched and stay ordinary Markdown.
+  Workspace init still creates the manifest's shared root, now empty (no
+  README, index or `.asha-owned.json`), and keeps it in the ignore policy; the
+  generated `AGENTS.md` no longer names a knowledge index or promotion. Doctor
+  no longer lints or repairs that folder and its report drops
+  `promotion_available`. The manifest's `shared_root`, `docs` and
+  `promotion_mode` fields still parse.
+- Workspace init and `doctor --fix` now roll back their writes when the
+  private-root ignore probe fails; the rollback called a helper that did not
+  exist and raised instead.
+- The shared credential patterns (`secret_patterns.py`, #118) stay; recovery
+  snapshots are now their only caller.
+
 ## Unreleased — subtraction N2: session experience capture retires (session 2.8.0)
 
 - Session experience capture, review, adoption, dispositions and statistics are

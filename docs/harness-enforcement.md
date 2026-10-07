@@ -253,9 +253,7 @@ plural `commands/` and `agents/` directories.
 RP routing is a direct UserPromptSubmit concern, sourced from
 `plugins/session/hooks/handlers/rp-routing.md`; it no longer depends upon a
 general nudge engine. Workspace context remains a SessionStart concern and is
-delivered before optional guidance. Canonical workspace `knowledge/` indexes and
-promotion infrastructure are unaffected by removal of the operational Memory
-catalogue.
+delivered before optional guidance.
 
 ## Verification
 

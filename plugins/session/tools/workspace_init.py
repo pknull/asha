@@ -26,7 +26,6 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-import workspace_knowledge as wk  # noqa: E402
 import workspace_manifest as wm  # noqa: E402
 import memory_v2  # noqa: E402
 
@@ -344,10 +343,9 @@ Read `.asha/workspace.json` before cross-repository work. It defines repository
 ownership and memory planes. Declared repositories: {repos}.
 
 - Operational handoff: `{operational}/activeContext.md`
-- Canonical knowledge index: `{shared}/README.md`
+- Shared notes: `{shared}/`
 - Private local memory: `{personal}/` (never commit)
 - Do not stage child source during workspace-memory saves.
-- Canonical promotion is explicit and follows manifest `promotion_mode`.
 """
     return text.encode("utf-8")
 
@@ -501,15 +499,6 @@ def _load_metadata(root: Path) -> tuple[Optional[dict[str, Any]], Optional[dict[
             or not isinstance(data.get("adopted"), dict):
         return None, _issue("ownership_invalid", f"workspace init metadata is invalid: {why or 'wrong schema'}", path=OWNERSHIP_PATH.as_posix())
     return data, None
-
-
-def _knowledge_blueprint(root: Path, manifest: dict[str, Any]) -> tuple[list[str], dict[str, bytes]]:
-    shared = (root / manifest["memory"]["shared_root"]).resolve()
-    ctx = {"workspace_root": root, "manifest": manifest, "shared_root": shared,
-           "shared_rel": manifest["memory"]["shared_root"]}
-    directories, files, _ = wk._layout_spec(ctx, include_tickets=False)
-    prefixed = {f"{manifest['memory']['shared_root']}/{rel}": content for rel, content in files.items()}
-    return [f"{manifest['memory']['shared_root']}/{rel}" for rel in directories], prefixed
 
 
 def _remove_created_dirs(created: Iterable[Path]) -> None:
@@ -691,8 +680,6 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
         ".github/copilot-instructions.md": _copilot_template(),
         **_operational_templates(name, manifest),
     }
-    knowledge_dirs, knowledge_files = _knowledge_blueprint(resolved, manifest)
-    desired.update(knowledge_files)
     mutable = set(_operational_templates(name, manifest))
     mutable.add(MANIFEST_PATH.as_posix())
     instruction_paths = {"AGENTS.md", "CLAUDE.md", ".github/copilot-instructions.md"}
@@ -719,22 +706,7 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
                 )]
                 return report
 
-    # Knowledge ownership is separate so promotion can update its index without
-    # making workspace-init metadata stale.
-    knowledge_root_rel = manifest["memory"]["shared_root"]
-    knowledge_owner_rel = f"{knowledge_root_rel}/{wk.OWNERSHIP_FILE}"
-    knowledge_ownership: dict[str, Any] = {"version": 1, "owner": "asha-workspace-knowledge", "files": {}}
-    existing_ko_path = _generated_target(resolved, knowledge_owner_rel)
-    if existing_ko_path is None:
-        report["errors"] = [_issue("path_escape", "knowledge ownership path escapes or traverses a symlink", path=knowledge_owner_rel)]
-        return report
-    if existing_ko_path.exists():
-        loaded, why = _read_json(existing_ko_path)
-        if why or loaded is None or not isinstance(loaded.get("files"), dict):
-            report["errors"] = [_issue("knowledge_ownership_invalid", f"knowledge ownership metadata is invalid: {why or 'wrong schema'}", path=knowledge_owner_rel)]
-            return report
-        knowledge_ownership = loaded
-    knowledge_owned = dict(knowledge_ownership.get("files", {}))
+    shared_root_rel = manifest["memory"]["shared_root"]
 
     write_set: dict[Path, bytes] = {}
     for rel, content in sorted(desired.items()):
@@ -745,8 +717,6 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
         if target.exists() and (not target.is_file() or target.is_symlink()):
             report["collisions"].append(rel)
             continue
-        is_knowledge = rel.startswith(knowledge_root_rel + "/")
-        knowledge_subrel = rel[len(knowledge_root_rel) + 1:] if is_knowledge else None
         if target.exists():
             current = target.read_bytes()
             if rel == MANIFEST_PATH.as_posix():
@@ -764,20 +734,6 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
                 continue
             if rel in mutable:
                 report["plan"].append({"path": rel, "action": "preserve-mutable"})
-                continue
-            if is_knowledge and knowledge_subrel in knowledge_owned:
-                if _sha(current) == knowledge_owned[knowledge_subrel]:
-                    report["plan"].append({"path": rel, "action": "preserve"})
-                    continue
-                if force:
-                    write_set[target] = content
-                    knowledge_owned[knowledge_subrel] = _sha(content)
-                    report["plan"].append({"path": rel, "action": "overwrite",
-                                           "current_sha256": _sha(current), "desired_sha256": _sha(content)})
-                else:
-                    report["collisions"].append(rel)
-                    report["plan"].append({"path": rel, "action": "requires-force",
-                                           "current_sha256": _sha(current), "desired_sha256": _sha(content)})
                 continue
             record = owned.get(rel)
             if isinstance(record, dict):
@@ -805,10 +761,7 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
                 if force:
                     write_set[target] = content
                     adopted_map.pop(rel, None)
-                    if is_knowledge:
-                        knowledge_owned[knowledge_subrel] = _sha(content)
-                    else:
-                        owned[rel] = {"sha256": _sha(content), "repairable": rel in instruction_paths, "kind": "instruction"}
+                    owned[rel] = {"sha256": _sha(content), "repairable": rel in instruction_paths, "kind": "instruction"}
                     report["plan"].append({"path": rel, "action": "overwrite-adopted",
                                            "current_sha256": _sha(current), "desired_sha256": _sha(content)})
                 else:
@@ -821,9 +774,7 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
                                        "current_sha256": _sha(current)})
             elif force:
                 write_set[target] = content
-                if is_knowledge:
-                    knowledge_owned[knowledge_subrel] = _sha(content)
-                elif rel in instruction_paths:
+                if rel in instruction_paths:
                     owned[rel] = {"sha256": _sha(content), "repairable": True, "kind": "instruction"}
                 report["plan"].append({"path": rel, "action": "overwrite",
                                        "current_sha256": _sha(current), "desired_sha256": _sha(content)})
@@ -834,20 +785,13 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
         else:
             write_set[target] = content
             report["plan"].append({"path": rel, "action": "create", "desired_sha256": _sha(content)})
-            if is_knowledge:
-                knowledge_owned[knowledge_subrel] = _sha(content)
-            elif rel in instruction_paths:
+            if rel in instruction_paths:
                 owned[rel] = {"sha256": _sha(content), "repairable": True, "kind": "instruction"}
 
     if report["errors"] or report["collisions"]:
         report["collisions"] = sorted(set(report["collisions"]))
         report["errors"] = report["errors"] or [_issue("generated_file_collision", "user-owned or drifted generated files require --adopt or --force")]
         return report
-
-    knowledge_ownership["files"] = dict(sorted(knowledge_owned.items()))
-    knowledge_owner_bytes = _json_bytes(knowledge_ownership)
-    if not existing_ko_path.exists() or existing_ko_path.read_bytes() != knowledge_owner_bytes:
-        write_set[existing_ko_path] = knowledge_owner_bytes
 
     gitignore = _generated_target(resolved, ".gitignore")
     if gitignore is None:
@@ -894,7 +838,7 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
         "owned": dict(sorted(owned.items())),
         "adopted": dict(sorted(adopted_map.items())),
         "mutable": sorted(mutable),
-        "managed": {"gitignore_block": list(ignore_entries), "knowledge_root": knowledge_root_rel},
+        "managed": {"gitignore_block": list(ignore_entries)},
     })
     metadata_bytes = _json_bytes(metadata)
     metadata_path = _generated_target(resolved, OWNERSHIP_PATH.as_posix())
@@ -904,8 +848,7 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
 
     directories = _directory_closure(resolved, {
         resolved / ".asha", resolved / ".github", resolved / "Memory",
-        resolved / "memory-local", resolved / knowledge_root_rel,
-        *(resolved / rel for rel in knowledge_dirs),
+        resolved / "memory-local", resolved / shared_root_rel,
     })
     for directory in directories:
         try:
@@ -954,7 +897,7 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
         elif not state["is_git_worktree"]:
             report["warnings"].append(_issue("repo_not_git", "declared child path is not a Git worktree", path=rel))
     if no_git:
-        report["warnings"].append(_issue("review_unavailable", "--no-git workspace cannot commit workspace memory or execute reviewed promotion"))
+        report["warnings"].append(_issue("review_unavailable", "--no-git workspace cannot commit workspace memory"))
     report["ok"] = True
     return report
 
@@ -979,7 +922,7 @@ def _doctor_once(root: Path) -> dict[str, Any]:
         "warnings": [], "repositories": [], "generated": [], "fixed": False,
         "fixed_paths": [], "git_mode": None, "shared_git_root": None,
         "shared_git_dirty": None, "promotion_mode": None,
-        "promotion_available": False, "private_ignore": "unknown",
+        "private_ignore": "unknown",
     }
     if manifest is None:
         return report
@@ -1074,13 +1017,12 @@ def _doctor_once(root: Path) -> dict[str, Any]:
     if sgr is None:
         report["errors"].append(_issue("shared_git_root_escape", "shared_git_root resolves outside workspace", path=sgr_rel))
     elif git_mode == "none":
-        report["warnings"].append(_issue("review_unavailable", "no-git workspace has no reviewed-promotion or workspace-commit execution"))
+        report["warnings"].append(_issue("review_unavailable", "no-git workspace has no workspace-commit execution"))
     elif not _is_git_root(sgr):
         report["errors"].append(_issue("shared_git_root_missing", "configured shared_git_root is not a Git worktree", path=sgr_rel))
     else:
         dirty = _git(["status", "--porcelain"], sgr)
         report["shared_git_dirty"] = bool(dirty) if dirty is not None else None
-        report["promotion_available"] = True
 
     for key in ("operational_root", "personal_root", "shared_root"):
         rel = manifest["memory"][key]
@@ -1130,14 +1072,6 @@ def _doctor_once(root: Path) -> dict[str, Any]:
     report["private_ignore"] = _confirm_ignore(root, manifest["memory"]["personal_root"], git_mode == "none")
     if report["private_ignore"] not in {"confirmed", "configured-no-git"}:
         report["errors"].append(_issue("private_ignore_missing", "private memory root is not protected by ignore rules"))
-
-    shared = _contained(root, manifest["memory"]["shared_root"])
-    if shared and shared.is_dir():
-        knowledge = wk.lint_knowledge(root)
-        for item in knowledge.get("blocking", []):
-            report["errors"].append(_issue("knowledge_lint_blocking", f"{item['code']}: {item['message']}", path=item.get("path")))
-        for item in knowledge.get("advisory", []):
-            report["warnings"].append(_issue("knowledge_lint_advisory", f"{item['code']}: {item['message']}", path=item.get("path")))
     report["ok"] = not report["errors"]
     return report
 
@@ -1171,47 +1105,6 @@ def _doctor_fix(root: Path, report: dict[str, Any]) -> tuple[bool, list[str], Op
             record["sha256"] = _sha(content)
             fixed.append(rel)
 
-    # Canonical layout owns its own hash registry. Repair only files named by
-    # that registry. If the whole managed shared root vanished, the workspace
-    # init registry is sufficient proof that recreating the default empty
-    # scaffold is deterministic; no user document is overwritten.
-    knowledge_root_rel = manifest["memory"]["shared_root"]
-    knowledge_root = _contained(root, knowledge_root_rel)
-    recreate_full_knowledge = knowledge_root is not None and not knowledge_root.is_dir()
-    knowledge_dirs, knowledge_files = _knowledge_blueprint(root, manifest)
-    knowledge_owner_path = _generated_target(root, f"{knowledge_root_rel}/{wk.OWNERSHIP_FILE}")
-    if knowledge_owner_path is None:
-        return False, [], _issue("fix_path_unsafe", "knowledge ownership path is no longer safe")
-    knowledge_owned: dict[str, str] = {}
-    if knowledge_root is not None and knowledge_owner_path.exists():
-        knowledge_meta, why = _read_json(knowledge_owner_path)
-        if why or knowledge_meta is None or not isinstance(knowledge_meta.get("files"), dict):
-            return False, [], _issue("knowledge_ownership_invalid", f"cannot repair knowledge layout: {why or 'wrong schema'}")
-        knowledge_owned = dict(knowledge_meta["files"])
-    elif recreate_full_knowledge and metadata.get("managed", {}).get("knowledge_root") == knowledge_root_rel:
-        for prefixed, content in knowledge_files.items():
-            subrel = prefixed[len(knowledge_root_rel) + 1:]
-            knowledge_owned[subrel] = _sha(content)
-    for prefixed, content in knowledge_files.items():
-        subrel = prefixed[len(knowledge_root_rel) + 1:]
-        if subrel not in knowledge_owned:
-            continue
-        target = _generated_target(root, prefixed)
-        if target is None:
-            return False, [], _issue("fix_path_unsafe", "knowledge repair path is no longer contained", path=prefixed)
-        current = target.read_bytes() if target.is_file() else None
-        if current is None or _sha(current) != knowledge_owned[subrel]:
-            write_set[target] = content
-            knowledge_owned[subrel] = _sha(content)
-            fixed.append(prefixed)
-    if knowledge_owned:
-        knowledge_meta_bytes = _json_bytes({
-            "version": 1, "owner": "asha-workspace-knowledge",
-            "files": dict(sorted(knowledge_owned.items())),
-        })
-        if not knowledge_owner_path.exists() or knowledge_owner_path.read_bytes() != knowledge_meta_bytes:
-            write_set[knowledge_owner_path] = knowledge_meta_bytes
-            fixed.append(f"{knowledge_root_rel}/{wk.OWNERSHIP_FILE}")
     gitignore = _generated_target(root, ".gitignore")
     if gitignore is None:
         return False, [], _issue("fix_path_unsafe", ".gitignore path is no longer safe")
@@ -1235,10 +1128,7 @@ def _doctor_fix(root: Path, report: dict[str, Any]) -> tuple[bool, list[str], Op
         metadata_path = root / OWNERSHIP_PATH
         write_set[metadata_path] = _json_bytes(metadata)
         fixed.append(OWNERSHIP_PATH.as_posix())
-    directories = {path.parent for path in write_set}
-    if recreate_full_knowledge:
-        directories.update(root / rel for rel in knowledge_dirs)
-    directories = _directory_closure(root, directories)
+    directories = _directory_closure(root, {path.parent for path in write_set})
     created_dirs: list[Path] = []
     try:
         for directory in sorted(directories, key=lambda item: len(item.parts)):

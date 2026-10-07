@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 2.8.0
+**Version**: 2.9.0
 
 Compact explicit memory publication, bounded crash recovery, reviewed learning
 lifecycle, policy guardrails, guarded loops, and workspace management.
@@ -99,10 +99,11 @@ starts a save. Codex renders the shared native hooks to TOML.
 
 ## Workspace boundary
 
-Workspace operational publication uses the same two v2 files. Canonical
-`knowledge/` indexes, private `memory-local/`, reviewed promotion, worktrees,
-and work items remain separate infrastructure. The removed operational Memory
-catalogue does not remove canonical knowledge indexes.
+Workspace operational publication uses the same two v2 files. The shared
+`knowledge/` notes and private `memory-local/` are separate planes: workspace
+init creates both (only `memory-local/.gitkeep` inside) and the ignore policy
+governs them; Asha writes nothing else there. The workspace CLI is
+`asha workspace status|init|discover|doctor`.
 
 A session launched at a workspace root receives that workspace publication
 once plus workspace metadata. A session launched in a declared child receives
@@ -133,6 +134,20 @@ for the repository; workspace state answers what coordinates the repositories.
   checks required by `AGENTS.md`.
 
 ## Version history
+
+### 2.9.0
+
+Removed the workspace knowledge, promotion, work-item and worktree tools
+(`asha workspace knowledge|promote|work-item|worktree`, subtraction value call
+N3): `workspace_knowledge.py`, `workspace_workitems.py` and
+`workspace_worktree.py` with their tests. The old nouns refuse by name. Workspace
+init still creates the manifest's shared root, now as an empty folder with no
+scaffold or ownership registry, and the generated `AGENTS.md` no longer points
+at a knowledge index or promotion; doctor no longer lints or repairs that
+folder and drops `promotion_available`. Existing `knowledge/` folders stay as
+ordinary Markdown. Init and doctor `--fix` now roll back correctly when the
+private-root ignore probe fails (the rollback called a helper that did not
+exist).
 
 ### 2.8.0
 

@@ -12,23 +12,8 @@ asha workspace — multi-repository workspace commands
 Usage:
   asha workspace status [--json] [--start DIR]
   asha workspace init|discover|doctor [native options]
-  asha workspace knowledge init|lint [native options]
-  asha workspace promote plan|apply|publish [native options]
-  asha workspace worktree create|status|remove [native options]
-  asha workspace work-item create|list|show|link|import|preview|lint|index|promote-plan|worktree-seed [native options]
 
 Run any command with --help for its exact Python-core flags.
-
-Safety contracts:
-  promote plan writes an explicit review artifact. promote apply accepts only
-  that artifact plus its digest and explicit confirmation; it revalidates
-  source/evidence/target preimages and never pushes or merges. In pull-request
-  mode, promote publish creates a digest-named branch, stages only the reviewed
-  write-set, pushes that branch, and opens a draft PR; it never merges. Local
-  Git hooks require the separate explicit --run-git-hooks authorization.
-  work-item import requires a matching scrubbed preview token.
-  work-item worktree-seed is a data-only promotion plan alias and requires
-  explicit Git confirmation; it never creates a branch or worktree.
 
 Exit codes are passed through unchanged from the selected Python core.
 EOF
@@ -61,26 +46,11 @@ asha_workspace_main() {
       shift
       _asha_workspace_python "$root" workspace_init.py "$command" "$@"
       ;;
-    knowledge)
-      shift
-      _asha_workspace_python "$root" workspace_knowledge.py "$@"
-      ;;
-    promote)
-      shift
-      _asha_workspace_python "$root" workspace_knowledge.py promote "$@"
-      ;;
-    worktree)
-      shift
-      _asha_workspace_python "$root" workspace_worktree.py "$@"
-      ;;
-    work-item)
-      shift
-      if [[ "${1:-}" == "worktree-seed" ]]; then
-        shift
-        _asha_workspace_python "$root" workspace_workitems.py promote-plan "$@" --worktree-seed
-      else
-        _asha_workspace_python "$root" workspace_workitems.py "$@"
-      fi
+    knowledge|promote|worktree|work-item)
+      # Removed 2026-10-07 (Keeper, subtraction value call N3). Refused by name
+      # so the old word says what happened instead of reading as a typo.
+      echo "asha workspace $command: the knowledge, promotion, worktree and work-item tools were removed on 2026-10-07; existing knowledge/ folders stay as ordinary Markdown notes" >&2
+      return 2
       ;;
     -h|--help)
       _asha_workspace_usage

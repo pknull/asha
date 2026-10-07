@@ -107,9 +107,12 @@ record of the completed migration.
 
 ## Separate workspace planes
 
-Canonical workspace `knowledge/` indexes, reviewed promotion infrastructure,
-private `memory-local/`, and harness-native memory remain independent. Removing
-the operational Memory catalogue does not remove or weaken those systems.
+The shared workspace root (`knowledge/` by default), private `memory-local/`,
+and harness-native memory remain independent of the operational pair. The
+shared root is an ordinary folder of Markdown notes: workspace init creates it
+empty and the ignore policy below keeps it trackable, but Asha no longer lints,
+indexes or promotes into it (the knowledge, promotion, work-item and worktree
+tools were removed on 2026-10-07).
 
 Repository and workspace publications are distinct planes. A workspace-root
 session receives the workspace pair once plus metadata. A session in a
@@ -134,7 +137,7 @@ the existing config, preserving the project identity and other settings:
 ```
 
 Omitted or `"tracked"` preserves the current managed rules: operational Markdown,
-canonical knowledge and workspace metadata remain trackable. `"private"` instead
+the shared notes root and workspace metadata remain trackable. `"private"` instead
 ignores the entire operational, shared and personal roots (normally `Memory/`,
 `knowledge/`, `memory-local/`), all of `Work/`, and `.asha/workspace*.json`. The
 private managed block contains no re-inclusion rules. Existing narrow recovery

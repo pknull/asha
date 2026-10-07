@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Shared credential patterns for session tools that redact or reject secrets.
 
-Recovery snapshots, workspace knowledge and workspace work items all use this
-one set, so their coverage cannot drift apart again (#118). It defines only
-what a credential looks like; each caller keeps its own replacement text.
+Recovery snapshots use this one set, so a new caller cannot drift from their
+coverage again (#118). It defines only what a credential looks like; each
+caller keeps its own replacement text.
 """
 
 from __future__ import annotations
