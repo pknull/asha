@@ -535,7 +535,7 @@ class SessionHubTests(unittest.TestCase):
     @unittest.skipUnless(shutil.which('tmux'), 'tmux is required')
     def test_real_terminal_report_message_ack_finish_and_close(self):
         from lib.control.rooms import open_room
-        from lib.control.socket_reaper import TmuxSocketReaper
+        from tests.python.socket_reaper import TmuxSocketReaper
         from lib.control.tmux import TmuxAdapter
         socket = 'asha-hub-test-' + uuid.uuid4().hex[:12]
         self.enterContext(TmuxSocketReaper(socket))

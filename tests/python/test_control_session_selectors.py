@@ -18,7 +18,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from lib.control.config import load_config
-from lib.control.socket_reaper import TmuxSocketReaper
+from tests.python.socket_reaper import TmuxSocketReaper
 from lib.control.tmux import TmuxAdapter
 from tests.python import test_control_rooms as rooms_fixture
 

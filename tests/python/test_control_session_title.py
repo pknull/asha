@@ -7,7 +7,7 @@ import time
 import unittest
 
 from lib.control import session_title, session_tui
-from lib.control.socket_reaper import TmuxSocketReaper
+from tests.python.socket_reaper import TmuxSocketReaper
 
 
 def probe(value, panes='%3 $1'):
