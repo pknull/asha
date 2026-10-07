@@ -34,8 +34,7 @@ Use these sources instead of copying their facts into new catalogues:
 | Tested enforcement verdicts and caveats | `docs/harness-enforcement.md` |
 | Install and launcher mechanics | `INSTALLER.md`, then live scripts |
 | Memory authority and workspace planes | `docs/memory-architecture.md` |
-| Frozen Control v1 contracts orchestration binds to | `docs/control-contracts.md` |
-| Orchestration Core operating surface and JSON wrappers | `docs/orchestration.md` |
+| Retired initiative evidence (read-only `asha initiative list/show/export`) | `docs/control.md` |
 | Release history | `CHANGELOG.md` |
 | Current behavior | Live state and repository code |
 
@@ -106,7 +105,7 @@ asha [HARNESS] args...           launch a harness from the caller's cwd
 asha install <target> [...]      provision primitives and wrappers
 asha uninstall <target> [...]    remove owned installation state
 asha doctor [target] [--fix]     audit installation drift
-asha task <subcommand> [...]     manage persistent jj/tmux tasks
+asha initiative <verb> [...]     read retired initiative evidence
 asha control [...]               open or integrate the Control TUI
 ```
 

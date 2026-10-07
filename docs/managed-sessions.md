@@ -1,31 +1,23 @@
 # Managed sessions
 
-This guide covers initiative coordinators and the structured backend. Its
-Control key bindings refer to the advanced `asha control --initiatives` view.
-The default [session dashboard](session-hub.md) launches plain workers and
-Rooms without an initiative. Standalone structured utilities inherit native
-permissions, sandbox settings and subagents; initiative coordinators retain
-the constrained policy described below. Utility owners exit between turns.
+This guide covers the structured backend and the supervisor that starts its
+session owners. The default [session dashboard](session-hub.md) launches plain
+workers, Rooms and structured utilities. Structured utilities inherit native
+permissions, sandbox settings and subagents. Utility owners exit between turns.
+The initiative coordinators this backend once also served were retired with
+the initiative engine on 2026-10-05 ([Control](control.md)).
 
 ## Starting work
 
-`asha initiative coordinator launch --project PROJECT --intent TEXT --json`
-uses managed Claude by default; `--harness codex` selects the supported Codex
-adapter. Control's `n` form uses the same atomic intake. The selected project must
-be initialized and the operational registry must have completed SQLite activation.
-Keep the returned launch ID; retry the same assignment with `--launch-id UUID`
-after a lost response. Initiative, session, and opening-message custody commit
-together before the supervisor is started. Paused/draining/stopped admission is
-preserved, and supervisor startup failure reports the retained assignment.
+`asha control session launch --project PROJECT --prompt TEXT --transport
+structured [--harness claude|codex] --json` starts a structured utility through
+the [session hub](session-hub.md); `session create` is the lower-level form
+below. In Control, Enter on a structured session shows state and event pages
+without changing delivery acknowledgements.
 
-`coordinator attach ID` inspects a managed session. In Control, Enter shows state
-and event pages without changing delivery acknowledgements. For legacy terminal
-coordination, use `coordinator launch --transport tmux --root DIR --intent TEXT`.
-The scheduled trigger generator retains that explicit legacy transport.
-
-Use `asha control registry status` and `asha control supervisor status --json`
-to inspect the current backend and runtime admission. Creating a session
-preserves paused or stopped admission rather than silently resuming it.
+Use `asha control supervisor status --json` to inspect runtime admission.
+Creating a session preserves paused or stopped admission rather than silently
+resuming it.
 
 ## Current work
 
@@ -48,7 +40,7 @@ rows or move them across the cursor. Refresh from the start for a new observatio
 Reads neither acknowledge messages nor authorize execution. A `next_action` names
 an inspection or existing validated command; it never bypasses its checks.
 
-Rows carry session and initiative identity, project directory, generation,
+Rows carry session identity, project directory, generation,
 responsible actor (`waiting_on`), reason and next action. `age_seconds` measures
 time since the row was created, not time since the last output or proof of a
 stall. `reason` is fixed explanatory text; `recovery_reason` is a bounded retained
@@ -67,60 +59,16 @@ uninitialized managed sources do not make legacy observations incomplete. Manage
 reads cooperate with the observation deadline between indexed queries; blocking
 filesystem or database calls retain their existing timeout behavior.
 
-SQLite Room and live-task observations now filter lifecycle through the state
-index before applying the cap. Running tasks and open Rooms precede stuck
-creations; creating tasks precede failed tasks. Failed tasks that retain a live run remain candidates. A capped scan of
-failed candidates is still reported as incomplete. Within each lifecycle the
-sample favors recently updated records; timestamp ties are unspecified. Unknown
-state projections report unavailable evidence instead of an exact empty result.
-SQLite initiative heads use the same state index for chair startup and Control's
-retained tree. Needs-input, plan approval and integration-ready heads precede
-running and other current work; quiet retained history follows. All lifecycle
-states remain eligible for All retained, and reaching the head cap still reports
-incomplete coverage. Ordinary role-proof enumeration keeps its existing reader.
-Within a SQLite initiative, approval reads select requested decisions before
-settled history; action reads select uncertain and in-flight records first.
-Control and `initiative attention` read these classes before graph history,
-reserving at most a quarter of the remaining record allowance for each, capped
-at 128 records per class. Class caps report incomplete coverage and leave room
-for other evidence. These reads prioritize observation; approving or answering
-still reloads the exact current subject and authority.
-Their legacy file adapters retain bounded scans
-and report incomplete coverage when history exhausts the scan. Full retained
-views remain available. Room/task/initiative observations retain completeness
-reporting; their remaining unified
-indexing and presentation work is tracked in the migration audit.
+SQLite Room observations filter lifecycle through the state index before
+applying the cap; open Rooms precede stuck creations. Unknown state projections
+report unavailable evidence instead of an exact empty result.
 
-On an active SQLite registry, `asha initiative attention --page initiatives|approvals
---limit 50 --json` reads independent global action pages. Pass the returned `next`
-value as `--after`. `complete` describes this page only: accumulate unreadable
-records across pages. If `retry` is true, retry the same position; a null cursor
-with a timeout does not prove exhaustion. The order is lifecycle priority followed
-by oldest update first. Each page has its own snapshot, so refresh from the start
-when current state changes.
-
-Control **G** browses these families with Next, Retry, Refresh and Switch family.
-Select a candidate, press **r** to inspect its complete subject, then **r** again
-to enter an offered decision. Plans and salvage/review-retry requests support
-approval or rejection; approved initiatives offer activation. Every decision
-rechecks the displayed records under the existing lifecycle lock. A changed
-subject requires a fresh inspection. Plan rejection also requires a reason.
-The browser retains its page position after a decision. Integration candidates
-remain inspection-only. For an open legacy initiative question, **resume** records
-resolution; it does not deliver a text answer or decide a paused seal.
-
-Control **M** handles managed questions and native permissions separately, with
-Next, Retry and Refresh to reach later requests. The Control header and chair
-startup include qualified global counts independently of retained tree caps.
-Expired, stale-plan and terminal approval requests remain inspection evidence,
-not fresh approval demand. Pages expose runtime admission and explicitly report
-that deep execution bindings have not been checked. Existing decision commands
-revalidate those bindings. Inspection refuses an inactive, transitional or damaged
-backend; read-only WAL recovery failures surface as unavailable rather than
+The dashboard's `a` answers the selected session's pending question or native
+permission; the Control header and chair startup include qualified global
+counts. Read-only WAL recovery failures surface as unavailable rather than
 triggering a repair or returning an empty success.
 
-Managed sessions connect Asha's orchestrator backend to Claude through structured
-stdio. The supervisor starts an independent session owner; the owner drains the
+Managed sessions connect Asha's structured backend to Claude and Codex. The supervisor starts an independent session owner; the owner drains the
 harness stream, records events and runs queued follow-ups at turn boundaries.
 Control is a reader and operator interface. Closing it leaves owners running.
 Rooms retain their existing tmux attach/close behavior.
@@ -165,11 +113,7 @@ clears as capacity becomes available. `init` can
 initialize an empty store left by interrupted creation without admitting work;
 it does not discard or reinterpret corrupt or future-version data.
 
-Use `--initiative INITIATIVE_ID` on creation to bind a managed coordinator to an
-existing initiative in the same repository. Its plan approval and worker execution
-still use the established initiative actions. A live existing coordinator must
-be released before switching that initiative. Managed actors cannot sign operator
-actions, answer their own questions, or claim another initiative.
+Managed actors cannot sign operator actions or answer their own questions.
 
 The managed agent asks a clarification with
 `asha control session ask --question 'Question' --json`, then finishes its turn.
@@ -183,12 +127,11 @@ its tool process. Frames and deadlines are bounded, database contention gets at
 most three exact-ID client attempts, and lost replies do not discard committed
 questions. Operator answers are unavailable over this actor channel.
 
-A recorded answer queues exactly one follow-up. Control displays
-the same summary and offers **M** to select and answer a pending question. Plan
-approval remains a separate initiative action; a clarification answer never
-approves a plan or a native tool permission.
+A recorded answer queues exactly one follow-up. Control displays the same
+summary, and the dashboard's `a` answers the selected session's pending
+question. A clarification answer never approves a native tool permission.
 
-Native tool requests appear separately in the summary. **M** opens a scrollable
+Native tool requests appear separately in the summary. `a` opens a scrollable
 review of the complete invocation, including its original input, native session,
 turn, generation and digest. Press **a** to allow that invocation, **d** to deny,
 or **Esc** to leave it pending. CLI callers inspect `session request` and use
@@ -208,17 +151,15 @@ The active-work deadline pauses during permission waiting. A separate cumulative
 ## State and recovery
 
 SQLite at `$ASHA_HOME/state/control/control.sqlite3` owns managed sessions,
-messages, turn reservations, questions and session events. The selected registry
-backend owns plans, approvals, attempts, seals and accepted evidence; legacy files
-remain authoritative until explicit registry activation.
-An explicit legacy adapter bridges messages and relevant initiative events with
-idempotent delivery keys and a retained cursor. Registry migration is explicit;
-normal operation never maintains two writable registry authorities.
+messages, turn reservations, questions and session events, and keeps the
+retired initiative and task records as read-only evidence. Rooms use the
+selected registry backend; normal operation never maintains two writable
+registry authorities.
 
 `show` distinguishes retained/queued input, submitted input and consumption
 evidence. Claude initialization and successful results do **not** prove message
 consumption or accepted task completion. Completion belongs to a model turn;
-the existing review and verification gates decide whether work is accepted.
+the operator decides whether work is accepted.
 Counts cover all matching retained rows; completeness flags identify truncated
 lists, and event cursors paginate history. Message rows show the most recent
 deliveries. Text is escaped for terminal display.
@@ -226,7 +167,7 @@ deliveries. Text is escaped for terminal display.
 If an owner is lost during a reserved turn, the next owner parks the session as
 `uncertain`. It does not replay the input. Inspect native history and work effects
 before requesting a new turn. Provider failures and exhausted turn budgets also
-park instead of creating new initiatives or retrying indefinitely:
+park instead of retrying indefinitely:
 
 ```sh
 asha control session resume SESSION_ID --digest RECOVERY_DIGEST \
@@ -235,7 +176,7 @@ asha control session resume SESSION_ID --digest RECOVERY_DIGEST \
 ```
 
 The recovery digest is returned on `show`. Increasing this session's input-turn
-budget does not amend any initiative or review budget. A native session ID allows
+budget does not amend any other budget. A native session ID allows
 conversation resume; it is not proof of reattachment to a running turn.
 
 Structured Claude rate-limit events, assistant error codes and terminal API
@@ -263,7 +204,7 @@ known terminal failure. No failed or ambiguous input is replayed automatically.
 If a reset timestamp is incorrect, the operator can supply
 `session resume ... --quota-reset-override 'REASON'`. This records the reason in
 the recovery receipt, resolution, and event while retaining the original reset.
-It applies only to a retained quota condition, changes no turn or review budget,
+It applies only to a retained quota condition, changes no turn budget,
 and does not assert that the provider will accept work. Managed actors cannot
 use the operator resume command or override the reset through their IPC channel.
 
@@ -337,46 +278,6 @@ record raises a storage error. Event envelopes, retained bodies, retention
 watermarks and consumer cursors share SQLite transactions and backups. The
 `session doctor` output reports these limits and cursor capabilities.
 
-An exhausted sealed review has a separate, one-attempt amendment:
-
-```sh
-asha initiative request-review-budget INITIATIVE --node REVIEW_NODE --review FAILED_REVIEW_ID --reason 'Why another review is needed' --json
-asha initiative approve-review-budget INITIATIVE --request REQUEST_ID --json
-```
-
-To decline a salvage or review-retry request from the chair or CLI, inspect its
-record and use the returned digest:
-
-```sh
-asha initiative approval INITIATIVE --request REQUEST_ID --json
-asha initiative reject-request INITIATIVE --request REQUEST_ID --digest REQUEST_DIGEST --json
-```
-
-Rejection preserves the request, rationale and evidence. It cannot revoke an
-already approved request. Repeating a completed rejection returns the retained
-decision without signing it again.
-If a rejection was stored but its event write was interrupted, the request leaves
-the pending queue. Inspect it with `approval` and repeat `reject-request` from the
-chair or CLI to finish that journal entry; the recorded signer is preserved.
-
-A fenced coordinator uses `--as-coordinator` on the request command, or submits
-`request-review-budget` through the existing action-document interface. It
-cannot sign the approval. In Control, the request appears as **review retry**;
-select the initiative or review node and press `a` to inspect the seal, commit,
-prior review and rationale, then type `approve` to authorize one attempt.
-
-The request requires the latest settled failed review, exhausted ordinary
-per-node or initiative task budget, and the current exact sealed target.
-Accepted findings still require repair; this amendment cannot discard a verdict.
-Signing preserves the original plan limits and prior evidence and reopens only
-that review node. The scheduler reserves one deterministic attempt/task identity
-and consumes the grant before launch. A failed extra review requires fresh
-approval; the old grant cannot authorize another attempt or another node.
-Dependency, concurrency, deadline, storage and runtime admission checks remain
-in force. Approval does not undo an initiative pause: explicitly resume the
-initiative when ready. Stale or expired requests are retired during action
-reconciliation, so they do not remain as obsolete approval demands.
-
 The Linux guardian records its process incarnation before releasing the harness
 startup barrier and terminates its process group if its owner dies. Recovery and
 dead-owner stop refuse while a retained provider process is still live. Processes
@@ -391,10 +292,10 @@ persist separately from the supervisor process:
 
 | Command | Effect |
 | --- | --- |
-| `supervisor pause` | Pause new input turns and task launches; let admitted work finish and keep session owners available. |
+| `supervisor pause` | Pause new input turns; let admitted work finish and keep session owners available. |
 | `supervisor drain` | Pause admission and let managed owners exit after their current turn. Queued inputs and questions remain. |
 | `supervisor resume` | Reopen admission. This does not launch a missing supervisor or clear individual session stop requests. |
-| `supervisor stop` | Persist stop requests for managed sessions and stop the scheduling process. Existing headless workers use their task stop action. |
+| `supervisor stop` | Persist stop requests for managed sessions and stop the scheduling process. |
 | `supervisor status` | Show scheduling-process status and durable admission policy separately. |
 
 These commands accept `--json`. Restarting the supervisor or closing Control does
@@ -410,12 +311,12 @@ same run route detached with argv-only exec, `stop` verifies the retained Linux
 boot/start-ticks process identity before SIGTERM, and `status` exits zero only
 when both the flock and exact process are live. The exclusive 0600 lock and
 atomic presentation status are `supervisor.lock` and `supervisor.json` beneath
-the Control state root. A one-second directory-mtime poll of Control event
-snapshots provides the worker-exit fast path between regular ticks. Starting is
-idempotent; no session hook starts the supervisor automatically. Until the
-initiative engine retires, `run` reads its regular tick interval from
-`orchestration.supervisor_interval_seconds` ([Orchestration](orchestration.md))
-and refuses a malformed `orchestration` block; the other verbs do not read it.
+the Control state root. Every five seconds the loop starts an owner for each
+structured session with queued or running work, so a launch or follow-up waits
+at most that long; launches also start the supervisor when it is absent.
+Starting is idempotent; no session hook starts the supervisor automatically.
+The initiative tick and its `orchestration` configuration block retired with
+the engine (L-b): nothing reads that block any more.
 
 Install the operator-managed systemd user service with:
 
@@ -468,9 +369,9 @@ root grants are issued.
 A separate real managed-owner test found that the normal Codex sandbox refuses
 the Unix-socket connection used by `session ask`, even after command approval.
 The native turn completed, but no question was retained. The owner now hosts the
-native `asha_control` dynamic tool for ask, initiative inspection, plan proposal,
-coordinator actions and explicit message receive/ack. Call arguments cannot select
-another session or initiative, or invoke operator approval/integration actions.
+native `asha_control` dynamic tool, whose only operation is `ask` (the
+initiative operations it once carried retired with the engine). Call arguments
+cannot select another session or invoke operator actions.
 The execution sandbox remains unchanged. Two real managed turns verified a
 retained question, an operator answer and a second question in the same native
 conversation. Codex0.153.4 retains dynamic tools across thread resume; its resume
@@ -497,12 +398,6 @@ four eligible turns reserved in0.25–0.50 seconds with a1-second supervisor tic
 Provider behavior in these failure/load checks is deterministic; the separate
 native Claude and Codex cycles above establish provider compatibility.
 
-A legacy coordinator may take over a managed initiative only after that session
-is stopped, its owner and provider have exited, and its latest submission is
-settled. An uncertain submission remains a refusal even when the coordinator
-record is stale or exited. The check binds the predecessor's state root and uses
-durable reservation order rather than wall-clock order. A transport handoff keeps
-the same initiative, plans and SQLite authority; it does not reactivate old files.
 Room creation, actual terminal attach/detach and close have also passed on an
 activated SQLite registry using a dedicated real tmux server and a fixture process.
 
@@ -530,10 +425,8 @@ unsupported by this per-turn transport. A successful turn/start response proves
 input acknowledgement only; it is not a consumption or completion receipt.
 
 Copilot and OpenCode managed adapters remain explicitly unavailable. Existing
-interactive and worker paths remain available. The default coordinator launcher
-uses managed sessions on an activated SQLite registry. Live historical-state
-cutover is complete; final repository-wide verification remains pending in the
-[migration plan](proposals/2026-09-07--managed-agent-sessions.md).
+interactive and worker paths remain available. Live historical-state cutover
+completed on 2026-09-09 ([migration plan](proposals/2026-09-07--managed-agent-sessions.md)).
 
 The SQLite layer verifies schema identity, private file layout, WAL sidecars,
 foreign keys, full synchronous writes and bounded lock waits. Backup uses SQLite's
@@ -555,89 +448,17 @@ Doctor reports a missing or incompatible scoped index. An older
 schema is refused until an operator runs `session migrate` with managed owners
 stopped. Schema upgrades are transactional: interruption leaves the previous
 version and canonical record bytes intact. This command upgrades the database
-schema; importing the legacy file registries remains separate unfinished work.
+schema.
 If an older schema prevents ordinary lifecycle commands, `session quiesce` stops
 the scheduler and requests shutdown through verified owner process handles without
 writing that older schema. Wait for those owners to exit, then migrate. Interrupted
 sessions use digest-bound `session resume` with a fresh recovery prompt; cancelled
 old inputs are retained as cancelled and are never replayed automatically.
 
-Offline registry staging covers tasks, Rooms, initiative heads and all initiative
-record classes, creation journals, standing authorities, prune records and
-repository intents. It copies assignment/output and ownership artifacts as files, retains
-historical plan observation restrictions, and checks source bytes, membership,
-directory identity, live processes and event continuity before publishing its
-completion manifest. Record and artifact entries use bounded ledger pages, with
-counts and an integrity digest in the manifest. Version 3 also binds a complete
-source tree ledger (including inode identities and original permissions) and the
-logical database state independently of WAL/backup file layout. The pre-import database snapshot
-is retained separately. A failed import remains durably paused and marked
-incomplete; its destination is retained for inspection and cannot be reused.
-Open Rooms are recorded as external conversations whose liveness must be checked
-at activation. Staging does not activate a backend.
-
-Public stores select SQLite only through an explicit root-bound backend marker;
-database presence alone keeps the file backend. Normal stores refuse incomplete
-transitions and offline staging roots. The operator cutover commands are:
-
-```sh
-asha control registry status --json
-asha control registry stage --stage-home /absolute/private-stage-home --json
-asha control registry activate --stage-home /absolute/private-stage-home --json
-asha control registry recover --action resume --json
-asha control registry recover --action abort --json
-asha control registry rollback --json
-```
-
-Before staging, initialize the database, pause or drain admission and stop task
-runs and coordinator/managed owner processes. The commands refuse active writers;
-they do not stop processes implicitly. A stage uses a separate empty root and is
-bound to the original Asha root. Activation revalidates the stage, retained backup,
-source state and immutable ownership of open Rooms. It durably records a recovery
-transition before freezing legacy files, then publishes imported records and the
-backend marker in one transaction on the existing database inode. It preserves
-the original admission setting; activation does not resume work.
-Registry mutations are operator commands; managed sessions, task workers and
-Room-hosted agents may inspect status but are refused these mutation commands.
-
-Interrupted preparation leaves normal store construction unavailable until
-`recover` resumes it or aborts it by restoring the exact original file modes.
-Read-only `registry status` and the backend doctor probe report this state and
-the recovery choices. Recovery refuses changed recorded source identities or
-contents. Aborting activation permits harmless new entries and preserves them;
-it restores permissions only on the exact recorded files. Changed recorded files
-must be reconciled before recovery can proceed.
-The retained stage and source database snapshot remain available for inspection.
-
-Rollback is available only before any new database or artifact work after
-activation, including admission-mode/revision changes even if no task ran.
-It verifies that baseline, restores original file permissions and
-retires SQLite registry authority atomically. If new work exists, rollback
-refuses: it cannot make stale file records authoritative without a validated
-reverse export. Interrupted rollback can also be resumed or aborted. Persistent
-database triggers and shared/exclusive migration locks fence stale SQLite writers;
-the source directory/file locks and permissions fence ordinary legacy writers.
-These are application coordination boundaries, not isolation from arbitrary
-same-user code capable of rewriting its own database or permissions.
-After abort or rollback, create a fresh stage before attempting activation again:
-preparation can leave empty registry roots that were absent from the old stage.
-If rollback committed but its response was lost, `recover` returns the retained
-completed outcome without repeating deletion or permission changes.
-
-Activation/recovery/rollback have temporary-fixture acceptance tests and completed
-cold correctness/security reviews. Review fixes passed targeted regressions,
-including safe extra-file abort after directory freezing and legacy initiative
-layout/ingestion-lock fencing. Live state cutover completed on2026-09-09. SQLite is now the active operational
-backend; scheduling remains stopped.
-
-SQLite stores write new assignment/output artifacts under `control/artifacts` and
-new ownership sidecars under `control/materialization-ownership`. Retained files
-stay at their original real paths and inodes; symlink relocation is unsupported.
-The retained artifact reader permits read-only (0400) as well as 0600 files, while
-ownership sidecar files must keep mode 0600 because their exact mode is bound into
-the journal. Current artifact write residue can be recovered under the initiative
-lock; retained source files are never swept. These adapters are covered by temporary
-fixtures and have not been activated against live state.
+The offline registry staging, activation, recovery and rollback commands
+(`asha control registry ...`) completed the SQLite cutover on 2026-09-09 and
+retired with the initiative engine (L-b). Rooms keep the backend the
+registry marker selects; a home without that marker keeps file-backed Rooms.
 
 Restore uses a separate, empty recovery state root:
 
@@ -651,8 +472,7 @@ publication. It refuses to overwrite existing Control state and keeps managed
 dispatch paused. Version 1 backups are upgraded in the destination without
 modifying the backup. Source records and native conversation IDs are preserved. The
 recovered root requires operator reconciliation before dispatch; switching live
-roots and resuming recovered work is not performed by restore. Recovery of artifact
-files and legacy registries remains necessary while those domains are file backed.
+roots and resuming recovered work is not performed by restore.
 
 If the restore process dies during publication, its offline destination may keep
 the temporary `.restore-*.sqlite3` name beside the published database. Publication
@@ -666,20 +486,15 @@ WAL. Backups cannot use the source database's own main or sidecar filenames.
 
 The role checks protect the validated CLI. They are not an OS security boundary
 against arbitrary code running as the same user and modifying the database or
-initiative files directly. Deliberately detached and reparented same-user processes
+state files directly. Deliberately detached and reparented same-user processes
 also fall outside the descendant proof. A controlling terminal or a shared user
 cgroup would not establish a separate principal. Harness sandbox and execution
 policy remain necessary.
 
-Activation derives required harnesses from the approved plan. Its runtime doctor
-checks those executables and their installed hook surfaces; an unrelated harness
-installation does not block that plan. The general doctor continues to inspect
-all installed harnesses. SQL-backed initiative readiness validates the selected
-SQLite registry instead of requiring the retained legacy directory to be writable.
-
 ## Native workflow acceptance
 
-Claude2.1.266 completed a real four-turn coordinator cycle in a disposable
+These acceptance runs exercised the retired coordinator path and are kept as
+history. Claude2.1.266 completed a real four-turn coordinator cycle in a disposable
 production-migrated SQLite root: clarification and idempotent answer, one headless
 implementation, an independent review, controller verification and a final report
 in the same native conversation. The initiative reached ready-for-integration;
@@ -688,9 +503,3 @@ decisions, no persistent permission grant and no terminal relay for coordination
 Existing headless workers retain their normal terminal-backed launch/evidence path.
 The separate Codex acceptance and installed default rollout are recorded above.
 See the migration audit for final verification and landing status.
-
-Managed coordinators receive activation and resume transitions into running after
-their initial turn. This matters when plan approval and activation happen at
-different times: an idle coordinator no longer needs a second chair message to
-notice activation. Pre-existing activation is covered by the initial state read
-and does not spend another turn.

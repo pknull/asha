@@ -1,13 +1,18 @@
 ---
 title: Asha Orchestration
 type: proposal
-status: Core (Increments 1-3) delivered 2026-08-18; Increments 4-7 in progress from 2026-08-22; the coordinator is the operator's Asha session claiming each initiative (Keeper ruling 2026-08-22), not a controller-launched agent; current operating surface is docs/orchestration.md
+status: Core (Increments 1-3) delivered 2026-08-18; Increments 4-7 in progress from 2026-08-22; the coordinator is the operator's Asha session claiming each initiative (Keeper ruling 2026-08-22), not a controller-launched agent; retired 2026-10-05 (subtraction step L-b), its evidence is read through docs/control.md
 date: 2026-08-15
 depends_on: docs/proposals/2026-08-14--asha-control.md
 origin: Keeper design session after comparing Asha Control with persistent multi-agent supervisors
 ---
 
 # Asha Orchestration: initiative-scoped coordination over Asha Control
+
+> **Historical record — retired.** The initiative engine was retired on
+> 2026-10-05 (subtraction step L-b); `docs/orchestration.md` and
+> `docs/control-contracts.md` went with it. Retained evidence is read through
+> [`docs/control.md`](../control.md).
 
 > **Prerequisite gate status (2026-08-17).** The Control soak ran on real work
 > and its defects were fixed in Control; the required create-by-id amendment

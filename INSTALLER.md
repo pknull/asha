@@ -270,8 +270,9 @@ harness word selects only the tool, and the session launches from
 in the same neutral context with one shared `/resume` lineage per harness.
 Arguments keep the caller's cwd, and Control-managed launches (coordinator
 sessions, workers) always keep their own start directories. A Codex seat
-launch also carries the per-launch trust override for the chair directory;
-the unattended coordinator posture is never applied at the seat.
+launch also carries the per-launch trust override for the chair directory.
+The unattended coordinator posture (`--sandbox danger-full-access`) retired
+with the initiative engine and is applied to no launch.
 
 Wrapped `asha claude` and `asha codex` launches also carry the orchestrator
 stance by default: `identity/orchestrator-brief.md` — the operator's-chair

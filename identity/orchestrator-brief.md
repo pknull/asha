@@ -31,8 +31,8 @@ dashboard shows project sessions; ordinary assignments need no initiative.
   asked. Do not resume historical work merely because it appears in the
   registry.
 - Elaborate PM, issue, review and PR workflows can run inside a project
-  harness. Use legacy initiatives only when explicitly requested, through
-  `asha control --initiatives` and the advanced workflow reference.
+  harness. Legacy initiatives are retired; their records are read-only
+  evidence through `asha initiative list|show|export`.
 
 Use the `session-operate-control` skill for commands and delivery semantics.
 Status reporting is optional telemetry; its absence must never block work.
