@@ -25,16 +25,15 @@ asha control supervisor {install|uninstall} [--dry-run] [--json]
 asha initiative list [--json]
 asha initiative show <id|slug> [--json]
 asha initiative export
-
-asha migrate [--dry-run] [--yes] [--json]
 ```
 
 Exit codes: `0` success (and, for `control doctor`, all required checks
 matched); `1` when doctor checks complete with `ok:false`, or on an internal
 error; `2` usage or refusal; and `130` interrupted.
 
-`asha task` and `asha trigger` were retired on 2026-10-05 and refuse by name
-with exit code `2`; they never fall through to a harness launch.
+`asha task` and `asha trigger` were retired on 2026-10-05, and `asha migrate`
+on 2026-10-07; each refuses by name with exit code `2` and never falls
+through to a harness launch.
 
 ## Rooms: dynamic project sessions
 
@@ -73,14 +72,14 @@ creates its own worktree.
 
 `asha control doctor [--json]` runs Control's probes and prints one line per
 probe, or the `asha.control-doctor.v1` JSON payload: `python`,
-`configuration`, `session-experience`, `migration`, `supervisor-service`,
+`configuration`, `session-experience`, `supervisor-service`,
 `tmux`, `harness`, `gh`, `rooms-registry`, `managed-sessions`, `hooks` and
 `tui`. The `gh` and `supervisor-service` probes are informational and never
 fail the check. Hook checks cover only the installed Claude and Codex
 configurations. The retired task substrate's probes (`jj`, `repository`,
 `default-context`, `transactions`, `registry-backend`, `prunable`,
 `stale-workspaces` and `harness-events`) left with it, and `asha task doctor`
-is now `asha control doctor`.
+is now `asha control doctor`. The `migration` probe left with `asha migrate`.
 
 ## Retired initiatives and tasks
 
@@ -190,32 +189,6 @@ group-writable `$ASHA_HOME` works. Control still creates its own directories
 If the `/tmp/user-$UID` runtime fallback already exists but has a symlink or
 non-directory component, Control refuses it and directs the operator to set
 `XDG_RUNTIME_DIR` to an existing private directory.
-
-### Migrating from the pre-consolidation layout
-
-Installs that predate the single root keep data at
-`~/.local/state/asha/control`, `~/.local/share/asha/workspaces`, and
-`~/.cache/asha`. Until `asha migrate` runs, every command refuses under the
-DEFAULT resolution with the remediation in the message; an explicit
-`ASHA_HOME` bypasses the gate, since a deliberate redirection touches nothing
-the gate protects.
-
-`asha migrate --dry-run` prints the full plan; `asha migrate --yes` performs
-it: one atomic rename of the state tree (verified by a per-file sha256
-manifest staged beforehand), permission normalization (state 0700,
-trust.jsonl 0600), retirement of path-bound husks — archived task records,
-creation journals with their ownership sidecars, prune records — into
-`state/control/retired-<date>/` with a review-digested manifest, deletion of
-regenerable verification materializations after forgetting each jj workspace
-by name through its source repository, and a supersession banner
-(`ASHA-MOVED.md`) left at both legacy roots so a restored backup cannot
-masquerade as live state. A marker at `state/.migration-v1.json` makes
-re-runs no-ops; an interrupted run resumes from its phase journal. Manual
-rollback before the marker: move `~/.asha/state` back and verify against the
-staged manifest. Preflight refuses on live Control tmux sessions, any
-non-archived task or initiative, cross-device layouts, symlinked roots, or an
-existing new root without a marker. The doctor's `migration` probe reports
-pending, complete, or a resurrected-decoy mismatch.
 
 ## Chair startup observation
 
