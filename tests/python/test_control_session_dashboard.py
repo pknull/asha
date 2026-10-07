@@ -59,7 +59,7 @@ class FooterTests(unittest.TestCase):
         data = {'summary': 'x', 'rows': [row()]}
         rendered = session_tui.lines(data, width=60, height=30, keys=True)
         text = '\n'.join(rendered)
-        for key in ('Enter', 'x ', 'X ', 's ', 'r ', 'm ', 'n ', 'o ', 'M ', 'A ', 'G ', 'q '):
+        for key in ('Enter', 'x ', 'X ', 's ', 'r ', 'm ', 'n ', 'o ', 'M ', 'A ', 'q '):
             self.assertIn(key, text)
         self.assertTrue(all(tui._cell_width(line) <= 60 for line in rendered))
         self.assertLessEqual(len(session_tui.lines(data, width=30, height=6, keys=True)), 6)
@@ -69,7 +69,7 @@ class KeySheetPagingTests(unittest.TestCase):
     """QA12-F4: every binding is reachable on a short terminal."""
 
     LABELS = ('Up/Down', 'Enter attach', 'a answer', 'm send', 'x close', 'X force-close', 's stop',
-              'r resume', 'n job', 'o Room', 'M input filter', 'A history', 'G workflows', '? keys', 'q quit')
+              'r resume', 'n job', 'o Room', 'M input filter', 'A history', '? keys', 'q quit')
 
     def pages(self, data, *, width, height):
         seen, offset = [], 0

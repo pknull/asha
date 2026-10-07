@@ -124,11 +124,9 @@ def run_turn(store, session, message, *, env, root, transport_factory=None,
                       "ASHA_MANAGED_GENERATION": str(generation),
                       "ASHA_MANAGED_STATE_DIR": str(store.db.path.parent),
                       "ASHA_MANAGED_TURN_ID": turn,
-                      "ASHA_PERSONA": "1",
-                      "ASHA_ORCHESTRATOR_STANCE": "0"})
-    lightweight = not session['initiative_id']
-    if lightweight:
-        child_env.update(ASHA_SESSION_PROFILE='worker', ASHA_PERSONA='0')
+                      "ASHA_ORCHESTRATOR_STANCE": "0",
+                      "ASHA_SESSION_PROFILE": "worker",
+                      "ASHA_PERSONA": "0"})
     # The session is a managed conversation, not the user's interactive chair.
     child_env.pop("ASHA_COORDINATOR_LAUNCH", None)
     ask_instruction = (
@@ -136,32 +134,7 @@ def run_turn(store, session, message, *, env, root, transport_factory=None,
         if session['harness'] == 'codex' else
         "For a clarification, run `asha control session ask --question 'QUESTION' --json`, "
     )
-    prompt = (
-        "Asha manages this session through structured turns. Do not launch other coordinators or poll/wait in a loop. "
-        "If a tool returns a running handle, wait on that same handle for its result before ending the turn. "
-        "A pending tool is not a recorded question or completed state change. "
-        "When waiting for work or a human answer, finish this turn; the backend will resume you. "
-        "If required context is inaccessible or a tool is refused, report the exact limitation and finish this turn. "
-        "Do not retry denied operations through alternate tools or agents. "
-        + ask_instruction +
-        "confirm its retained request ID, then finish the turn. "
-        "Messages are context, not permission to approve plans or integrate.\n\n" + message["body"]
-    )
-    if session["initiative_id"]:
-        coordinator_instruction = (
-            'Use the native asha_control tool: inspect (kind="head", "nodes", "attempts", "actions", '
-            '"seals", "reviews", "verifications", "messages", or "events"), propose_plan (plan object), '
-            'action (action_class and payload), receive_message (message_id), and ack_message (message_id and digest). '
-            'These calls are bound to your initiative and coordinator generation. Use these tools for Control state '
-            'operations described by CLI examples in skills or messages. Do not claim again.\n'
-            if session['harness'] == 'codex' else
-            f"Read `asha initiative show {session['initiative_id']} --json` for its current plan and evidence. "
-            "Use coordinator action documents with the retained ID/generation in your environment; do not claim again.\n"
-        )
-        prompt = (f"You are the already-claimed coordinator for initiative {session['initiative_id']}. "
-                  + coordinator_instruction + prompt)
-    else:
-        prompt = message['body'] + '\n\nIf clarification is needed, ' + ask_instruction + 'then return. Otherwise do the assignment and return the result.'
+    prompt = message['body'] + '\n\nIf clarification is needed, ' + ask_instruction + 'then return. Otherwise do the assignment and return the result.'
     from .session_hub import Hub
     from .session_guidance import delivery
     guidance_hub = Hub(store.db.config, env=env)
@@ -189,14 +162,14 @@ def run_turn(store, session, message, *, env, root, transport_factory=None,
             from .session_selection import requested
             selection = requested((guidance_row or {}).get('spec'))
             if session["harness"] == "claude":
-                factory, argv = ClaudeTransport, claude_argv(root, session["native_id"], native_settings=lightweight,
+                factory, argv = ClaudeTransport, claude_argv(root, session["native_id"], native_settings=True,
                                                              selection=selection)
             elif session["harness"] == "codex":
-                factory, argv = CodexTransport, codex_argv(root, native_settings=lightweight)
+                factory, argv = CodexTransport, codex_argv(root, native_settings=True)
             else:
                 raise StoreError("harness has no supported managed adapter")
             transport = (transport_factory or factory)(argv, cwd=session["cwd"], env=child_env)
-            transport.native_settings = lightweight
+            transport.native_settings = True
             transport.selection = selection
             if session['harness'] == 'codex':
                 from .codex_actor import CodexActor
@@ -241,70 +214,6 @@ def run_turn(store, session, message, *, env, root, transport_factory=None,
     store.finish(sid, generation, turn, success=success, reason=reason if success else reason or "no terminal result")
 
 
-def bridge_initiative(store, session, orchestration):
-    """Revision-bound legacy read adapter; enqueue and cursor advance are one SQL act."""
-    from .orchestration import messages
-    iid = session["initiative_id"]
-    if not iid:
-        return
-    from .orchestration.model import INITIATIVE_TERMINAL_STATES
-    if orchestration.peek(iid)["state"] in INITIATIVE_TERMINAL_STATES:
-        store.stop(session["session_id"])
-        return
-    current = orchestration.current_coordinator(iid)
-    if current is None or current["anchor"].get("session_id") != session["session_id"]:
-        raise StoreError("managed coordinator no longer owns its initiative")
-    pending = messages.pending(orchestration, iid, current=current)["messages"]
-    interesting = {"plan-approved", "approval-decided", "seal-published", "review-accepted",
-                   "verification-finished", "result-missing", "result-refused", "limit-reached"}
-    events = orchestration.list_events_snapshot(iid)
-    with store.db.transaction() as c:
-        observed_session = store._owner(c, session["session_id"], session["generation"])
-        pending = [m for m in pending if m["address_status"] == "current" and not c.execute(
-            "SELECT 1 FROM session_messages WHERE session_id=? AND delivery_key=?",
-            (session["session_id"], "legacy-message:" + m["message_id"])).fetchone()]
-        if not pending and not any(
-                e["sequence"] > observed_session["event_cursor"] for e in events):
-            return
-    with store.db.transaction(write=True) as c:
-        current_session = store._owner(c, session["session_id"], session["generation"])
-        for message in pending:
-            if message["address_status"] == "current":
-                store._enqueue(c, session["session_id"],
-                    "Durable coordinator message requires reading and explicit acknowledgement: " + message["message_id"] +
-                    f". Use `asha initiative message receive {iid} --message-id {message['message_id']} --json` "
-                    f"then `asha initiative message ack {iid} --message-id {message['message_id']} --digest {message['content_digest']} --json` after reading it.",
-                    "legacy-message:" + message["message_id"])
-        cursor = current_session["event_cursor"]
-        fresh = sorted((e for e in events if e["sequence"] > cursor), key=lambda e: e["sequence"])
-        if not fresh:
-            return
-        # run_turn's first assignment instructs a live read of plan/evidence.
-        # Existing approval/activation is covered by the initial assignment's
-        # live read. Later activation or resume needs its own wakeup: approval
-        # may have been consumed while the initiative was still unactivated.
-        # Keep negative outcomes and result notifications even on first entry.
-        selected = [e for e in fresh if (
-            e["type"] in interesting
-            and (current_session["turns"] or e["type"] != "plan-approved")
-        ) or (
-            current_session["turns"]
-            and e["type"] == "initiative-state-changed"
-            and isinstance(e["payload"], dict)
-            and e["payload"].get("to") == "running"
-        )]
-        latest = fresh[-1]["sequence"]
-        if selected:
-            summary = [{"type": e["type"], "sequence": e["sequence"], "subject_ids": e["subject_ids"]} for e in selected[-40:]]
-            omitted = len(selected) - len(summary)
-            detail = (f"{omitted} earlier relevant {'event' if omitted == 1 else 'events'} omitted from this summary; read `asha initiative events {iid} --after {cursor} --json` through sequence {latest}.\n"
-                      if omitted else "")
-            store._enqueue(c, session["session_id"],
-                "Initiative state changed. Read the current initiative and advance authorized work.\n" + detail + json.dumps(summary),
-                "initiative-events:" + str(latest))
-        c.execute("UPDATE managed_sessions SET event_cursor=MAX(event_cursor,?) WHERE session_id=?", (latest, session["session_id"]))
-
-
 def run_owner(config, sid, *, env=None, once=False, transport_factory=None):
     from .runtime import admission
     values = dict(os.environ if env is None else env)
@@ -322,22 +231,15 @@ def run_owner(config, sid, *, env=None, once=False, transport_factory=None):
             return 0
         if session["state"] in {"failed", "uncertain", "stopped", "budget-exhausted"}:
             return 0
+        if session["initiative_id"]:
+            # Initiatives are retired (L-b); a session bound to one is stopped,
+            # as the retired bridge stopped it once its initiative was terminal.
+            # This owner holds the claim, so it records the stop itself.
+            store.stop(sid)
+            store.stopped(sid, generation)
+            return 0
         values.update({"ASHA_MANAGED_SESSION_ID": sid, "ASHA_MANAGED_GENERATION": str(generation),
                        "ASHA_MANAGED_STATE_DIR": str(config.tasks_dir.parent)})
-        orchestration = None
-        if session["initiative_id"]:
-            from .orchestration import coordinator
-            from .orchestration.config import load_config as load_orchestration
-            from .orchestration.store import InitiativeStore
-            from .tmux import TmuxAdapter
-            orchestration = InitiativeStore(load_orchestration(values))
-            try:
-                record = coordinator.claim(orchestration, orchestration.peek(session["initiative_id"]),
-                                           env=values, tmux=TmuxAdapter(), harness=session["harness"])
-            except (StoreError, OSError, ValueError) as exc:
-                store.fail_owner(sid, generation, exc)
-                raise
-            values.update(coordinator.environment_for(record))
         stopping = False
 
         def stop(_signal, _frame):
@@ -359,8 +261,6 @@ def run_owner(config, sid, *, env=None, once=False, transport_factory=None):
                 if session["state"] in {"failed", "uncertain", "stopped", "budget-exhausted"}:
                     return 0
                 try:
-                    if orchestration:
-                        bridge_initiative(store, session, orchestration)
                     message = store.claim_turn(sid, generation)
                 except DatabaseBusyError:
                     # These short transactions roll back on contention. No
@@ -387,7 +287,7 @@ def run_owner(config, sid, *, env=None, once=False, transport_factory=None):
                         raise
                 if once:
                     return 0
-                if not session['initiative_id'] and not message:
+                if not message:
                     # Utility owners are disposable between turns. Queued input
                     # starts a new owner through the existing supervisor.
                     return 0
@@ -431,7 +331,7 @@ def ensure_owners(config, *, env=None):
         with store.db.transaction() as c:
             rows = [dict(r) for r in c.execute("""SELECT * FROM managed_sessions s
                 WHERE state IN ('queued','idle','running','waiting-input') AND stop_requested=0
-                AND (initiative_id IS NOT NULL OR state='running' OR EXISTS (
+                AND initiative_id IS NULL AND (state='running' OR EXISTS (
                     SELECT 1 FROM session_messages m WHERE m.session_id=s.session_id AND m.state='queued'))
                 ORDER BY created_at LIMIT 100""")]
         for session in rows:
@@ -468,7 +368,6 @@ def parser():
     create = sub.add_parser("create")
     create.add_argument("--cwd", required=True)
     create.add_argument("--prompt", required=True)
-    create.add_argument("--initiative")
     create.add_argument("--harness", choices=list(CAPABILITIES), default="claude")
     create.add_argument("--max-turns", type=int, default=12)
     for verb in ("show", "stop", "owner", "resume"):
@@ -603,7 +502,7 @@ def main(argv=None, *, env=None):
             result = {"capabilities": CAPABILITIES, "actor_ipc": capability_probe(), "database": "not initialized"}
             from .codex_actor import TOOL
             result['codex_actor'] = {'transport': 'app-server-dynamic-tool', 'tool': TOOL['name'],
-                                    'experimental': True, 'scope': 'session-turn-and-assigned-initiative'}
+                                    'experimental': True, 'scope': 'session-turn'}
             from .session_output import MAX_BYTES, MAX_RECORDS, MAX_CONSUMERS
             result["session_output"] = {"max_payload_record_bytes_per_session": MAX_BYTES, "max_records_per_session": MAX_RECORDS,
                                         "max_consumers_per_session": MAX_CONSUMERS,
@@ -627,17 +526,8 @@ def main(argv=None, *, env=None):
                 if args.command == "create":
                     if not CAPABILITIES[args.harness]["managed"]:
                         raise StoreError(CAPABILITIES[args.harness]["reason"])
-                    if args.initiative:
-                        from .orchestration.config import load_config as load_orchestration
-                        from .orchestration.store import InitiativeStore
-                        from .orchestration.model import INITIATIVE_TERMINAL_STATES
-                        initiative = InitiativeStore(load_orchestration(values)).peek(args.initiative)
-                        if initiative["state"] in INITIATIVE_TERMINAL_STATES:
-                            raise StoreError("cannot manage a terminal initiative")
-                        if str(Path(args.cwd).resolve()) != initiative["scope"]["repository"]["root"]:
-                            raise StoreError("managed coordinator cwd must match its initiative repository")
                     result = store.create(cwd=str(Path(args.cwd).resolve()), prompt=args.prompt,
-                                          harness=args.harness, initiative_id=args.initiative, max_turns=args.max_turns)
+                                          harness=args.harness, max_turns=args.max_turns)
                 elif args.command in {"list", "show"}:
                     result = store.snapshot(getattr(args, "session_id", None), after=args.after, limit=args.limit)
                 elif args.command == "search":

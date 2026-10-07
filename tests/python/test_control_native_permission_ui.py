@@ -2,7 +2,7 @@ import unittest
 from unittest import mock
 
 from lib.control import session_modals, tui
-from tests.python.test_control_tui_focus import FakeCurses, FakeScreen
+from tests.python.control_curses_fakes import FakeCurses, FakeScreen
 
 
 class NativePermissionUiTests(unittest.TestCase):

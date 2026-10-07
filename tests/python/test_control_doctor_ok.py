@@ -14,8 +14,6 @@ from unittest import mock
 from lib.control.cli import main as control_main
 from lib.control.config import load_config
 from lib.control.doctor import DEFAULT_PROBES, Probe, run_doctor
-from lib.control.store import TaskStore
-from tests.python.test_control_config_model import task_record
 
 
 class DoctorOkFixture(unittest.TestCase):
@@ -35,37 +33,13 @@ class DoctorOkFixture(unittest.TestCase):
 
     def invoke_doctor(self, payload: dict) -> tuple[int, str, str]:
         stdout, stderr = io.StringIO(), io.StringIO()
-        with mock.patch("lib.control.cli.run_doctor", return_value=payload), \
+        with mock.patch("lib.control.doctor.run_doctor", return_value=payload), \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            status = control_main(["task", "doctor", "--json"], env=self.env)
+            status = control_main(["control", "doctor", "--json"], env=self.env)
         return status, stdout.getvalue(), stderr.getvalue()
 
 
 class DoctorVerdictTests(DoctorOkFixture):
-    def test_stale_workspace_probe_without_config_is_unavailable(self):
-        adapter = mock.Mock()
-        adapter.workspace_identities.return_value = {"asha-old": ("a", "b")}
-        with mock.patch("lib.control.doctor.JjAdapter", return_value=adapter):
-            result = run_doctor(None, probes={"stale-workspaces": DEFAULT_PROBES["stale-workspaces"]})
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["probes"][0]["outcome"], "unavailable")
-        adapter.discover_root.assert_not_called()
-
-    def test_stale_workspace_probe_flags_unowned_control_names_without_mutating(self):
-        adapter = mock.Mock()
-        adapter.discover_root.return_value = self.root
-        adapter.workspace_identities.return_value = {
-            "default": ("a", "b"), "operator-work": ("c", "d"),
-            "asha-materialization-old": ("e", "f"),
-        }
-        with mock.patch("lib.control.doctor.JjAdapter", return_value=adapter):
-            result = run_doctor(self.config, probes={"stale-workspaces": DEFAULT_PROBES["stale-workspaces"]})
-        self.assertTrue(result["ok"], "stale workspace warnings are advisory")
-        self.assertEqual(result["probes"][0]["outcome"], "mismatch")
-        self.assertIn("asha-materialization-old", result["probes"][0]["detail"])
-        self.assertNotIn("operator-work", result["probes"][0]["detail"])
-        adapter.forget_workspace.assert_not_called()
-
     def test_runtime_hooks_check_only_plan_harnesses_but_default_doctor_checks_all(self):
         claude = self.home / ".claude"
         codex = self.home / ".codex"
@@ -177,20 +151,10 @@ class DoctorVerdictTests(DoctorOkFixture):
             "supervisor service present=no, enabled=no, active=no",
         )
 
-    def test_repository_unavailable_outside_a_repo_is_nonblocking(self) -> None:
-        with tempfile.TemporaryDirectory() as outside, contextlib.chdir(outside):
-            result = run_doctor(None, probes={
-                "repository": DEFAULT_PROBES["repository"],
-            })
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["probes"][0]["outcome"], "unavailable")
-        self.assertIn(result["probes"][0]["detail"], result["limitations"])
-
-    def test_repository_mismatch_in_a_repo_remains_blocking(self) -> None:
+    def test_a_probe_mismatch_remains_blocking(self) -> None:
         result = run_doctor(None, probes={
-            "repository": lambda _config: Probe(
-                "repository", "mismatch", "jj and Git heads disagree",
+            "hooks": lambda _config: Probe(
+                "hooks", "mismatch", "Claude Control hooks are missing",
             ),
         })
 
@@ -271,36 +235,6 @@ class DoctorSupportedConfigurationTests(DoctorOkFixture):
         self.assertFalse(result["ok"])
         self.assertEqual(result["probes"][0]["outcome"], "unavailable")
         self.assertIn("not a regular file", result["probes"][0]["detail"])
-
-    def test_events_probe_skips_runs_without_a_claimed_event_seam(self) -> None:
-        source = self.root / "source"
-        source.mkdir()
-        source.chmod(0o755)
-        for harness in ("copilot", "opencode"):
-            workspace = self.config.workspace_root / "repo-key" / f"{harness}-only"
-            workspace.mkdir(parents=True)
-            current = workspace
-            while current != self.root:
-                current.chmod(0o700)
-                current = current.parent
-            task = task_record(
-                slug=f"{harness}-only",
-                repository_root=str(source),
-                workspace_path=str(workspace),
-            )
-            task["runs"][0]["harness"] = harness
-            TaskStore(self.config).save(task)
-
-        result = run_doctor(
-            self.config,
-            probes={"harness-events": DEFAULT_PROBES["harness-events"]},
-        )
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["probes"][0]["outcome"], "match")
-        self.assertIn("no claimed semantic event seam", result["probes"][0]["detail"])
-        self.assertIn("skipped 2", result["probes"][0]["detail"])
-
 
 class NativeOwnedCodexHookTests(DoctorOkFixture):
     def setUp(self) -> None:

@@ -213,14 +213,6 @@ class ProjectIndexTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("asha control projects [--root DIR]... [--depth N] [--match TEXT] [--json]", out)
 
-    def test_the_legacy_initiative_verb_lists_the_same_index(self) -> None:
-        # L-b deletes this with `asha initiative`; until then both verbs share the index.
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            rc = cli.main(["initiative", "projects", "--root", str(self.root), "--json"], env=self.env)
-        self.assertEqual(rc, 0)
-        self.assertEqual(json.loads(out.getvalue()), self.payload())
-
     def test_the_operate_control_skill_resolves_projects_through_the_control_verb(self) -> None:
         skill = (ROOT / "plugins/session/skills/operate-control/SKILL.md").read_text()
         self.assertIn("asha control projects --match NAME --json", skill)

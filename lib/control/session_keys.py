@@ -14,7 +14,7 @@ def attachable(row):
 def row_keys(row):
     """The action keys, most important first, for the selected row's state."""
     if row is None:
-        return ['n job', 'o Room', 'A history', 'G workflows']
+        return ['n job', 'o Room', 'A history']
     if row.get('kind') == 'section':
         return ['Right unfold', 'g group', '! jump']
     step, group = row.get('next_step', ''), row.get('group', 'current')
@@ -61,7 +61,6 @@ def key_sheet(*, preview=False):
                ('Esc back', 'leave the full-width preview'),
                ('M input filter', 'show only sessions that need input'),
                ('A history', 'include retained history'),
-               ('G workflows', 'advanced initiatives view'),
                ('? keys', 'this sheet'), ('q quit', 'leave; sessions keep running')]
     return ['Keys (any key returns)'] + [f'  {key:<22}{text}' for key, text in entries]
 

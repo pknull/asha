@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # `asha cockpit` is tmux layout glue over Control: it plans one window with the
-# coordinator pane (`asha claude` at DIR) beside `asha control --initiatives`.
+# chair pane (`asha claude` at DIR) beside the `asha control` dashboard.
 # The plan is asserted through --dry-run; no tmux server is touched.
 set -euo pipefail
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,13 +23,13 @@ unset TMUX
 echo "--- test 1: outside tmux, the plan creates, splits, selects, attaches ---"
 out="$("$DISPATCHER" cockpit "$WORK/Code" --dry-run)"
 if [[ "$(wc -l <<<"$out")" == 4 ]]; then ok "four steps"; else fail "expected four steps, got: $out"; fi
-if grep -q "^tmux new-session -d -s asha-cockpit-Code -c $WORK/Code -n cockpit -- $REPO_ROOT/bin/asha claude$" <<<"$out"; then ok "coordinator pane runs asha claude at DIR"; else fail "new-session line wrong: $out"; fi
-if grep -q "^tmux split-window -h -t asha-cockpit-Code:cockpit -c $WORK/Code -- $REPO_ROOT/bin/asha control --initiatives$" <<<"$out"; then ok "monitor pane runs asha control --initiatives"; else fail "split line wrong: $out"; fi
-if grep -q "^tmux select-pane -t asha-cockpit-Code:cockpit.0$" <<<"$out" && grep -q "^tmux attach-session -t asha-cockpit-Code$" <<<"$out"; then ok "focus returns to the coordinator, then attaches"; else fail "select/attach lines wrong: $out"; fi
+if grep -q "^tmux new-session -d -s asha-cockpit-Code -c $WORK/Code -n cockpit -- $REPO_ROOT/bin/asha claude$" <<<"$out"; then ok "chair pane runs asha claude at DIR"; else fail "new-session line wrong: $out"; fi
+if grep -q "^tmux split-window -h -t asha-cockpit-Code:cockpit -c $WORK/Code -- $REPO_ROOT/bin/asha control$" <<<"$out"; then ok "dashboard pane runs asha control"; else fail "split line wrong: $out"; fi
+if grep -q "^tmux select-pane -t asha-cockpit-Code:cockpit.0$" <<<"$out" && grep -q "^tmux attach-session -t asha-cockpit-Code$" <<<"$out"; then ok "focus returns to the chair, then attaches"; else fail "select/attach lines wrong: $out"; fi
 
 echo "--- test 2: inside tmux, a window is added to the current session ---"
 out="$(TMUX=/tmp/fake-socket,1,0 "$DISPATCHER" cockpit "$WORK/Code/termart" --dry-run)"
-if grep -q "^tmux new-window -c $WORK/Code/termart -n cockpit -- $REPO_ROOT/bin/asha claude$" <<<"$out" && grep -q "^tmux split-window -h -c $WORK/Code/termart -- $REPO_ROOT/bin/asha control --initiatives$" <<<"$out" && grep -q "^tmux select-pane -L$" <<<"$out"; then ok "new-window plan"; else fail "inside-tmux plan wrong: $out"; fi
+if grep -q "^tmux new-window -c $WORK/Code/termart -n cockpit -- $REPO_ROOT/bin/asha claude$" <<<"$out" && grep -q "^tmux split-window -h -c $WORK/Code/termart -- $REPO_ROOT/bin/asha control$" <<<"$out" && grep -q "^tmux select-pane -L$" <<<"$out"; then ok "new-window plan"; else fail "inside-tmux plan wrong: $out"; fi
 if ! grep -q "attach-session\|new-session" <<<"$out"; then ok "no nested session"; else fail "nested session planned: $out"; fi
 
 echo "--- test 3: defaults and refusals ---"
@@ -45,9 +45,16 @@ if PATH="$WORK/nope:$PATH" "$DISPATCHER" cockpit "$WORK/Code" --dry-run >/dev/nu
 echo "--- test 4: preflight refuses an unconfigured Claude home and names the remedy ---"
 rc=0; out="$("$DISPATCHER" cockpit "$WORK/Code" --check 2>&1)" || rc=$?
 if [[ $rc -ne 0 ]] && grep -q "asha doctor claude" <<<"$out"; then ok "--check fails closed with remediation"; else fail "--check rc=$rc: $out"; fi
-if grep -q "jj-colocated Asha project" <<<"$out"; then ok "project index is probed"; else fail "project probe missing: $out"; fi
+if grep -q "Asha project" <<<"$out"; then ok "project index is probed"; else fail "project probe missing: $out"; fi
+if ! grep -q "initiative" <<<"$out"; then ok "no retired initiative probe"; else fail "initiative probe still runs: $out"; fi
 out="$("$DISPATCHER" cockpit "$WORK/Code" --dry-run)"
 if [[ "$(wc -l <<<"$out")" == 4 ]]; then ok "--dry-run plans without the preflight"; else fail "dry-run ran preflight: $out"; fi
+
+echo "--- test 5: the retired coordinator nouns are refused, never launched ---"
+rc=0; out="$("$DISPATCHER" trigger list 2>&1)" || rc=$?
+if [[ $rc -eq 2 ]] && grep -q "retired" <<<"$out"; then ok "asha trigger is refused as retired"; else fail "trigger rc=$rc: $out"; fi
+rc=0; out="$("$DISPATCHER" task list --json 2>&1)" || rc=$?
+if [[ $rc -eq 2 ]] && grep -q "retired" <<<"$out"; then ok "asha task is refused as retired"; else fail "task rc=$rc: $out"; fi
 
 echo ""
 echo "test-cockpit: $PASS passed, $FAIL failed"

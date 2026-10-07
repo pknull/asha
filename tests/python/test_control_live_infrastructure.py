@@ -1,9 +1,7 @@
-"""Retirement step L-a1: live Control infrastructure lives outside the engine.
+"""Retirement steps L-a1 and L-b: live Control infrastructure never loads the engine.
 
 The supervisor service, the project index and the small helpers live Control
-uses must import and run without loading ``lib.control.orchestration``, so
-the engine can be deleted (L-b) without touching them. Until then the engine
-re-exports the moved names, so it keeps working on the same objects.
+uses import and run without ``lib.control.orchestration``, which L-b retired.
 """
 import json
 import subprocess
@@ -77,14 +75,6 @@ print(json.dumps({{'status': status['status'], 'code': code, 'cli': cli,
 
 
 class MovedHelperTests(unittest.TestCase):
-    def test_the_engine_reexports_the_moved_objects(self):
-        from lib.control import projects, supervisor_service, text, tmux
-        from lib.control.orchestration import messages, observation
-        self.assertIs(messages.terminal_safe, text.terminal_safe)
-        self.assertIs(observation.BoundedTmux, tmux.BoundedTmux)
-        self.assertTrue(callable(projects.list_projects_across))
-        self.assertTrue(callable(supervisor_service.supervisor_main))
-
     def test_terminal_safe_escapes_controls_through_nested_values(self):
         from lib.control.text import terminal_safe
         value = {'a\x1b': ['b‮', 3], 'c': 'plain'}
@@ -107,8 +97,7 @@ class ManagedAnchorTests(unittest.TestCase):
         self.assertEqual(validated, anchor)
         self.assertIsNot(validated, anchor)
 
-    def test_invalid_anchors_refuse_with_the_engine_wording(self):
-        from lib.control.orchestration.model import ModelError, validate_message_anchor
+    def test_invalid_anchors_refuse(self):
         from lib.control.session_store import validate_managed_anchor
         from lib.control.store import StoreError
         cases = {
@@ -123,11 +112,8 @@ class ManagedAnchorTests(unittest.TestCase):
         }
         for label, anchor in cases.items():
             with self.subTest(label):
-                with self.assertRaises(StoreError) as live:
+                with self.assertRaisesRegex(StoreError, '^managed '):
                     validate_managed_anchor(anchor)
-                with self.assertRaises(ModelError) as engine:
-                    validate_message_anchor(anchor)
-                self.assertEqual(str(live.exception), str(engine.exception))
         with self.assertRaisesRegex(StoreError, 'managed coordinator anchor must be an object'):
             validate_managed_anchor(['not', 'an', 'object'])
 

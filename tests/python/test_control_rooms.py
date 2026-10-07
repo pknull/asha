@@ -34,7 +34,7 @@ from lib.control.rooms import (
 from lib.control.tmux import PaneFacts, TmuxError
 from lib.control.tmux import TmuxAdapter
 from lib.control.socket_reaper import TmuxSocketReaper
-from lib.control import cli, session_modals, tui
+from lib.control import cli
 
 
 class FakeTmux:
@@ -303,69 +303,6 @@ class RoomTests(unittest.TestCase):
                 self.assertEqual(opened["state"], "open")
                 self.assertEqual(looked_up, [override])
                 self.assertEqual(tmux.created[0]["environment"][key], override)
-
-    def test_tui_room_form_uses_the_same_harness_override_preflight(self) -> None:
-        override = self.root / "bin" / "custom-codex"
-        override.parent.mkdir()
-        override.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        override.chmod(0o700)
-
-        class Curses:
-            KEY_RESIZE = 410
-            KEY_UP = 259
-            KEY_DOWN = 258
-            KEY_ENTER = 343
-            KEY_BACKSPACE = 263
-            KEY_BTAB = 353
-            error = RuntimeError
-
-        screen = unittest.mock.Mock()
-        screen.getmaxyx.return_value = (18, 80)
-        frames = []
-        # Accept Project; type and advance Room name; replace whichever
-        # installed harness sorts first with codex; type the opening prompt.
-        keys = iter(
-            [10, *"Draft Room", 9] + [127] * 16 +
-            [*"codex", 10, *"Revise the chapter", 10]
-        )
-
-        launched = {
-            "name": "Draft Room", "project_name": "My Novel",
-        }
-        env = {**self.env, "ASHA_CODEX_CMD": str(override)}
-        project_payload = {"projects": [{
-            "root": str(self.project), "name": "My Novel",
-            "directory": "novel", "project_id": "novel-project",
-            "asha_project": True,
-        }]}
-        with unittest.mock.patch(
-            "lib.control.projects.resolve_roots",
-            return_value=([str(self.project.parent)], "test"),
-        ), unittest.mock.patch(
-            "lib.control.projects.list_projects_across",
-            return_value=project_payload,
-        ), unittest.mock.patch.object(
-            session_modals, "_draw_modal_frame",
-            side_effect=lambda _screen, _curses, frame: frames.append(frame),
-        ), unittest.mock.patch.object(
-            session_modals, "_read_modal_key", side_effect=lambda *_args: next(keys),
-        ), unittest.mock.patch(
-            "lib.control.rooms.open_room", return_value=launched,
-        ) as open_call, unittest.mock.patch("lib.control.tui._refresh_initiatives"):
-            result = tui._open_room_form(
-                screen, Curses(), unittest.mock.Mock(),
-                self.config, env,
-            )
-
-        harness_frames = [
-            frame for frame in frames if any("Harness" in row for row in frame.rows)
-        ]
-        self.assertTrue(any(
-            "codex" in row and "installed" in row
-            for frame in harness_frames for row in frame.rows
-        ))
-        self.assertIn("started detached", result)
-        self.assertEqual(open_call.call_args.kwargs["env"]["ASHA_CODEX_CMD"], str(override))
 
     def test_project_resolution_accepts_exact_friendly_name_directory_and_id(self) -> None:
         for index, selector in enumerate(("my novel", "NOVEL", "NOVEL-PROJECT"), 2):

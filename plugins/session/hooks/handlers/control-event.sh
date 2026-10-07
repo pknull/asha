@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
 # Narrow fail-open bridge from native hook names to bounded Control snapshots.
 #
-# Two consumers, checked in this order:
-#   1. a hub session (ASHA_HUB_SESSION_ID) -> `asha control session event`
-#   2. a Control-managed task (ASHA_CONTROL_MANAGED=1) -> `asha control event`
-#
-# The hub path is deliberately the thinner of the two: session identity and
-# generation are inherited environment. Event name, the hook's start time,
+# One consumer: a hub session (ASHA_HUB_SESSION_ID) -> `asha control session
+# event`. Session identity and generation are inherited environment. Event name, the hook's start time,
 # optional native session ID and the native cwd are forwarded, plus a clipped
 # one-line request summary on PermissionRequest and the payload source on
 # SessionStart; no other body is retained. The
@@ -44,12 +40,9 @@ case "${1:-}" in
 esac
 
 HUB_SESSION="${ASHA_HUB_SESSION_ID:-}"
-# Tool-start telemetry is only a hub activity seam, not a legacy task event.
-if [[ "$CONTROL_EVENT" == "tool-started" && -z "$HUB_SESSION" ]]; then
-  echo '{}'
-  exit 0
-fi
-if [[ -z "$HUB_SESSION" && "${ASHA_CONTROL_MANAGED:-}" != "1" ]]; then
+# The legacy task consumer (`asha control event`) was retired with the task
+# substrate (L-b); anything outside a hub session answers the harmless object.
+if [[ -z "$HUB_SESSION" ]]; then
   echo '{}'
   exit 0
 fi
@@ -99,15 +92,12 @@ if [[ -n "$HUB_SESSION" ]]; then
       IFS= read -r -t "$HUB_READ_SECONDS" -N "$HUB_READ_CHARS" INPUT || true
     fi
   fi
-else
-  [[ -t 0 ]] || IFS= read -r -N 4096 INPUT || true
 fi
 INPUT_TRUNCATED=""
 [[ "$(printf '%s' "$INPUT" | wc -c)" -lt "$HUB_READ_CHARS" ]] || INPUT_TRUNCATED=1
 SESSION_ID=""
 HOOK_CWD=""
 HOOK_SOURCE=""
-EXIT_STATUS=""
 STOP_HOOK_ACTIVE=""
 if command -v jq >/dev/null 2>&1 && [[ -n "$INPUT" ]]; then
   # One jq, three lines: the native session ID, the native thread's own cwd
@@ -164,15 +154,6 @@ if [[ -n "$HUB_SESSION" && "$CONTROL_EVENT" == "turn-stopped" && -z "$INPUT_TRUN
     select(type == "object" and (.background_tasks | type) == "array")
     | .background_tasks | length' 2>/dev/null || true)"
   [[ "$BACKGROUND_TASKS" =~ ^[1-9][0-9]{0,3}$ ]] || BACKGROUND_TASKS=""
-fi
-if command -v jq >/dev/null 2>&1 && [[ -n "$INPUT" ]]; then
-  # The hub records lifecycle from the event name alone; the exit status is a
-  # managed-task fact and is not worth a second jq in the latency-bound path.
-  if [[ -z "$HUB_SESSION" && "$CONTROL_EVENT" == "session-ended" ]]; then
-    EXIT_STATUS="$(printf '%s' "$INPUT" | jq -r '
-      .exit_status // .exitStatus // empty
-      | select(type == "number" and floor == .)' 2>/dev/null || true)"
-  fi
 fi
 SESSION_ID="${SESSION_ID:-${ASHA_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}}"
 
@@ -238,31 +219,3 @@ if [[ -n "$HUB_SESSION" ]]; then
   echo '{}'
   exit 0
 fi
-
-ARGS=(control event --event "$CONTROL_EVENT")
-# Only label the harness when the launcher actually told us which one this is.
-# Guessing would write a mislabelled harness into the snapshot; the controller
-# already knows the harness from the run record it owns.
-[[ -z "${ASHA_HARNESS:-}" ]] || ARGS+=(--harness "$ASHA_HARNESS")
-[[ -z "$SESSION_ID" ]] || ARGS+=(--session-id "$SESSION_ID")
-[[ -z "$EXIT_STATUS" ]] || ARGS+=(--exit-status "$EXIT_STATUS")
-[[ -z "${TMUX_PANE:-}" ]] || ARGS+=(--pane-id "$TMUX_PANE")
-
-CONTROL_RESPONSE=""
-if [[ -n "$ASHA_CMD" ]]; then
-  if command -v timeout >/dev/null 2>&1; then
-    CONTROL_RESPONSE="$(
-      timeout --signal=TERM 15 "$ASHA_CMD" "${ARGS[@]}" 2>/dev/null || true
-    )"
-  else
-    CONTROL_RESPONSE="$("$ASHA_CMD" "${ARGS[@]}" 2>/dev/null || true)"
-  fi
-fi
-if command -v jq >/dev/null 2>&1 \
-    && [[ "$CONTROL_RESPONSE" == \{* && "$CONTROL_RESPONSE" != *$'\n'* ]] \
-    && printf '%s' "$CONTROL_RESPONSE" | jq -e type >/dev/null 2>&1; then
-  printf '%s\n' "$CONTROL_RESPONSE"
-  exit 0
-fi
-echo '{}'
-exit 0

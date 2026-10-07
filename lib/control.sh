@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lib/control.sh — thin router for task, room, control, and initiative commands.
+# lib/control.sh — thin router for room, control and initiative commands (and the retired task noun).
 
 _ASHA_CONTROL_PROGRAM='import runpy,sys; sys.path.insert(0, sys.argv.pop(1)); runpy.run_module("control.cli", run_name="__main__")'
 

@@ -272,9 +272,9 @@ asha_persona_enabled() {
   [[ "${ASHA_PERSONA:-1}" != "0" ]]
 }
 
-# Control-launched coordinators use the orchestrate-initiative skill instead of
-# the operator's chair. An explicit environment setting wins over user config;
-# otherwise the chair stance is on unless config disables it exactly.
+# A coordinator launch (ASHA_COORDINATOR_LAUNCH) is never the operator's chair.
+# An explicit environment setting wins over user config; otherwise the chair
+# stance is on unless config disables it exactly.
 asha_orchestrator_stance_enabled() {
   local cfg stance
   [[ -z "${ASHA_COORDINATOR_LAUNCH:-}" ]] || return 1
@@ -364,7 +364,6 @@ launch() {
       local base instr op_merge op_tmp brief trust_root escaped_root
       local operational_applies=0 brief_applies=0
       local -a trust_args=()
-      local -a coordinator_args=()
       # Every TUI launch runs without Codex's shared app-server daemon, whose
       # hooks would report under another session's identity (#100).
       # shellcheck source=../lib/codex-launch.sh
@@ -382,22 +381,14 @@ launch() {
           trust_args=(-c "projects={\"$escaped_root\"={trust_level=\"trusted\"}}")
         fi
       fi
-      if [[ -n "${ASHA_COORDINATOR_LAUNCH:-}" ]]; then
-        # Any Codex sandbox mode short of full access runs commands in a PID
-        # namespace and refuses the tmux socket, which breaks the
-        # coordinator's own pane and server proofs (verified live
-        # 2026-08-25). The coordinator is the operator's persona-trusted
-        # agent running no foreign code; workers stay fully sandboxed.
-        coordinator_args=(-a never --sandbox danger-full-access)
-      fi
       if ! asha_persona_enabled; then
         # Control-managed worker: operational layer only (Codex has no reliable
         # SessionStart injection), trust override kept, no identity render.
         instr="$ASHA_HOME/cache/instructions-codex-operational.md"
         if asha_render_operational_layer "$instr"; then
-          exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "${coordinator_args[@]}" "$@"
+          exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "$@"
         fi
-        exec "$executable" "${trust_args[@]}" "${coordinator_args[@]}" "$@"
+        exec "$executable" "${trust_args[@]}" "$@"
       fi
       base="${ASHA_INSTRUCTIONS_FILE:-$ASHA_HOME/cache/instructions.md}"
       instr="$base"
@@ -442,17 +433,17 @@ launch() {
             fi
           } > "$instr" 2>/dev/null; then
             [[ -z "${op_tmp:-}" ]] || rm -f "$op_tmp"
-            exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "${coordinator_args[@]}" "$@"
+            exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "$@"
           fi
           [[ -z "${op_tmp:-}" ]] || rm -f "$op_tmp"
           info "warn: combined instructions render failed; launching with identity only"
-          exec "$executable" -c "model_instructions_file=\"$base\"" "${trust_args[@]}" "${coordinator_args[@]}" "$@"
+          exec "$executable" -c "model_instructions_file=\"$base\"" "${trust_args[@]}" "$@"
         fi
         [[ -z "${op_tmp:-}" ]] || rm -f "$op_tmp"
-        exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "${coordinator_args[@]}" "$@"
+        exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "$@"
       fi
       info "warn: identity merge failed; launching plain codex"
-      exec "$executable" "${trust_args[@]}" "${coordinator_args[@]}" "$@"
+      exec "$executable" "${trust_args[@]}" "$@"
       ;;
     copilot)
       exec_copilot "$@"
@@ -559,17 +550,13 @@ Usage:
                                    bootstrap, discover, or validate a workspace
   asha workspace knowledge|promote|worktree|work-item [...]
                                    manage shared knowledge and optional coordination
-  asha task start|list|show|attach|stop|archive|reconcile|doctor [...]
-                                   manage persistent Control tasks and runs
   asha room open|list|attach|close [...]
                                    manage persistent project conversations
-  asha initiative baseline|create|plan|approve|reject|activate|action|dispatch|pause|resume|stop|cancel|list|show|events|reconcile|storage|snapshot|doctor|projects [...]
-                                   manage bounded Orchestration Core initiatives
-  asha control [--initiatives|event|tmux|supervisor|projects]
-                                   run the terminal TUI (optionally in Initiatives mode) or Control internals
-  asha cockpit [DIR] [--dry-run]   coordinator pane (asha claude at DIR) beside the Initiatives monitor
-  asha trigger add|list|remove [...]
-                                   schedule coordinator launches (systemd user timers); fired runs wait at plan approval
+  asha initiative list|show|export [...]
+                                   read retired initiative evidence (read-only)
+  asha control [session|projects|doctor|tmux|supervisor]
+                                   run the terminal TUI or Control internals
+  asha cockpit [DIR] [--dry-run]   chair pane (asha claude at DIR) beside the Control dashboard
   asha process route <task>        advisory process route with risks and fallback
   asha capabilities match <task>   registry-backed harness capability match
                                    (both accept --json)
@@ -611,16 +598,14 @@ case "${1:-}" in
   -h|--help|help) asha_usage; exit 0 ;;
 esac
 
-# Triggers are systemd user-timer glue over coordinator launch.
+# Retired with the initiative engine (2026-10-05); refused by name so the word
+# never falls through to a harness launch.
 if [[ "${1:-}" == "trigger" ]]; then
-  shift
-  # shellcheck disable=SC1090
-  source "$ASHA_ROOT/lib/trigger.sh"
-  ( set -euo pipefail; asha_trigger_main "$@" )
-  exit $?
+  echo "asha trigger: scheduled coordinator launches were retired on 2026-10-05" >&2
+  exit 2
 fi
 
-# The cockpit is tmux layout glue over Control: coordinator pane + monitor.
+# The cockpit is tmux layout glue over Control: chair pane + dashboard.
 if [[ "${1:-}" == "cockpit" ]]; then
   shift
   # shellcheck disable=SC1090

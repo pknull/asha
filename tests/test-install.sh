@@ -460,8 +460,8 @@ else
   fail "Copilot installs Memory v2 recovery callbacks"
 fi
 # Control session events ride the same owned file: one bounded control-event.sh
-# entry per existing hook, reporting only inside a hub session. A Control task
-# (ASHA_CONTROL_MANAGED=1, no hub session) stays liveness-only.
+# entry per existing hook, reporting only inside a hub session. A stale
+# managed-task marker (ASHA_CONTROL_MANAGED=1, no hub session) reports nothing.
 COPILOT_FAKE_ROOT="$(mktemp -d)"
 mkdir -p "$COPILOT_FAKE_ROOT/bin"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"%s/calls"\necho "{}"\n' "$COPILOT_FAKE_ROOT" >"$COPILOT_FAKE_ROOT/bin/asha"

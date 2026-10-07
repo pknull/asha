@@ -338,19 +338,6 @@ class Dashboard:
         self.view = view
         return True
 
-    def suspend_for_workflows(self):
-        from . import tui
-        curses.def_prog_mode()
-        curses.endwin()
-        try:
-            tui.run_tui(self.env, initial_mode='initiatives')
-        finally:
-            curses.reset_prog_mode()
-            self.model.coloured = session_modals.init_colours(curses)
-            self.screen.timeout(TICK_MS)
-            session_modals._repaint_after_suspend(self.screen)
-            self.refresher.request_page()
-
     def handle(self, key):
         if self.sheet is not None:
             self.sheet_key(key)
@@ -374,8 +361,6 @@ class Dashboard:
                 self.message = message or ''
                 if sid:
                     self.refresh_row(sid, 'terminal')
-            elif key == ord('G'):
-                self.suspend_for_workflows()
             elif acted:
                 result = session_actions.act(self.ctx, key, acted)
                 if result is not None:

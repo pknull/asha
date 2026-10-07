@@ -1,27 +1,25 @@
 #!/usr/bin/env bash
-# asha cockpit: the coordinator's chat pane beside the Initiatives monitor.
+# asha cockpit: the chair's chat pane beside the Control dashboard.
 # source-scoped library: bin/asha sources it and calls asha_cockpit_main.
 #
 # One tmux window: left pane runs `asha claude` at DIR (the projects root the
-# coordinator resolves intents against); right pane runs
-# `asha control --initiatives`. Inside tmux a new window is added to the
-# current session; outside tmux a detached session is created and attached.
-# Approvals happen in the right pane; the left pane is refused by design.
+# chair resolves projects against); right pane runs `asha control`. Inside tmux
+# a new window is added to the current session; outside tmux a detached session
+# is created and attached.
 
 asha_cockpit_usage() {
   cat <<'USAGE'
 Usage: asha cockpit [DIR] [--session NAME] [--check|--no-check] [--dry-run]
   DIR         projects root for the coordinator pane (default: current directory)
   --session   tmux session name when created outside tmux (default: asha-cockpit-<dir>)
-  --check     run the preflight only (Claude install health, orchestration doctor, project index)
+  --check     run the preflight only (Claude install health, project index)
   --no-check  open without the preflight
   --dry-run   print the tmux plan instead of running it (no preflight)
 USAGE
 }
 
-# The first dogfood run failed on an uninstalled skill and an unimported jj
-# head; neither is visible from the panes. Refuse to open a cockpit that the
-# coordinator cannot operate, and name the remediation.
+# An uninstalled skill is not visible from the panes. Refuse to open a cockpit
+# the chair cannot operate, and name the remediation.
 asha_cockpit_preflight() { # asha_bin dir
   local asha="$1" dir="$2" failed=0 out
   if out="$("$asha" doctor claude 2>&1)"; then
@@ -31,20 +29,13 @@ asha_cockpit_preflight() { # asha_bin dir
     grep -E "^FAIL" <<<"$out" | head -5 >&2
     failed=1
   fi
-  if out="$("$asha" initiative doctor 2>&1)"; then
-    echo "ok    asha initiative doctor"
-  else
-    echo "FAIL  asha initiative doctor is not ok:" >&2
-    grep -vE "^match" <<<"$out" | head -6 >&2
-    failed=1
-  fi
   local count
-  count="$("$asha" initiative projects --root "$dir" --json 2>/dev/null \
-    | python3 -c 'import json,sys; print(sum(1 for p in json.load(sys.stdin)["projects"] if p["jj_colocated"]))' 2>/dev/null || echo 0)"
+  count="$("$asha" control projects --root "$dir" --json 2>/dev/null \
+    | python3 -c 'import json,sys; print(sum(1 for p in json.load(sys.stdin)["projects"] if p.get("asha_project")))' 2>/dev/null || echo 0)"
   if [[ "$count" =~ ^[0-9]+$ ]] && (( count > 0 )); then
-    echo "ok    $count jj-colocated Asha project(s) under $dir"
+    echo "ok    $count Asha project(s) under $dir"
   else
-    echo "warn  no jj-colocated Asha project under $dir; the coordinator will ask for a path" >&2
+    echo "warn  no Asha project under $dir; the chair will ask for a path" >&2
   fi
   return $failed
 }
@@ -99,13 +90,13 @@ asha_cockpit_main() {
 
   if [[ -n "${TMUX:-}" ]]; then
     step tmux new-window -c "$dir" -n cockpit -- "$asha" claude
-    step tmux split-window -h -c "$dir" -- "$asha" control --initiatives
+    step tmux split-window -h -c "$dir" -- "$asha" control
     step tmux select-pane -L
     return 0
   fi
   if ((dry)) || ! tmux has-session -t "=$session" 2>/dev/null; then
     step tmux new-session -d -s "$session" -c "$dir" -n cockpit -- "$asha" claude
-    step tmux split-window -h -t "$session:cockpit" -c "$dir" -- "$asha" control --initiatives
+    step tmux split-window -h -t "$session:cockpit" -c "$dir" -- "$asha" control
     step tmux select-pane -t "$session:cockpit.0"
   fi
   step tmux attach-session -t "$session"

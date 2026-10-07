@@ -1,8 +1,7 @@
 """flock-owned process loop, CLI and systemd unit for the Control supervisor.
 
-The supervisor starts structured session owners and, until the legacy engine
-retires (L-b), runs its initiative tick. That tick is the only part of the
-engine this module loads, lazily, through ``_initiative_sweep`` and ``tick``.
+The supervisor starts structured session owners. Its sweep runs every
+``_SWEEP_SECONDS``; the retired initiative tick (L-b) is gone.
 """
 
 from __future__ import annotations
@@ -21,27 +20,24 @@ import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .config import ConfigError, ControlConfig, is_canonical_absolute_path, load_config
 from .harness import HarnessError, process_identity, verify_process
 from .process import capture_bytes
 from .store import (
-    StoreError, TaskStore, _close_quietly, _directory_fd, _managed_start,
+    StoreError, _close_quietly, _directory_fd, _managed_start,
     _open_existing_file, _validate_open_file,
 )
 
 
 MAX_STATUS_BYTES = 16 * 1024
-_ERROR_TEXT_LIMIT = 200
 _POLL_SECONDS = 1.0
 _SERVICE_COMMAND_LIMIT = 16 * 1024
 _SERVICE_COMMAND_TIMEOUT = 10
 _SERVICE_NAME = "asha-supervisor.service"
-# Initiative ids are UUIDs, so this dedupe key for a whole-sweep failure
-# cannot collide with one.
-_SWEEP_SUBJECT = "sweep"
+# A queued structured session waits at most this long for its owner.
+_SWEEP_SECONDS = 5.0
 SUPERVISOR_SERVICE_MARKER = (
     "# Managed by asha control supervisor; edit via 'asha control supervisor', "
     "not by hand."
@@ -585,45 +581,17 @@ def _write_status(config: ControlConfig, value: Mapping[str, Any]) -> None:
                 pass
 
 
-def tick(dependencies):
-    """Run one legacy initiative sweep; L-b deletes it with the engine."""
-    from .orchestration.supervisor import tick as initiative_tick
-    return initiative_tick(dependencies)
-
-
-def _initiative_sweep(config: ControlConfig):
-    """The legacy initiative tick's interval and dependency factory (L-b deletes it).
-
-    Its settings live in the engine's ``orchestration`` config block, so ``run``
-    parses that block here, before it takes the lock: a malformed block still
-    refuses ``run``. No other supervisor verb loads the engine.
-    """
-    from .orchestration.cli import reconcile_one_initiative
-    from .orchestration.config import from_control
-    from .orchestration.ingestion import ingest_pending_results
-    from .orchestration.store import InitiativeStore
-    settings = from_control(config)
-
-    def dependencies():
-        catalog = InitiativeStore(settings)
-        return SimpleNamespace(
-            store_factory=lambda _initiative_id: InitiativeStore(settings),
-            control_store=TaskStore(config),
-            now=lambda: datetime.now(timezone.utc),
-            reconcile=reconcile_one_initiative,
-            ingest=ingest_pending_results,
-            list_initiatives=catalog.list_initiatives,
-        )
-
-    return settings.supervisor_interval_seconds, dependencies
-
-
-def _snapshot_marker(config: ControlConfig) -> tuple[int, int] | None:
+def sweep(config: ControlConfig) -> dict[str, Any]:
+    """One pass: start an owner for each structured session with work queued."""
+    from .sessions import ensure_owners
+    counts: dict[str, Any] = {"errors": 0}
     try:
-        metadata = (config.runtime_dir / "events").stat()
-    except (FileNotFoundError, NotADirectoryError):
-        return None
-    return metadata.st_ino, metadata.st_mtime_ns
+        counts.update(ensure_owners(config))
+    except (StoreError, OSError, ValueError) as exc:
+        counts["errors"] += 1
+        counts["managed_error"] = _exception_message(exc)
+        print(f"asha supervisor: managed session delivery unavailable: {exc}", file=sys.stderr)
+    return {"finished_at": _timestamp(datetime.now(timezone.utc)), "counts": counts}
 
 
 def _emit(payload: Mapping[str, Any], json_output: bool) -> None:
@@ -635,43 +603,7 @@ def _emit(payload: Mapping[str, Any], json_output: bool) -> None:
         print(f"asha control supervisor: {payload['message']}", flush=True)
 
 
-def _bounded_text(value: Any) -> str:
-    """One printable journal line: a report is data, not a trusted log record."""
-    return "".join(
-        character if character.isprintable() else "?" for character in str(value)
-    )[:_ERROR_TEXT_LIMIT]
-
-
-def _emit_tick_errors(
-    summary: Mapping[str, Any], reported: Mapping[str, str], json_output: bool,
-) -> dict[str, str]:
-    """Print each tick error once and return the set to dedupe the next tick against.
-
-    The per-initiative errors are the authority, not the derived counts. Errored
-    subjects absent from this tick drop out of the returned set, so a recurrence
-    after a clean tick prints again instead of staying deduped forever.
-    """
-    current: dict[str, str] = {}
-    if summary.get("sweep_error"):
-        current[_SWEEP_SUBJECT] = _bounded_text(summary["sweep_error"])
-    for item in summary.get("initiatives") or ():
-        if item.get("error"):
-            current[_bounded_text(item.get("initiative_id"))] = _bounded_text(
-                item["error"],
-            )
-    for subject, text in current.items():
-        if reported.get(subject) != text:
-            _emit({
-                "tick_error": True, "subject": subject, "error": text,
-                "message": f"tick error: {subject}: {text}",
-            }, json_output)
-    return current
-
-
-def run_supervisor(
-    config: ControlConfig, *, deps=None, json_output: bool = False,
-) -> int:
-    interval_seconds, default_dependencies = _initiative_sweep(config)
+def run_supervisor(config: ControlConfig, *, json_output: bool = False) -> int:
     # A daemon must not pin its caller's cwd or mount.
     os.chdir(Path.home())
     with _exclusive_lock(config) as acquired:
@@ -699,45 +631,16 @@ def run_supervisor(
             signum: signal.signal(signum, request_stop)
             for signum in (signal.SIGTERM, signal.SIGINT)
         }
-        dependencies = deps or default_dependencies()
-        last_marker = _snapshot_marker(config)
         next_regular = 0.0
-        first = True
-        reported: dict[str, str] = {}
         try:
-            while True:
-                marker = _snapshot_marker(config)
-                monotonic = time.monotonic()
-                if first or monotonic >= next_regular or marker != last_marker:
-                    last_marker = marker
-                    summary = tick(dependencies)
-                    if deps is None:
-                        # Additive managed-session domain; legacy scheduling stays authoritative.
-                        from .sessions import ensure_owners
-                        try:
-                            summary["counts"].update(ensure_owners(config))
-                        except (StoreError, OSError, ValueError) as exc:
-                            summary["counts"]["errors"] += 1
-                            summary["counts"]["managed_error"] = _exception_message(exc)
-                            print(f"asha supervisor: managed session delivery unavailable: {exc}", file=sys.stderr)
-                    # Report before the status write: the errors this names are
-                    # exactly the ones the status file cannot carry, so they must
-                    # reach the journal even if that write then fails.
-                    try:
-                        reported = _emit_tick_errors(summary, reported, json_output)
-                    except Exception:
-                        # Visibility never ends the sweep. Retaining the prior set
-                        # retries the unprinted line on the next tick.
-                        pass
+            while not stopping:
+                if time.monotonic() >= next_regular:
+                    summary = sweep(config)
                     retained["last_tick_at"] = summary["finished_at"]
                     retained["last_tick_summary"] = summary["counts"]
                     _write_status(config, retained)
-                    next_regular = time.monotonic() + interval_seconds
-                    first = False
-                    if stopping:
-                        break
-                if stopping:
-                    break
+                    next_regular = time.monotonic() + _SWEEP_SECONDS
+                    continue
                 time.sleep(_POLL_SECONDS)
         finally:
             for signum, handler in prior.items():
