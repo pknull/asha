@@ -82,12 +82,6 @@ the plain harness once. Direct Codex installation also supports absent
 `config.toml`; Asha never fabricates or edits it. Wrapper bootstrap prerequisites
 are distinct from native hook registration.
 
-If an installer finds pre-v2 global learning sources, it points to the
-reviewed `/session:consolidate` path rather than interpreting them. Migration
-preserves those sources and writes `~/.asha/learnings/.migration-v2.json` only
-after the hash-bound review commits; a valid marker suppresses repeat upgrade
-warnings without deleting the evidence or backups.
-
 ### One-time migration from pre-manifest installs
 
 Generated Codex, Copilot, and OpenCode files, Codex `hooks.json` included,

@@ -347,41 +347,6 @@ parse_args() {
 # shellcheck source=lib/installer-launchers.sh
 source "$MARKET_ROOT/lib/installer-launchers.sh"
 
-# Detect every shipped legacy learning store. Installation never migrates
-# authority: root OKF concepts, the old archive, and the flat file must be
-# reviewed item by item through /session:consolidate.
-_detect_legacy_learnings() {
-  local flat="${ASHA_HOME:-$HOME/.asha}/learnings.md"
-  local bundle="${ASHA_HOME:-$HOME/.asha}/learnings"
-  local archive="${ASHA_HOME:-$HOME/.asha}/learnings-archive"
-  local marker="$bundle/.migration-v2.json"
-  # Reviewed migration is deliberately source-preserving. Once the migration
-  # manager has committed its global marker, the remaining root/archive files
-  # are evidence and rollback material—not an unfinished upgrade.
-  if [[ -f "$marker" ]] && jq -e '
-      .version == 2 and .status == "reviewed-migration-complete" and
-      (.review_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
-    ' "$marker" >/dev/null 2>&1; then
-    return 0
-  fi
-  local found=0
-  [[ -f "$flat" ]] && found=1
-  if [[ -d "$bundle" ]]; then
-    local concept
-    for concept in "$bundle"/*.md; do
-      [[ -f "$concept" && "$(basename "$concept")" != "index.md" ]] || continue
-      found=1
-      break
-    done
-  fi
-  [[ -d "$archive" ]] && compgen -G "$archive/*.md" >/dev/null 2>&1 && found=1
-  [[ $found -eq 1 ]] || return 0
-  say ""
-  say "NOTE: legacy learning records detected (root OKF bundle, archive, or flat store)."
-  say "      They remain untouched and do not acquire v2 authority automatically."
-  say "      Run /session:consolidate to inventory and review each item before migration."
-}
-
 # ---------------------------------------------------------------------------
 # Hook registration — the installer OWNS settings.json .hooks for asha
 # ---------------------------------------------------------------------------
@@ -688,8 +653,6 @@ asha_install_main() {
   else
     launcher_failed=1
   fi
-
-  _detect_legacy_learnings
 
   say ""
   say "install summary:"

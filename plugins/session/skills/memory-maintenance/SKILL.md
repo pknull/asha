@@ -1,6 +1,6 @@
 ---
 name: session-memory-maintenance
-description: "Validate or deliberately maintain Asha Memory v2 publication and recovery files. Use for activeContext.md, decisions.md, project_id, recovery snapshots, learning lifecycle, and reviewed legacy migration."
+description: "Validate or deliberately maintain Asha Memory v2 publication and recovery files. Use for activeContext.md, decisions.md, project_id, recovery snapshots, and learning lifecycle."
 ---
 
 # Memory v2 Maintenance
@@ -54,15 +54,11 @@ most three candidates per explicit save. This is a user-controlled heuristic
 over local evidence, not a security authority. Contradiction and retirement are
 visible state transitions; neither silently deletes a record.
 
-## Legacy migration
+## Legacy Memory
 
-Use `/session:consolidate`. Inventory first, present `accept`/`reject`/`defer`
-per item, wait for review, apply the typed whole review idempotently, and
-use `migrate-amend` to atomically stage decisions plus both exact publication
-digests. Existing publication targets must be accepted hash-bound sources;
-absent targets require explicit create mappings. Preserve the captured reviewed
-bytes in timestamped private backup. Recovery conflicts change nothing and keep
-the global transaction journal and private backups for repair. Canonical
+The reviewed v1 migration command was retired in session 2.7.0. A project whose `activeContext.md` or `decisions.md` is not valid v2
+cannot be initialized until those files are rewritten in the v2 format. Legacy
+files beside them stay in place; nothing reads or deletes them. Canonical
 workspace `knowledge/` is outside the removed operational-memory catalogue.
 
 ## Validation

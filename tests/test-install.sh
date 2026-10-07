@@ -788,33 +788,27 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 6: legacy learning stores point to the reviewed v2 migration path
+# Test 6: the installer no longer inventories v1 learning stores (B7)
 # ---------------------------------------------------------------------------
-echo "--- test 6: legacy learning migration guidance is current ---"
+echo "--- test 6: retired v1 learning migration leaves legacy stores alone ---"
 mkdir -p "$SANDBOX/.asha/learnings" "$SANDBOX/.asha/learnings-archive"
 printf '%s\n' '---' 'id: root-concept' '---' > "$SANDBOX/.asha/learnings/root-concept.md"
 printf '%s\n' '---' 'id: old-concept' '---' > "$SANDBOX/.asha/learnings-archive/old-concept.md"
 printf '# Legacy flat learning\n' > "$SANDBOX/.asha/learnings.md"
-legacy_out="$(run_install --target copilot 2>&1)"
-if [[ "$legacy_out" == *"/session:consolidate"* \
-   && "$legacy_out" != *"migrate_learnings_to_okf.py"* ]]; then
-  ok "installer inventories legacy learning stores through reviewed consolidation"
+legacy_sums() {
+  (cd "$SANDBOX/.asha" && find learnings learnings-archive learnings.md -type f -exec sha256sum {} + | sort)
+}
+legacy_before="$(legacy_sums)"
+legacy_out="$(run_install --target copilot 2>&1)"; legacy_rc=$?
+if [[ $legacy_rc -eq 0 \
+   && "$legacy_out" != *"legacy learning records detected"* \
+   && "$legacy_out" != *"/session:consolidate"* \
+   && "$legacy_before" == "$(legacy_sums)" \
+   && ! -e "$SANDBOX/.asha/learnings/.migration-v2.json" ]]; then
+  ok "installer neither inventories nor touches v1 learning stores"
 else
-  fail "installer inventories legacy learning stores through reviewed consolidation"
+  fail "installer neither inventories nor touches v1 learning stores (rc=$legacy_rc)"
 fi
-cat > "$SANDBOX/.asha/learnings/.migration-v2.json" <<'JSON'
-{"version":2,"status":"reviewed-migration-complete","review_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
-JSON
-migrated_out="$(run_install --target copilot 2>&1)"
-[[ "$migrated_out" != *"legacy learning records detected"* \
-   && "$migrated_out" != *"/session:consolidate"* ]] \
-  && ok "reviewed migration marker silences preserved legacy-source guidance" \
-  || fail "reviewed migration marker silences preserved legacy-source guidance"
-printf '{malformed}\n' > "$SANDBOX/.asha/learnings/.migration-v2.json"
-malformed_marker_out="$(run_install --target copilot 2>&1)"
-[[ "$malformed_marker_out" == *"/session:consolidate"* ]] \
-  && ok "malformed migration marker cannot suppress legacy guidance" \
-  || fail "malformed migration marker cannot suppress legacy guidance"
 
 # ---------------------------------------------------------------------------
 # Test 7: imported store ownership covers retirement and uninstall

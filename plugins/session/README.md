@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 2.6.0
+**Version**: 2.7.0
 
 Compact explicit memory publication, bounded crash recovery, reviewed learning
 lifecycle, policy guardrails, guarded loops, and workspace management.
@@ -61,7 +61,6 @@ than 90 days.
 | `save` | Sole semantic publisher; validate, commit, and push explicitly |
 | `status` | Report publication validation, newest recovery hint, and learning states |
 | `silence` / `restore` | Disable or re-enable all persistence |
-| `consolidate` | Reviewed, idempotent, non-destructive legacy migration |
 | `loop` | Guarded autonomous workflow with explicit checkpoints |
 
 ## Agents
@@ -72,8 +71,8 @@ than 90 days.
 | `process-router` | Recommend a registry-backed process without executing it |
 | `capability-broker` | Match tasks to verified harness capabilities |
 
-Removed in v2: memory steward and curator. Context is now direct and bounded;
-migration review is owned by `/session:consolidate`.
+Removed in v2: memory steward and curator. Context is now direct and bounded.
+The reviewed v1 migration (`/session:consolidate`) was retired in 2.7.0.
 
 ## Skills
 
@@ -134,6 +133,18 @@ for the repository; workspace state answers what coordinates the repositories.
   checks required by `AGENTS.md`.
 
 ## Version history
+
+### 2.7.0
+
+Retired the one-shot v1-to-v2 migration (subtraction batch B7, Keeper K5):
+`/session:consolidate` and the learning manager's `migrate-plan`,
+`migrate-amend` and `migrate-apply` verbs, with their journals, receipts and
+marker. Initialization still refuses a published file that is not valid v2;
+rewrite it in the v2 format first. The learning manager follows links inside
+the bundle (a symlinked bundle root was already supported) and no longer
+checks the bundle target's owner. The installer no longer inventories v1
+learning stores. Reinstall each harness (`asha install <target>`) to prune the
+retired command's link.
 
 ### 2.6.0
 

@@ -94,30 +94,16 @@ older than 90 days to retired; no record
 is silently deleted. Contradiction is an explicit transition back to candidate;
 retirement is explicit and keeps the record.
 
-## Migration
+## Legacy Memory
 
-`/session:consolidate` inventories legacy inputs and presents an itemized
-accept/reject/defer plan. It inventories the live root OKF bundle, legacy
-archive, and flat files per learning; every item is bound to its source hash.
-The private plan persists at `Work/memory-migration/review.json` for later
-review and is never replaced without explicit authorization. One typed
-whole-review apply preflights the complete batch, publishes project state,
-applies learning rows, and binds both exact publication draft digests plus both
-typed publication roles into review and receipt identity. Failure recovery uses
-a global, durable per-record journal with preimage hashes and
-compare-before-rollback. Existing publication targets must themselves be
-accepted hash-bound sources; absent targets require explicit create mappings.
-Recovery preflights the project pair/config/ignore, learning records, backups,
-receipt, silence state, and journal as one unit. A conflict changes nothing and
-preserves repair evidence. Migration never snapshots or replaces the global
-learning tree. Accepted sources receive exact-byte, hash-bound timestamped private backups;
-original, rejected, and deferred material remains in place.
-
-After a reviewed migration commits, the learning manager writes
-`~/.asha/learnings/.migration-v2.json`. The marker is informational rather
-than migration authority: a valid marker only tells the installer to stop
-warning about deliberately preserved legacy sources. The hash-bound receipt
-and timestamped backups remain the recovery evidence.
+The reviewed v1-to-v2 migration (`/session:consolidate`, the learning
+manager's `migrate-plan`, `migrate-amend` and `migrate-apply`) was retired on
+2026-10-07 after it had run on the one home that runs Asha. Initialization
+still refuses a published file that is not valid v2; rewrite it in the v2
+format first. Legacy sources, earlier review plans and private backups under
+`Work/memory-migration/` stay where they are, and the narrow ignore rule for
+that directory remains. `~/.asha/learnings/.migration-v2.json` is an inert
+record of the completed migration.
 
 ## Separate workspace planes
 

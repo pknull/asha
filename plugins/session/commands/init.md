@@ -37,10 +37,11 @@ untracks existing files nor changes save scope; Git cleanup is a separate step.
 
 Initialization preserves an existing `project_id`, existing published v2
 files, and all legacy material. If either published path contains a legacy or
-invalid v2 handoff, initialization fails before changing the config and routes
-that material to explicit `/session:consolidate`; it never deletes or silently
-republishes it. It adds narrow ignores for `/Work/session-state/`, the durable
-private `/Work/memory-migration/` review plan, and
+invalid v2 handoff, initialization fails before changing the config; rewrite
+that file in the v2 format first. It never deletes or silently republishes
+legacy material. It adds narrow ignores for `/Work/session-state/`, the private
+`/Work/memory-migration/` directory that holds earlier migration reviews and
+backups, and
 `/.asha/control-task.json`, `/.asha/result.json`, and `/.asha/outbox/`.
 These fixed Control transport paths do not ignore the rest of `.asha/`.
 Initialization upgrades legacy marker-only blocks idempotently and preserves

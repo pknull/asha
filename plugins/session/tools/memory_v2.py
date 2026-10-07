@@ -649,17 +649,17 @@ def initialize(project_dir: Path) -> str:
     secure_path(root, "Work/session-state/.keep", create_parents=True)
     secure_path(root, ".gitignore", create_parents=True)
     # Existing publications are user data.  Preserve them, but refuse to mark
-    # a legacy/invalid handoff as v2 until /session:consolidate reviews it.
+    # a legacy/invalid handoff as v2 until it is rewritten in the v2 format.
     if active.exists():
         try:
             validate_active_context(active.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, ValueError) as exc:
-            raise ValueError("legacy activeContext requires reviewed migration before v2 init") from exc
+            raise ValueError("legacy activeContext must be rewritten in the v2 format before v2 init") from exc
     if decisions.exists():
         try:
             validate_decisions(decisions.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, ValueError) as exc:
-            raise ValueError("legacy decisions file requires reviewed migration before v2 init") from exc
+            raise ValueError("legacy decisions file must be rewritten in the v2 format before v2 init") from exc
     config.update({"initialized": True, "memory_version": 2, "project_id": project_id})
     atomic_write(config_path, json.dumps(config, indent=2, sort_keys=True) + "\n")
     if not active.exists():
