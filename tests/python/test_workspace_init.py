@@ -128,15 +128,12 @@ class BootstrapCases(InitFixture):
         self.assertIn("project_id_invalid", {item["code"] for item in report["errors"]})
         self.assertEqual('{"project_id":"   "}\n', config.read_text())
 
-    def test_nested_child_repository_scaffolds_parent_knowledge_directories(self):
+    def test_nested_child_repository_initializes_without_touching_it(self):
         nested = self.repo("groups/service")
 
         report = self.init(repositories=["groups/service"])
 
         self.assertTrue(report["ok"], report)
-        self.assertTrue(
-            (self.ws / "knowledge" / "repos" / "groups" / "service" / "activeContext.md").is_file()
-        )
         self.assertEqual(_git("status", "--porcelain", cwd=nested), "")
 
     def test_two_child_workspace_scaffolds_without_touching_children(self):
@@ -155,7 +152,7 @@ class BootstrapCases(InitFixture):
         self.assertTrue((self.ws / "Memory" / "decisions.md").is_file())
         self.assertFalse((self.ws / "Memory" / "MEMORY.md").exists())
         self.assertTrue((self.ws / "memory-local").is_dir())
-        self.assertTrue((self.ws / "knowledge" / "README.md").is_file())
+        self.assertTrue((self.ws / "knowledge").is_dir())
         self.assertTrue((self.ws / "AGENTS.md").is_file())
         self.assertTrue((self.ws / "CLAUDE.md").is_file())
         self.assertTrue((self.ws / ".github" / "copilot-instructions.md").is_file())
@@ -228,7 +225,7 @@ class BootstrapCases(InitFixture):
             ["git", "-C", str(self.ws), "check-ignore", "--no-index", "-q", ".asha/config.json"]
         )
         self.assertEqual(private.returncode, 0)
-        for rel in ("Memory/activeContext.md", "knowledge/repos/service/activeContext.md"):
+        for rel in ("Memory/activeContext.md", "knowledge/repos/service/notes.md"):
             visible = subprocess.run(
                 ["git", "-C", str(self.ws), "check-ignore", "--no-index", "-q", rel]
             )
@@ -339,7 +336,7 @@ class BootstrapCases(InitFixture):
         self.assertTrue(report["ok"], report)
         self.assertEqual(path.read_bytes(), before)
         self.assertTrue((self.ws / "private" / "memory").is_dir())
-        self.assertTrue((self.ws / "kb" / "README.md").is_file())
+        self.assertTrue((self.ws / "kb").is_dir())
         self.assertIn("private/memory/", (self.ws / ".gitignore").read_text().splitlines())
 
     def test_manifest_strings_are_rendered_as_single_line_inert_labels(self):
@@ -427,7 +424,7 @@ class MemoryVisibilityCases(InitFixture):
         self.configure("tracked")
         self.assertTrue(self.initialize()["ok"])
         self.assertEqual(before, (self.ws / ".gitignore").read_bytes())
-        for rel in ("Memory/activeContext.md", "Memory/decisions.md", "knowledge/README.md",
+        for rel in ("Memory/activeContext.md", "Memory/decisions.md", "knowledge/notes.md",
                     ".asha/workspace.json", ".asha/workspace-init.json"):
             self.assertEqual(1, subprocess.run(
                 ["git", "-C", str(self.ws), "check-ignore", "--no-index", "-q", rel],
@@ -550,6 +547,57 @@ class MemoryVisibilityCases(InitFixture):
                 self.assertEqual(before, self.generated_snapshot())
 
 
+class KnowledgeToolRemovalCases(InitFixture):
+    """The knowledge, promotion, work-item and worktree tools are removed (N3).
+
+    Init still declares the manifest's shared root as a plain directory and
+    keeps it in the ignore policy; what lives there is the user's own notes.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.repo("frontend")
+        self.repo("service")
+
+    def test_init_creates_the_shared_root_without_knowledge_scaffolding(self):
+        report = self.init()
+        self.assertTrue(report["ok"], report)
+        self.assertTrue((self.ws / "knowledge").is_dir())
+        self.assertEqual([], list((self.ws / "knowledge").iterdir()))
+        self.assertFalse(any(rel.startswith("knowledge/") for rel in report["changed"]), report["changed"])
+        metadata = json.loads((self.ws / wi.OWNERSHIP_PATH).read_text())
+        self.assertNotIn("knowledge_root", metadata["managed"])
+
+    def test_doctor_and_fix_leave_existing_shared_notes_alone(self):
+        self.assertTrue(self.init()["ok"])
+        shared = self.ws / "knowledge"
+        notes = {
+            ".asha-owned.json": b'{"files": {"README.md": "' + b"0" * 64 + b'"}, "owner": "asha-workspace-knowledge", "version": 1}\n',
+            "README.md": b"my own index\n",
+            "cross-cutting/notes.md": b"plain note without frontmatter\n",
+        }
+        for rel, content in notes.items():
+            (shared / rel).parent.mkdir(parents=True, exist_ok=True)
+            (shared / rel).write_bytes(content)
+        report = wi.doctor_workspace(self.ws)
+        self.assertTrue(report["ok"], report)
+        self.assertFalse([item for item in report["errors"] + report["warnings"]
+                          if item["code"].startswith("knowledge")], report)
+        fixed = wi.doctor_workspace(self.ws, fix=True)
+        self.assertTrue(fixed["ok"], fixed)
+        self.assertFalse(fixed["fixed"], fixed)
+        for rel, content in notes.items():
+            self.assertEqual(content, (shared / rel).read_bytes(), rel)
+
+    def test_generated_instructions_do_not_teach_removed_tools(self):
+        self.assertTrue(self.init()["ok"])
+        agents = (self.ws / "AGENTS.md").read_text()
+        self.assertNotIn("promotion", agents.lower())
+        self.assertNotIn("README.md", agents)
+        self.assertIn("`knowledge/`", agents)
+        self.assertFalse(hasattr(wi, "wk"))
+
+
 class DiscoveryCases(InitFixture):
     def test_discovery_is_bounded_contained_and_redacts_remote_credentials(self):
         self.repo("frontend", remote="https://token:supersecret@example.com/org/front.git")
@@ -601,7 +649,7 @@ class DoctorCases(InitFixture):
         report = wi.doctor_workspace(self.ws)
         self.assertTrue(report["ok"], report)
         self.assertEqual(report["git_mode"], "none")
-        self.assertFalse(report["promotion_available"])
+        self.assertNotIn("promotion_available", report)
         self.assertEqual(len(report["repositories"]), 2)
         self.assertEqual(report["private_ignore"], "configured-no-git")
 
@@ -648,14 +696,6 @@ class DoctorCases(InitFixture):
         self.assertIn("Read `AGENTS.md`", (self.ws / "CLAUDE.md").read_text())
         self.assertIn("custom/", (self.ws / ".gitignore").read_text())
         self.assertEqual(user.read_text(), "mine\n")
-        self.assertTrue(wi.doctor_workspace(self.ws)["ok"])
-
-    def test_doctor_fix_recreates_missing_managed_knowledge_scaffold(self):
-        shutil.rmtree(self.ws / "knowledge")
-        fixed = wi.doctor_workspace(self.ws, fix=True)
-        self.assertTrue(fixed["fixed"], fixed)
-        self.assertTrue((self.ws / "knowledge" / "README.md").is_file())
-        self.assertTrue((self.ws / "knowledge" / wi.wk.INDEX_FILE).is_file())
         self.assertTrue(wi.doctor_workspace(self.ws)["ok"])
 
     def test_failed_ignore_probe_rolls_back_doctor_fix(self):

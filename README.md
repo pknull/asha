@@ -305,8 +305,8 @@ rules. They are not interchangeable:
 | **Machine state** | This machine | `~/.asha/state/`, `~/.asha/workspaces/`, `~/.asha/cache/` | Never commit; machine-managed | Control session, Room and retired-initiative records, retired task workspaces, rendered persona cache — everything under one `ASHA_HOME` root since the single-root migration |
 | **Repository operational memory** | One repository | `<repo>/Memory/` | Explicit save commit | Four-section handoff and current binding decisions |
 | **Workspace operational memory** | A group of repositories | `<workspace>/Memory/` | Explicit workspace-scope save | Cross-repository handoff and binding decisions |
-| **Private workspace memory** | User-local workspace material | `<workspace>/memory-local/` | Never commit | Private notes, work-item state, material not ready for shared review |
-| **Canonical workspace knowledge** | Shared/team workspace knowledge | `<workspace>/knowledge/` | Explicit reviewed promotion; pull request by default | Stable cross-repository documentation and repository knowledge indexes |
+| **Private workspace memory** | User-local workspace material | `<workspace>/memory-local/` | Never commit | Private notes, material not ready for shared review |
+| **Shared workspace notes** | Shared/team workspace notes | `<workspace>/knowledge/` (manifest `shared_root`) | Ordinary commits; Asha only keeps it trackable | Cross-repository documentation as plain Markdown |
 
 Harness-owned memory, such as Claude's auto-memory, is a separate sixth store.
 Asha does not write it or depend upon it.
@@ -367,20 +367,13 @@ Within a workspace:
 The workspace root has no implicit active child. A repository-scoped save from
 the root fails with guidance rather than guessing. Workspace SessionStart
 context is bounded to the operational handoff; private `memory-local/` and
-canonical `knowledge/` bodies are not dumped into every prompt.
+shared `knowledge/` notes are not dumped into every prompt.
 
-Canonical publication is deliberate:
-
-```bash
-asha workspace knowledge lint --start .
-asha workspace promote plan --help
-asha workspace promote apply --help
-asha workspace promote publish --help   # reviewed branch + draft PR; never merge
-```
-
-Promotion commands require explicit review artifacts and confirmations. Use
-`asha workspace --help` and the leaf command's `--help` for exact flags.
-The complete ownership, read, write, and save model is documented in
+The shared `knowledge/` folder is ordinary Markdown: workspace init creates it
+empty, the ignore policy keeps it trackable (or ignored under private
+visibility), and Asha neither lints nor writes it. Use `asha workspace --help`
+and each leaf command's `--help` for exact flags. The complete ownership, read,
+write, and save model is documented in
 [Memory architecture](docs/memory-architecture.md).
 
 ---

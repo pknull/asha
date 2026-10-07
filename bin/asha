@@ -548,8 +548,6 @@ Usage:
   asha workspace status [...]      inspect workspace state and active repository
   asha workspace init|discover|doctor [...]
                                    bootstrap, discover, or validate a workspace
-  asha workspace knowledge|promote|worktree|work-item [...]
-                                   manage shared knowledge and optional coordination
   asha room open|list|attach|close [...]
                                    manage persistent project conversations
   asha initiative list|show|export [...]

@@ -65,7 +65,7 @@ if [[ -n "$PYTHON_CMD" && -f "$PLUGIN_ROOT/tools/memory_v2.py" ]]; then
   fi
 fi
 
-# Canonical workspace knowledge is independent of the removed Memory catalogue.
+# Workspace context: the manifest's metadata plus its operational publication.
 if [[ "${ASHA_WS_INJECT:-1}" != "0" \
       && ! -f "$PROJECT_DIR/Work/markers/workspace-context-off" \
       && ! -f "$PROJECT_DIR/Work/markers/nudge-ws-context-off" \

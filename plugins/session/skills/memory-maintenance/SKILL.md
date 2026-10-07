@@ -58,8 +58,8 @@ visible state transitions; neither silently deletes a record.
 
 The reviewed v1 migration command was retired in session 2.7.0. A project whose `activeContext.md` or `decisions.md` is not valid v2
 cannot be initialized until those files are rewritten in the v2 format. Legacy
-files beside them stay in place; nothing reads or deletes them. Canonical
-workspace `knowledge/` is outside the removed operational-memory catalogue.
+files beside them stay in place; nothing reads or deletes them. A workspace's
+shared `knowledge/` notes are outside the removed operational-memory catalogue.
 
 ## Validation
 
