@@ -646,7 +646,7 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
             except (OSError, UnicodeDecodeError, ValueError) as exc:
                 report["errors"] = [_issue(
                     "legacy_memory_requires_migration",
-                    f"existing {filename} is not Memory v2; run /session:consolidate: {exc}",
+                    f"existing {filename} is not Memory v2; rewrite it in the v2 format first: {exc}",
                     path=rel,
                 )]
                 return report

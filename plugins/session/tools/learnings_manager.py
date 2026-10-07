@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import fcntl
 import hashlib
 import json
@@ -12,12 +11,10 @@ import os
 import re
 import sys
 import tempfile
-import shutil
-import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -55,7 +52,6 @@ ACTIVATION_SESSIONS = 3
 ACTIVATION_PROJECTS = 2
 MAX_PROPOSALS_PER_SAVE = 3
 CANDIDATE_TTL_DAYS = 90
-MIGRATION_MARKER = ".migration-v2.json"
 
 
 @dataclass
@@ -106,7 +102,7 @@ def _path(learning: Learning) -> Path:
 
 
 def _learning_root() -> Path:
-    """Return a stable root, allowing an intentional top-level dotfiles link."""
+    """Return a stable root, following a top-level link such as a dotfiles bundle."""
     root = learnings_dir()
     if not root.is_symlink():
         return root
@@ -116,8 +112,6 @@ def _learning_root() -> Path:
         raise ValueError("broken symlinked learning bundle rejected") from exc
     if not resolved.is_dir():
         raise ValueError("symlinked learning bundle target must be a directory")
-    if resolved.stat().st_uid != os.getuid():
-        raise ValueError("symlinked learning bundle target must be owned by the current user")
     return resolved
 
 
@@ -125,17 +119,11 @@ def _secure_learning_child(relative: str, *, create_parents: bool = False) -> Pa
     relative_path = Path(relative)
     if relative_path.is_absolute() or ".." in relative_path.parts:
         raise ValueError("learning path escapes global bundle")
-    cursor = _learning_root()
-    if cursor.is_symlink():
-        raise ValueError("symlinked learning bundle rejected")
-    for part in relative_path.parts:
-        cursor = cursor / part
-        if cursor.is_symlink():
-            raise ValueError(f"symlinked learning transaction root rejected: {cursor}")
+    # The local user owns the bundle; links inside it are their layout
+    # (threat model, 2026-10-05), so they are followed like any path.
+    cursor = _learning_root().joinpath(*relative_path.parts)
     if create_parents:
         cursor.parent.mkdir(parents=True, exist_ok=True)
-        if cursor.parent.is_symlink():
-            raise ValueError(f"symlinked learning transaction root rejected: {cursor.parent}")
     return cursor
 
 
@@ -182,13 +170,6 @@ def _unlink_durable(path: Path, *, missing_ok: bool = True) -> None:
         _fsync_directory(path.parent)
 
 
-def _rmtree_durable(path: Path) -> None:
-    if path.exists():
-        parent = path.parent
-        shutil.rmtree(path)
-        _fsync_directory(parent)
-
-
 def _secure_learning_roots(*, create: bool = False) -> None:
     """Validate all v2 learning control/state roots before any write."""
     for relative in (".transactions/.root", *(f"{state}/.root" for state in STATES)):
@@ -230,18 +211,15 @@ def _parse(path: Path) -> Learning:
 
 @contextmanager
 def _global_lock(*, recover: bool = True):
-    # Keep the coordination inode outside the legacy root OKF corpus. A
-    # read-only render before reviewed migration must not alter that bundle.
+    # Keep the coordination inode outside the bundle so a read-only render
+    # never alters it.
     learnings_dir().parent.mkdir(parents=True, exist_ok=True)
     lock_parent = learnings_dir().parent.resolve(strict=True)
     lock = lock_parent / ".asha-learnings-v2.lock"
-    if lock.is_symlink():
-        raise ValueError(f"symlinked learning lock rejected: {lock}")
-    fd = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         if recover:
-            _recover_migration_transactions_unlocked()
             _recover_transitions_unlocked()
         elif _secure_learning_child(".transactions").is_dir() and any(
                 _secure_learning_child(".transactions").glob("*.json")):
@@ -265,10 +243,8 @@ def _recover_transitions_unlocked() -> None:
         return
     recovered = False
     for journal in sorted(directory.glob("*.json")):
-        if journal.name.startswith("migration-"):
-            continue
         try:
-            if journal.is_symlink() or not re.fullmatch(r"[a-z0-9][a-z0-9-]*\.json", journal.name):
+            if not re.fullmatch(r"[a-z0-9][a-z0-9-]*\.json", journal.name):
                 raise ValueError
             record = json.loads(journal.read_text(encoding="utf-8"))
             name = str(record["name"])
@@ -456,7 +432,7 @@ def propose(learning_id: str, trigger: str, action: str, *, project_dir: Path,
             learning = Learning(learning_id.strip(), new_trigger, new_action,
                                 created=_today(), updated=_today())
         if learning.state == "retired":
-            raise ValueError("retired learning requires reviewed migration or a new id")
+            raise ValueError("retired learning requires a new id")
         if learning.state == "active" and (
                 (new_trigger and new_trigger != learning.trigger) or
                 (new_action and new_action != learning.action)):
@@ -694,767 +670,6 @@ def expire_candidates(*, project_dir: Path, days: int = CANDIDATE_TTL_DAYS) -> l
     return expired
 
 
-_FLAT_ENTRY_RE = re.compile(
-    r"^###\s+(?P<id>[A-Za-z0-9_-]+)\s*$\n(?P<body>.*?)(?=^###\s+|^##\s+|\Z)",
-    re.MULTILINE | re.DOTALL,
-)
-
-
-def _migration_items_for_file(candidate: Path, *, archived: bool) -> list[dict[str, Any]]:
-    raw = candidate.read_bytes()
-    source_hash = hashlib.sha256(raw).hexdigest()
-    base = {
-        "source": str(candidate.resolve()),
-        "source_sha256": source_hash,
-        "source_bytes": len(raw),
-        "legacy_kind": "archive" if archived else (
-            "flat" if candidate.name in ("learnings.md", "learnings-archive.md") else "okf"),
-        "decision": "defer",
-        "proposed_state": "retired" if archived else "candidate",
-    }
-    if candidate.name in ("activeContext.md", "decisions.md"):
-        base.update({
-            "item_type": "project-publication",
-            "publication_role": "activeContext" if candidate.name == "activeContext.md" else "decisions",
-        })
-        return [base]
-    base["item_type"] = "legacy-evidence"
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return [base]
-    if candidate.name not in ("learnings.md", "learnings-archive.md"):
-        trigger = re.search(r"^\*\*Trigger:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
-        action = re.search(r"^\*\*Action:\*\*\s*(.+?)\s*$", text, re.MULTILINE)
-        if trigger and action:
-            base["item_type"] = "learning"
-            base["proposal"] = {
-                "id": _slug(candidate.stem),
-                "trigger": trigger.group(1).strip(),
-                "action": action.group(1).strip(),
-                "reason": f"Reviewed legacy migration from {candidate.name}",
-            }
-        return [base]
-    entries: list[dict[str, Any]] = []
-    for match in _FLAT_ENTRY_RE.finditer(text):
-        body = match.group("body")
-        trigger = re.search(r"^- \*\*Trigger\*\*:\s*(.+?)\s*$", body, re.MULTILINE)
-        action = re.search(r"^- \*\*Action\*\*:\s*(.+?)\s*$", body, re.MULTILINE)
-        fragment = match.group(0)
-        item = dict(base)
-        item.update({
-            "item_type": "learning",
-            "source_fragment": match.group("id"),
-            "source_fragment_sha256": hashlib.sha256(fragment.encode("utf-8")).hexdigest(),
-            "proposal": {
-                "id": _slug(match.group("id")),
-                "trigger": trigger.group(1).strip() if trigger else "",
-                "action": action.group(1).strip() if action else "",
-                "reason": f"Reviewed legacy migration from {candidate.name}#{match.group('id')}",
-            },
-        })
-        entries.append(item)
-    return entries or [base]
-
-
-def migrate_plan(legacy_paths: Iterable[Path], *, project_dir: Path) -> dict[str, Any]:
-    """Inventory legacy inputs without changing or deleting them."""
-    _assert_not_silenced(project_dir)
-    items: list[dict[str, Any]] = []
-    seen: set[Path] = set()
-    for supplied in legacy_paths:
-        path = Path(supplied).expanduser()
-        if not path.exists():
-            continue
-        if path.is_dir():
-            candidates = sorted(item for item in path.rglob("*") if item.is_file())
-        else:
-            candidates = [path]
-        for candidate in candidates:
-            resolved = candidate.resolve()
-            if resolved in seen or candidate.name == "index.md" or candidate.name.startswith("."):
-                continue
-            relative_parts = candidate.relative_to(path).parts if path.is_dir() else ()
-            if relative_parts and (relative_parts[0] in STATES or
-                                   any(part.startswith(".") for part in relative_parts)):
-                continue
-            seen.add(resolved)
-            archived = "archive" in "-".join(part.lower() for part in candidate.parts)
-            items.extend(_migration_items_for_file(candidate, archived=archived))
-    return {"version": 2, "created_at": datetime.now(timezone.utc).isoformat(), "items": items}
-
-
-def write_migration_plan(review: dict[str, Any], *, project_dir: Path,
-                         output: Path | None = None, replace: bool = False) -> Path:
-    """Atomically stage a private review plan without truncating prior review."""
-    root = _assert_not_silenced(project_dir)
-    import memory_v2
-    memory_v2.ensure_private_ignores(root)
-    directory = secure_path(root, "Work/memory-migration/.keep", create_parents=True).parent
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    desired = output or (directory / "review.json")
-    desired = Path(desired)
-    try:
-        desired.resolve(strict=False).relative_to(directory.resolve(strict=True))
-    except (OSError, ValueError) as exc:
-        raise ValueError("migration review path must remain under Work/memory-migration") from exc
-    if desired.exists() and not replace:
-        raise ValueError(f"existing migration review preserved: {desired}")
-    _atomic(desired, json.dumps(review, ensure_ascii=False, indent=2) + "\n")
-    os.chmod(desired, 0o600)
-    return desired
-
-
-def amend_migration_plan(review: dict[str, Any], *, project_dir: Path, output: Path,
-                         active_context: str, decisions: str) -> Path:
-    """Bind reviewed drafts and atomically replace an existing private plan."""
-    import memory_v2
-
-    memory_v2.validate_active_context(active_context)
-    memory_v2.validate_decisions(decisions)
-    if not isinstance(review, dict) or review.get("version") != 2 or not isinstance(review.get("items"), list):
-        raise ValueError("invalid migration review format")
-    if not Path(output).is_file():
-        raise ValueError("migrate-amend requires an existing durable migration plan")
-    amended = json.loads(json.dumps(review))
-    amended["publication"] = {
-        "active_context_sha256": hashlib.sha256(active_context.encode("utf-8")).hexdigest(),
-        "decisions_sha256": hashlib.sha256(decisions.encode("utf-8")).hexdigest(),
-    }
-    return write_migration_plan(amended, project_dir=project_dir, output=output, replace=True)
-
-
-def _snapshot_file(path: Path) -> tuple[bool, bytes]:
-    return (path.exists(), path.read_bytes() if path.exists() else b"")
-
-
-def _restore_file(path: Path, snapshot: tuple[bool, bytes]) -> None:
-    existed, content = snapshot
-    if existed:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, name = tempfile.mkstemp(prefix=f".{path.name}.rollback.", dir=path.parent)
-        tmp = Path(name)
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp, path)
-            _fsync_directory(path.parent)
-        finally:
-            tmp.unlink(missing_ok=True)
-    else:
-        _unlink_durable(path)
-
-
-def _snapshot_record(snapshot: tuple[bool, bytes], *, expected: Iterable[bytes] = (),
-                     expected_missing: bool = False,
-                     final: Iterable[bytes] | None = None,
-                     final_missing: bool | None = None) -> dict[str, Any]:
-    existed, content = snapshot
-    expected_values = tuple(expected)
-    final_values = expected_values if final is None else tuple(final)
-    return {
-        "existed": existed,
-        "content_b64": base64.b64encode(content).decode("ascii"),
-        "preimage_sha256": hashlib.sha256(content).hexdigest() if existed else None,
-        "expected_post_sha256": sorted({hashlib.sha256(value).hexdigest() for value in expected_values}),
-        "expected_post_missing": expected_missing,
-        "final_post_sha256": sorted({hashlib.sha256(value).hexdigest() for value in final_values}),
-        "final_post_missing": expected_missing if final_missing is None else final_missing,
-    }
-
-
-def _snapshot_from_record(record: Any) -> tuple[bool, bytes]:
-    if not isinstance(record, dict) or not isinstance(record.get("existed"), bool):
-        raise ValueError("invalid migration transaction snapshot")
-    content = base64.b64decode(str(record.get("content_b64", "")), validate=True)
-    return record["existed"], content
-
-
-def _current_digest(path: Path) -> str | None:
-    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
-
-
-def _restore_if_unchanged(path: Path, record: dict[str, Any]) -> bool:
-    snapshot = _snapshot_from_record(record)
-    allowed = set(record.get("expected_post_sha256") or [])
-    allowed.add(record.get("preimage_sha256"))
-    if record.get("expected_post_missing") is True:
-        allowed.add(None)
-    if _current_digest(path) not in allowed:
-        return False
-    _restore_file(path, snapshot)
-    return True
-
-
-def _record_allowed_digests(record: dict[str, Any]) -> set[str | None]:
-    _snapshot_from_record(record)
-    allowed: set[str | None] = set(record.get("expected_post_sha256") or [])
-    allowed.add(record.get("preimage_sha256"))
-    if record.get("expected_post_missing") is True:
-        allowed.add(None)
-    return allowed
-
-
-def _record_matches_current(path: Path, record: dict[str, Any]) -> bool:
-    return _current_digest(path) in _record_allowed_digests(record)
-
-
-def _record_matches_post(path: Path, record: dict[str, Any]) -> bool:
-    expected: set[str | None] = set(record.get("final_post_sha256") or [])
-    if record.get("final_post_missing") is True:
-        expected.add(None)
-    return _current_digest(path) in expected
-
-
-def _recover_migration_transactions_unlocked() -> int:
-    """Recover global journals only when the entire transaction is coherent."""
-    import memory_v2
-
-    _secure_learning_roots()
-    transactions = _secure_learning_child(".transactions")
-    if not transactions.is_dir():
-        return 0
-    recovered = 0
-    for journal in sorted(transactions.glob("migration-*.json")):
-        if journal.is_symlink():
-            raise ValueError(f"symlinked migration journal rejected: {journal}")
-        if not re.fullmatch(r"migration-[0-9a-f]{32}\.json", journal.name):
-            continue
-        try:
-            record = json.loads(journal.read_text(encoding="utf-8"))
-            if (record.get("version") != 2 or record.get("state") != "prepared" or
-                    record.get("ready") is not True):
-                raise ValueError
-            root = secure_project_root(Path(record["project_root"]))
-            if secure_path(root, "Work/markers/silence").exists():
-                raise ValueError("recorded project is silenced; recovery evidence preserved")
-            secure_path(root, "Work/memory-migration")
-            backup_root = secure_path(root, "Work/memory-migration/backups")
-            secure_path(root, "Work/memory-migration/.transactions")
-            applied_root = secure_path(root, "Work/memory-migration/applied")
-            backup_dir = secure_path(root, f"Work/memory-migration/backups/{record['backup_name']}")
-            receipt = secure_path(root, f"Work/memory-migration/applied/{record['review_sha256']}.json")
-            project_paths = {
-                "config": secure_path(root, ".asha/config.json"),
-                "active": secure_path(root, "Memory/activeContext.md"),
-                "decisions": secure_path(root, "Memory/decisions.md"),
-                "gitignore": secure_path(root, ".gitignore"),
-            }
-            project_records = record["project_records"]
-            learning_records = record["learning_records"]
-            backup_records = record["backup_records"]
-            receipt_record = record["receipt_record"]
-            if (not isinstance(project_records, dict) or not isinstance(learning_records, list) or
-                    not isinstance(backup_records, list) or
-                    not re.fullmatch(r"[0-9A-Za-z.:-]+-[0-9a-f]{12}", backup_dir.name) or
-                    not re.fullmatch(r"[0-9a-f]{64}", str(record["review_sha256"])) or
-                    backup_root.is_symlink() or applied_root.is_symlink()):
-                raise ValueError
-            parsed_learning: list[tuple[Path, dict[str, Any]]] = []
-            seen_learning_paths: set[Path] = set()
-            learning_root = _learning_root().absolute()
-            for item in learning_records:
-                supplied = Path(str(item["path"]))
-                relative = supplied.absolute().relative_to(learning_root)
-                path = _secure_learning_child(str(relative))
-                if path in seen_learning_paths:
-                    raise ValueError
-                seen_learning_paths.add(path)
-                _snapshot_from_record(item)
-                parsed_learning.append((path, item))
-            parsed_backups: list[tuple[Path, dict[str, Any]]] = []
-            seen_backup_paths: set[Path] = set()
-            for item in backup_records:
-                path = secure_path(root, str(item["relative_path"]))
-                if not path.is_relative_to(backup_dir):
-                    raise ValueError
-                if path in seen_backup_paths:
-                    raise ValueError
-                seen_backup_paths.add(path)
-                _snapshot_from_record(item)
-                parsed_backups.append((path, item))
-            for name in project_paths:
-                _snapshot_from_record(project_records[name])
-            _snapshot_from_record(receipt_record)
-            expected_backup_names = {path.name for path, _ in parsed_backups}
-            if backup_dir.exists():
-                if not backup_dir.is_dir() or backup_dir.is_symlink():
-                    raise ValueError
-                actual_names = {path.name for path in backup_dir.iterdir()}
-                if not actual_names.issubset(expected_backup_names):
-                    raise ValueError
-        except (OSError, KeyError, ValueError, TypeError, json.JSONDecodeError) as exc:
-            detail = str(exc)
-            if "silenced" in detail:
-                raise ValueError(f"migration recovery blocked: {detail}") from exc
-            raise ValueError(f"migration recovery failed closed; repair evidence preserved: {journal}") from exc
-
-        with memory_v2._publication_lock(root):
-            if secure_path(root, "Work/markers/silence").exists():
-                raise ValueError(
-                    f"migration recovery blocked: recorded project is silenced; recovery evidence preserved: {journal}"
-                )
-            all_records = [
-                *((path, project_records[name]) for name, path in project_paths.items()),
-                *parsed_learning,
-                *parsed_backups,
-                (receipt, receipt_record),
-            ]
-            if memory_v2.publication_journal_path(root).exists() or any(
-                    not _record_matches_current(path, item) for path, item in all_records):
-                raise ValueError(
-                    f"migration recovery conflict; no state changed and repair evidence preserved: {journal}"
-                )
-            if secure_path(root, "Work/markers/silence").exists():
-                raise ValueError(
-                    f"migration recovery blocked: recorded project is silenced; recovery evidence preserved: {journal}"
-                )
-
-            receipt_complete = _record_matches_post(receipt, receipt_record)
-            if receipt_complete:
-                if not all(_record_matches_post(path, item) for path, item in all_records):
-                    raise ValueError(
-                        f"migration recovery conflict; completed receipt effects drifted and repair evidence preserved: {journal}"
-                    )
-                _unlink_durable(journal, missing_ok=False)
-                recovered += 1
-                continue
-
-            # Recheck as one unit whilst the publication and global learning
-            # locks are still held, then restore every record or none.
-            if any(not _record_matches_current(path, item) for path, item in all_records):
-                raise ValueError(
-                    f"migration recovery conflict; no state changed and repair evidence preserved: {journal}"
-                )
-            for name, path in project_paths.items():
-                _restore_file(path, _snapshot_from_record(project_records[name]))
-            for path, item in parsed_learning:
-                _restore_file(path, _snapshot_from_record(item))
-            for path, item in parsed_backups:
-                _restore_file(path, _snapshot_from_record(item))
-            _restore_file(receipt, _snapshot_from_record(receipt_record))
-            if backup_dir.exists():
-                _rmtree_durable(backup_dir)
-            _unlink_durable(journal, missing_ok=False)
-            recovered += 1
-    return recovered
-
-def _migration_roots(root: Path, *, create: bool = False) -> tuple[Path, Path, Path]:
-    """Validate every project-local migration control directory."""
-    secure_path(root, "Work/memory-migration/.root", create_parents=create)
-    backups = secure_path(
-        root, "Work/memory-migration/backups/.root", create_parents=create
-    ).parent
-    transactions = secure_path(
-        root, "Work/memory-migration/.transactions/.root", create_parents=create
-    ).parent
-    applied = secure_path(
-        root, "Work/memory-migration/applied/.root", create_parents=create
-    ).parent
-    return backups, transactions, applied
-
-
-def _transition_content(learning: Learning) -> tuple[bytes, bytes]:
-    rendered = _render(learning)
-    journal = json.dumps({
-        "version": 2,
-        "name": _path(learning).name,
-        "state": learning.state,
-        "content": rendered,
-        "content_sha256": hashlib.sha256(rendered.encode("utf-8")).hexdigest(),
-    }, sort_keys=True) + "\n"
-    return rendered.encode("utf-8"), journal.encode("utf-8")
-
-
-def _validate_receipt_effects(root: Path, value: dict[str, Any], *,
-                              review_digest: str,
-                              expected_publication: dict[str, str]) -> None:
-    """Fail closed when an idempotence receipt no longer matches live effects."""
-    import memory_v2
-
-    try:
-        if (value.get("status") != "applied" or value.get("review_sha256") != review_digest or
-                value.get("publication") != expected_publication):
-            raise ValueError
-        effects = value["effects"]
-        config_path = secure_path(root, ".asha/config.json")
-        if (_current_digest(config_path) != effects["config_sha256"] or
-                memory_v2.require_v2_config(root)["project_id"].strip() != value["project_id"]):
-            raise ValueError
-        publication_effect = effects.get("publication")
-        if publication_effect is not None:
-            active = secure_path(root, "Memory/activeContext.md")
-            decisions = secure_path(root, "Memory/decisions.md")
-            with memory_v2._publication_lock(root):
-                if memory_v2.publication_journal_path(root).exists():
-                    raise ValueError
-                if ({"active_context_sha256": _current_digest(active),
-                     "decisions_sha256": _current_digest(decisions)} != publication_effect):
-                    raise ValueError
-        for item in effects["learnings"]:
-            path = _secure_learning_child(str(item["relative_path"]))
-            if _current_digest(path) != item["sha256"]:
-                raise ValueError
-            learning = _parse(path)
-            if learning.id != item["id"] or learning.state != item["state"]:
-                raise ValueError
-        if sorted(value["applied_learnings"]) != sorted(
-                item["id"] for item in effects["learnings"]):
-            raise ValueError
-        backup_root = secure_path(root, "Work/memory-migration/backups")
-        backup_dir = secure_path(root, Path(value["backup_dir"]).absolute().relative_to(root))
-        if backup_dir.parent != backup_root:
-            raise ValueError
-        for item in value["sources"]:
-            path = secure_path(root, Path(item["backup"]).absolute().relative_to(root))
-            if path.parent != backup_dir or _current_digest(path) != item["source_sha256"]:
-                raise ValueError
-        manifest = secure_path(root, Path(effects["backup_manifest"]).absolute().relative_to(root))
-        if (manifest.parent != backup_dir or manifest.name != "manifest.json" or
-                _current_digest(manifest) != effects["backup_manifest_sha256"]):
-            raise ValueError
-    except (KeyError, TypeError, ValueError, OSError) as exc:
-        raise ValueError("migration receipt effects are missing or drifted") from exc
-
-
-def _final_snapshot_record(snapshot: tuple[bool, bytes], final: bytes | None) -> dict[str, Any]:
-    if final is None:
-        return _snapshot_record(snapshot, expected_missing=True)
-    return _snapshot_record(snapshot, expected=(final,))
-
-
-def _ensure_migration_marker(result: dict[str, Any]) -> Path:
-    """Write a stable informational marker after a reviewed migration commits."""
-    review_digest = str(result.get("review_sha256", ""))
-    if not re.fullmatch(r"[0-9a-f]{64}", review_digest):
-        raise ValueError("migration result lacks a valid review digest")
-    sources = result.get("sources")
-    if not isinstance(sources, list):
-        raise ValueError("migration result lacks reviewed sources")
-    marker = _secure_learning_child(MIGRATION_MARKER)
-    payload = {
-        "version": 2,
-        "status": "reviewed-migration-complete",
-        "review_sha256": review_digest,
-        "project_id": str(result.get("project_id", "")),
-        "applied_learning_ids": sorted(str(value) for value in result.get("applied_learnings", [])),
-        "reviewed_source_sha256": sorted(
-            str(item.get("source_sha256")) for item in sources
-            if isinstance(item, dict) and item.get("source_sha256")
-        ),
-    }
-    _atomic(marker, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
-    os.chmod(marker, 0o600)
-    return marker
-
-
-def _repair_migration_marker(result: dict[str, Any]) -> bool:
-    """Best-effort installer hint; migration authority stays in the receipt."""
-    try:
-        _ensure_migration_marker(result)
-    except (OSError, ValueError):
-        return False
-    return True
-
-
-def migrate_apply(review: dict[str, Any], *, session_id: str, project_dir: Path,
-                  active_context: str, decisions: str) -> dict[str, Any]:
-    """Apply one typed, hash-bound review as a rollback-safe transaction."""
-    import memory_v2
-
-    if not isinstance(session_id, str) or not session_id.strip() or session_id.strip() == "unknown":
-        raise ValueError("reviewed migration attestation requires a session id")
-    root = _assert_not_silenced(project_dir)
-    memory_v2.validate_active_context(active_context)
-    memory_v2.validate_decisions(decisions)
-    if not isinstance(review, dict) or review.get("version") != 2 or not isinstance(review.get("items"), list):
-        raise ValueError("invalid migration review format")
-
-    publication = review.get("publication")
-    expected_publication = {
-        "active_context_sha256": hashlib.sha256(active_context.encode("utf-8")).hexdigest(),
-        "decisions_sha256": hashlib.sha256(decisions.encode("utf-8")).hexdigest(),
-    }
-    if not isinstance(publication, dict) or any(
-            publication.get(key) != digest for key, digest in expected_publication.items()):
-        raise ValueError("migration publication digest does not match both reviewed drafts")
-
-    review_digest = hashlib.sha256(json.dumps(review, sort_keys=True).encode("utf-8")).hexdigest()
-    _migration_roots(root)
-    receipt = secure_path(root, f"Work/memory-migration/applied/{review_digest}.json")
-    journal = _secure_learning_child(f".transactions/migration-{uuid.uuid4().hex}.json")
-
-    with _global_lock():
-        if receipt.is_file():
-            try:
-                value = json.loads(receipt.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise ValueError("migration receipt failed closed") from exc
-            _validate_receipt_effects(root, value, review_digest=review_digest,
-                                      expected_publication=expected_publication)
-            _repair_migration_marker(value)
-            return value
-
-        config_path = secure_path(root, ".asha/config.json")
-        active_path = secure_path(root, "Memory/activeContext.md")
-        decisions_path = secure_path(root, "Memory/decisions.md")
-        gitignore = secure_path(root, ".gitignore")
-        publication_targets = {"activeContext": active_path, "decisions": decisions_path}
-
-        # Preflight the entire review. Source bytes are captured exactly once;
-        # backups never reopen the mutable source path.
-        config = memory_v2.read_project_config(root)
-        if "project_id" in config:
-            if not isinstance(config["project_id"], str) or not config["project_id"].strip():
-                raise ValueError("existing project_id must be a nonblank string")
-            project_id = config["project_id"].strip()
-        else:
-            project_id = str(uuid.uuid4())
-        accepted_sources: dict[Path, tuple[str, bytes]] = {}
-        prepared: list[Learning] = []
-        accepted_ids: set[str] = set()
-        publication_authorizations: dict[str, tuple[str, Path]] = {}
-        for item in review["items"]:
-            if not isinstance(item, dict):
-                raise ValueError("every migration item must be an object")
-            decision = item.get("decision")
-            if decision not in ("accept", "reject", "defer"):
-                raise ValueError("every migration item requires accept, reject, or defer")
-            if decision != "accept":
-                continue
-            item_type = item.get("item_type")
-            if item_type not in ("project-publication", "learning", "legacy-evidence"):
-                raise ValueError("accepted migration item requires a typed mapping")
-            role = item.get("publication_role") if item_type == "project-publication" else None
-            if role is not None and role not in publication_targets:
-                raise ValueError("project-publication item requires a publication_role")
-            if item_type == "project-publication" and item.get("create") is True:
-                target = Path(str(item.get("target", ""))).absolute()
-                expected_target = publication_targets[str(role)]
-                if target != expected_target or expected_target.exists():
-                    raise ValueError("explicit publication create mapping requires its absent exact target")
-                if str(role) in publication_authorizations:
-                    raise ValueError("duplicate project-publication role")
-                publication_authorizations[str(role)] = ("create", target)
-                continue
-
-            source = Path(str(item.get("source", "")))
-            expected = str(item.get("source_sha256", ""))
-            if not source.is_file() or source.is_symlink() or not expected:
-                raise ValueError(f"accepted migration source is missing, symlinked, or unhashed: {source}")
-            raw = source.read_bytes()
-            actual = hashlib.sha256(raw).hexdigest()
-            if actual != expected:
-                raise ValueError(f"migration source changed since review: {source}")
-            resolved_source = source.resolve(strict=True)
-            prior = accepted_sources.setdefault(resolved_source, (expected, raw))
-            if prior != (expected, raw):
-                raise ValueError(f"conflicting hashes for migration source: {source}")
-            if item_type == "project-publication":
-                if role is None or str(role) in publication_authorizations:
-                    raise ValueError("project-publication item requires one unique publication_role")
-                publication_authorizations[str(role)] = ("source", resolved_source)
-                continue
-            if item_type == "legacy-evidence":
-                continue
-            proposal = item.get("proposal") or {}
-            if not all(proposal.get(key) for key in ("id", "trigger", "action", "reason")):
-                raise ValueError(f"accepted migration item lacks a complete proposal: {source}")
-            desired_state = str(item.get("proposed_state") or "candidate")
-            if desired_state not in STATES:
-                raise ValueError(f"invalid reviewed migration state: {desired_state}")
-            learning_id = str(proposal["id"]).strip()
-            if learning_id in accepted_ids:
-                raise ValueError(f"duplicate accepted migration learning: {learning_id}")
-            accepted_ids.add(learning_id)
-            try:
-                learning = _load_unlocked(learning_id)
-                if (learning.trigger, learning.action) != (str(proposal["trigger"]), str(proposal["action"])):
-                    raise ValueError(f"reviewed migration conflicts with existing learning: {learning_id}")
-            except KeyError:
-                learning = Learning(learning_id, str(proposal["trigger"]), str(proposal["action"]),
-                                    created=_today(), updated=_today())
-            _add_evidence(learning, session_id.strip(), project_id, str(proposal["reason"]),
-                          "legacy-attestation")
-            learning.state = desired_state
-            if desired_state == "retired":
-                learning.retirement_reason = str(proposal["reason"])
-            prepared.append(learning)
-
-        if publication_authorizations and set(publication_authorizations) != set(publication_targets):
-            raise ValueError("review must accept both project-publication roles")
-        if config.get("memory_version") != 2 and set(publication_authorizations) != set(publication_targets):
-            raise ValueError("legacy initialization requires both project-publication roles")
-        publish_outputs = bool(publication_authorizations)
-        if publish_outputs:
-            for role, target in publication_targets.items():
-                kind, authorized = publication_authorizations[role]
-                if target.exists():
-                    if kind != "source" or authorized != target.resolve(strict=True):
-                        raise ValueError(f"existing publication target must be its explicit accepted hash-bound source: {target}")
-                elif kind != "create" or authorized != target:
-                    raise ValueError(f"absent publication target requires an explicit create mapping: {target}")
-
-        _secure_learning_roots()
-        old_ignore = gitignore.read_bytes() if gitignore.exists() else b""
-        try:
-            desired_ignore = memory_v2.managed_ignore_text(old_ignore.decode("utf-8")).encode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError("existing .gitignore must be UTF-8 before migration") from exc
-        new_config = dict(config)
-        new_config.update({"initialized": True, "memory_version": 2, "project_id": project_id})
-        new_config_bytes = (json.dumps(new_config, indent=2, sort_keys=True) + "\n").encode("utf-8")
-
-        project_snapshots = {
-            "config": _snapshot_file(config_path), "active": _snapshot_file(active_path),
-            "decisions": _snapshot_file(decisions_path), "gitignore": _snapshot_file(gitignore),
-        }
-        if publish_outputs:
-            for role, target in publication_targets.items():
-                snapshot = project_snapshots["active" if role == "activeContext" else "decisions"]
-                kind, _authorized = publication_authorizations[role]
-                if kind == "source":
-                    expected_digest, reviewed_bytes = accepted_sources[target.resolve(strict=True)]
-                    if (not snapshot[0] or snapshot[1] != reviewed_bytes or
-                            hashlib.sha256(snapshot[1]).hexdigest() != expected_digest):
-                        raise ValueError("publication target changed after reviewed source preflight")
-                elif snapshot[0]:
-                    raise ValueError("explicit publication create target appeared after review preflight")
-        active_final = active_context.encode("utf-8") if publish_outputs else (
-            project_snapshots["active"][1] if project_snapshots["active"][0] else None
-        )
-        decisions_final = decisions.encode("utf-8") if publish_outputs else (
-            project_snapshots["decisions"][1] if project_snapshots["decisions"][0] else None
-        )
-        project_records = {
-            "config": _final_snapshot_record(project_snapshots["config"], new_config_bytes),
-            "active": _final_snapshot_record(project_snapshots["active"], active_final),
-            "decisions": _final_snapshot_record(project_snapshots["decisions"], decisions_final),
-            "gitignore": _final_snapshot_record(project_snapshots["gitignore"], desired_ignore),
-        }
-
-        learning_records_by_path: dict[Path, dict[str, Any]] = {}
-        learning_effects: list[dict[str, str]] = []
-        active_after = {item.id: item for item in _list_state_unlocked("active")}
-        index_path = _secure_learning_child("active/index.md")
-        index_expected: list[bytes] = []
-        for learning in prepared:
-            rendered, transition = _transition_content(learning)
-            name = _storage_name(learning.id)
-            for state in STATES:
-                path = _secure_learning_child(f"{state}/{name}")
-                final = rendered if state == learning.state else None
-                learning_records_by_path.setdefault(path, _final_snapshot_record(_snapshot_file(path), final))
-            transition_path = _secure_learning_child(f".transactions/{Path(name).stem}.json")
-            learning_records_by_path.setdefault(
-                transition_path,
-                _snapshot_record(_snapshot_file(transition_path), expected=(transition,),
-                                 expected_missing=True, final=(), final_missing=True),
-            )
-            active_after.pop(learning.id, None)
-            if learning.state == "active":
-                active_after[learning.id] = learning
-            index_expected.append(_render_active_index(active_after.values()).encode("utf-8"))
-            learning_effects.append({
-                "id": learning.id, "state": learning.state,
-                "relative_path": str(Path(learning.state) / name),
-                "sha256": hashlib.sha256(rendered).hexdigest(),
-            })
-        if prepared:
-            learning_records_by_path[index_path] = _snapshot_record(
-                _snapshot_file(index_path), expected=index_expected,
-                final=(index_expected[-1],)
-            )
-
-        backup_name = (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ") +
-                       "-" + uuid.uuid4().hex[:12])
-        backup_dir = secure_path(root, f"Work/memory-migration/backups/{backup_name}")
-        if backup_dir.exists():
-            raise ValueError("collision-safe migration backup unexpectedly exists")
-        backup_rows: list[dict[str, str]] = []
-        backup_payloads: list[tuple[Path, bytes]] = []
-        for index, (source, (digest, raw)) in enumerate(sorted(accepted_sources.items(), key=lambda row: str(row[0]))):
-            destination = secure_path(
-                root, f"Work/memory-migration/backups/{backup_name}/{index:04d}-{source.name}"
-            )
-            backup_payloads.append((destination, raw))
-            backup_rows.append({"source": str(source), "source_sha256": digest,
-                                "backup": str(destination)})
-        manifest_path = secure_path(root, f"Work/memory-migration/backups/{backup_name}/manifest.json")
-        manifest_bytes = (json.dumps({"version": 2, "sources": backup_rows},
-                                     indent=2, sort_keys=True) + "\n").encode("utf-8")
-        backup_payloads.append((manifest_path, manifest_bytes))
-        backup_records = [
-            dict(_final_snapshot_record(_snapshot_file(path), raw),
-                 relative_path=str(path.relative_to(root)))
-            for path, raw in backup_payloads
-        ]
-        effects = {
-            "config_sha256": hashlib.sha256(new_config_bytes).hexdigest(),
-            "publication": expected_publication if publish_outputs else None,
-            "learnings": learning_effects,
-            "backup_manifest": str(manifest_path),
-            "backup_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
-        }
-        result = {
-            "status": "applied", "review_sha256": review_digest,
-            "publication": expected_publication,
-            "project_id": project_id, "applied_learnings": [item.id for item in prepared],
-            "backup_dir": str(backup_dir), "sources": backup_rows, "effects": effects,
-        }
-        receipt_bytes = (json.dumps(result, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
-        receipt_record = _final_snapshot_record(_snapshot_file(receipt), receipt_bytes)
-        transaction = {
-            "version": 2, "state": "prepared", "ready": True,
-            "project_root": str(root), "review_sha256": review_digest,
-            "backup_name": backup_name, "project_records": project_records,
-            "learning_records": [dict(record, path=str(path))
-                                 for path, record in learning_records_by_path.items()],
-            "backup_records": backup_records, "receipt_record": receipt_record,
-        }
-        transaction_ready = False
-        try:
-            _migration_roots(root, create=True)
-            _secure_learning_roots(create=True)
-            _atomic(journal, json.dumps(transaction, sort_keys=True) + "\n")
-            os.chmod(journal, 0o600)
-            transaction_ready = True
-
-            memory_v2.ensure_private_ignores(root)
-            backup_dir.mkdir(parents=False, mode=0o700)
-            _fsync_directory(backup_dir.parent)
-            for destination, raw in backup_payloads:
-                memory_v2.atomic_write_bytes(destination, raw, mode=0o600)
-            _fsync_directory(backup_dir)
-            memory_v2.atomic_write(config_path, new_config_bytes.decode("utf-8"))
-            if publish_outputs:
-                memory_v2.publish(
-                    root, active_context, decisions,
-                    expected_preimages={
-                        "active": project_records["active"]["preimage_sha256"],
-                        "decisions": project_records["decisions"]["preimage_sha256"],
-                    },
-                )
-            for learning in prepared:
-                _save_unlocked(learning)
-            _atomic(receipt, receipt_bytes.decode("utf-8"))
-            os.chmod(receipt, 0o600)
-            _unlink_durable(journal, missing_ok=False)
-            transaction_ready = False
-            _repair_migration_marker(result)
-            return result
-        except Exception as original:
-            if transaction_ready:
-                try:
-                    _recover_migration_transactions_unlocked()
-                except Exception as recovery:
-                    raise ValueError(f"{original}; {recovery}") from recovery
-            else:
-                _unlink_durable(journal)
-            raise
-
 def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Asha Memory v2 learnings manager")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1480,23 +695,6 @@ def _main(argv: list[str] | None = None) -> int:
     render.add_argument("--max-bytes", type=int, default=3000)
     expire = sub.add_parser("expire")
     expire.add_argument("--project-dir", required=True, type=Path)
-    plan = sub.add_parser("migrate-plan")
-    plan.add_argument("--project-dir", required=True, type=Path)
-    plan.add_argument("--output", type=Path)
-    plan.add_argument("--replace-plan", action="store_true")
-    plan.add_argument("paths", nargs="+")
-    amend = sub.add_parser("migrate-amend")
-    amend.add_argument("--project-dir", required=True, type=Path)
-    amend.add_argument("--review", required=True, type=Path)
-    amend.add_argument("--output", required=True, type=Path)
-    amend.add_argument("--active-file", required=True, type=Path)
-    amend.add_argument("--decisions-file", required=True, type=Path)
-    apply = sub.add_parser("migrate-apply")
-    apply.add_argument("--review", required=True, type=Path)
-    apply.add_argument("--session-id", required=True)
-    apply.add_argument("--project-dir", required=True, type=Path)
-    apply.add_argument("--active-file", required=True, type=Path)
-    apply.add_argument("--decisions-file", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == "propose":
@@ -1518,29 +716,8 @@ def _main(argv: list[str] | None = None) -> int:
         elif args.command == "render-active":
             print(render_active(args.max_bytes))
             return 0
-        elif args.command == "expire":
-            result = {"expired": expire_candidates(project_dir=args.project_dir)}
-        elif args.command == "migrate-plan":
-            result = migrate_plan((Path(item) for item in args.paths), project_dir=args.project_dir)
-            if args.output:
-                path = write_migration_plan(result, project_dir=args.project_dir,
-                                            output=args.output, replace=args.replace_plan)
-                result = {"status": "planned", "path": str(path),
-                          "items": len(result["items"])}
-        elif args.command == "migrate-amend":
-            path = amend_migration_plan(
-                json.loads(args.review.read_text(encoding="utf-8")),
-                project_dir=args.project_dir, output=args.output,
-                active_context=args.active_file.read_text(encoding="utf-8"),
-                decisions=args.decisions_file.read_text(encoding="utf-8"),
-            )
-            result = {"status": "amended", "path": str(path)}
         else:
-            result = migrate_apply(json.loads(args.review.read_text()),
-                                   session_id=args.session_id,
-                                   project_dir=args.project_dir,
-                                   active_context=args.active_file.read_text(encoding="utf-8"),
-                                   decisions=args.decisions_file.read_text(encoding="utf-8"))
+            result = {"expired": expire_candidates(project_dir=args.project_dir)}
         print(json.dumps(asdict(result) if isinstance(result, Learning) else result,
                          ensure_ascii=False, indent=2))
         return 0

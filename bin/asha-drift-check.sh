@@ -1106,7 +1106,7 @@ PY
       <<<"$decisions_measurement"
     if [[ "$decisions_size" =~ ^[0-9]+$ && "$decisions_limit" =~ ^[0-9]+$ ]]; then
       if (( decisions_size > decisions_limit )); then
-        warn "current project Memory/decisions.md exceeds the ${decisions_limit_label}-byte publication cap (${decisions_size_label} bytes); run /session:consolidate to review and migrate current binding decisions before /session:save"
+        warn "current project Memory/decisions.md exceeds the ${decisions_limit_label}-byte publication cap (${decisions_size_label} bytes); trim it to current binding decisions before /session:save"
       else
         pass "current project Memory/decisions.md is within the ${decisions_limit_label}-byte publication cap"
       fi

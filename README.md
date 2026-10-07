@@ -217,8 +217,8 @@ next start ← current handoff + active learnings   optional commit + push
 
 1. **Initialize.** `/session:init` creates a stable project identity, the two
    publication files, and narrow Git ignores for private recovery and migration
-   state. It refuses to reinterpret legacy Memory; `/session:consolidate` owns
-   that reviewed migration.
+   state. It refuses to reinterpret legacy Memory, which must be rewritten in
+   the v2 format first.
 2. **Orient.** Project and workspace readers acquire the publication lock and
    read the pair coherently. The handoff is a starting claim, not ground truth:
    the agent checks it against current files and live state. SessionStart also

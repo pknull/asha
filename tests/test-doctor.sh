@@ -268,11 +268,11 @@ printf 'x' >> "$MEMORY_LIMIT_PROJECT/Memory/decisions.md"
 out="$(cd "$MEMORY_LIMIT_PROJECT" && run --target copilot 2>&1)"; rc=$?
 if [[ $rc -eq 0 ]] \
     && grep -q 'WARN  current project Memory/decisions.md exceeds the 65,536-byte publication cap (65,537 bytes)' <<<"$out" \
-    && grep -q '/session:consolidate' <<<"$out" \
-    && grep -q '/session:save' <<<"$out"; then
-  ok "doctor warns non-fatally on oversized decisions.md with migration guidance"
+    && grep -q 'trim it to current binding decisions before /session:save' <<<"$out" \
+    && ! grep -q '/session:consolidate' <<<"$out"; then
+  ok "doctor warns non-fatally on oversized decisions.md with trim guidance"
 else
-  fail "doctor warns non-fatally on oversized decisions.md with migration guidance (rc=$rc)"
+  fail "doctor warns non-fatally on oversized decisions.md with trim guidance (rc=$rc)"
 fi
 
 # A scheduled run without WorkingDirectory starts in $HOME, where the Asha home
