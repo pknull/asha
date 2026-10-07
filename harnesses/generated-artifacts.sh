@@ -12,8 +12,9 @@ asha_artifact_begin() {
   # Consumed by separately sourced harness emitters while a manifest is active.
   # shellcheck disable=SC2034
   ASHA_ARTIFACT_HARNESS="$1"
-  ASHA_ARTIFACT_STAGE="${TMPDIR:-/tmp}/asha-artifacts-$1-$$.jsonl"
-  : > "$ASHA_ARTIFACT_STAGE"
+  # mktemp, not a pid-derived name: a guessable path in a shared /tmp could be
+  # pre-planted as a link that the stage would then write through.
+  ASHA_ARTIFACT_STAGE="$(mktemp "${TMPDIR:-/tmp}/asha-artifacts-$1-XXXXXX")"
 }
 
 asha_artifact_record() {
