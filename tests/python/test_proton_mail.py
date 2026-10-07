@@ -1383,3 +1383,39 @@ class ProtonMailAcceptanceTests(unittest.TestCase):
         self.assertNotIn("bridge-secret", encoded)
         self.assertNotIn("bridge-user", encoded)
         self.assertIn("[REDACTED]", encoded)
+
+    def _delete_plan(self):
+        return proton_mail.create_plan(
+            "delete",
+            {"ref": {"mailbox": "INBOX", "uidvalidity": 812, "uid": 23}},
+        )
+
+    def test_existing_ledger_state_is_not_refused_for_its_modes(self):
+        for broad in ("directory", "lock", "ledger"):
+            with self.subTest(broad=broad):
+                state = Path(self.tempdir.name) / f"state-{broad}"
+                state.mkdir(mode=0o700)
+                ledger = state / "replay-ledger.json"
+                ledger.write_text('{"version": 1, "reservations": {}}')
+                ledger.chmod(0o600)
+                lock = state / "replay-ledger.json.lock"
+                lock.write_text("")
+                lock.chmod(0o600)
+                {"directory": state, "lock": lock, "ledger": ledger}[broad].chmod(
+                    0o755 if broad == "directory" else 0o644
+                )
+                plan = self._delete_plan()
+
+                proton_mail.reserve_plan(plan, ledger_path=ledger)
+
+                self.assertIn(plan["nonce"], ledger.read_text(encoding="utf-8"))
+                with self.assertRaisesRegex(proton_mail.PlanError, "used"):
+                    proton_mail.reserve_plan(plan, ledger_path=ledger)
+
+    def test_new_ledger_state_is_created_private(self):
+        ledger = Path(self.tempdir.name) / "fresh" / "replay-ledger.json"
+        proton_mail.reserve_plan(self._delete_plan(), ledger_path=ledger)
+        self.assertEqual(ledger.parent.stat().st_mode & 0o777, 0o700)
+        self.assertEqual(ledger.stat().st_mode & 0o777, 0o600)
+        lock = ledger.with_name(ledger.name + ".lock")
+        self.assertEqual(lock.stat().st_mode & 0o777, 0o600)

@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 2.9.0
+**Version**: 2.9.1
 
 Compact explicit memory publication, bounded crash recovery, reviewed learning
 lifecycle, policy guardrails, guarded loops, and workspace management.
@@ -134,6 +134,17 @@ for the repository; workspace state answers what coordinates the repositories.
   checks required by `AGENTS.md`.
 
 ## Version history
+
+### 2.9.1
+
+Same-user path shapes no longer refuse Memory, saves or hooks (Keeper threat
+model, 2026-10-05): a project reached through a symlinked directory resolves to
+its real tree, Memory and draft reads ignore link counts and the file owner,
+opt-in broker telemetry appends through a symlinked events file, and
+`verify-pass-complete.sh` follows a symlinked pass declaration (an empty proof
+removes the link, never its target). `secure_path` still refuses symlinks below
+a project root, home is still never a project root, and reads still refuse
+FIFOs and oversized files without blocking.
 
 ### 2.9.0
 

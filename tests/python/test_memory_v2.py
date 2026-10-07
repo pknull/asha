@@ -1,6 +1,8 @@
 """Memory v2 publication contract."""
 
 import os
+import contextlib
+import io
 import json
 import concurrent.futures
 import subprocess
@@ -528,6 +530,89 @@ class PublishedMemoryTests(unittest.TestCase):
                 os.replace = original
             self.assertEqual([(path.parent, path.parent)], observed)
             self.assertEqual(0o644, path.stat().st_mode & 0o777)
+
+
+class SameUserMetadataTests(unittest.TestCase):
+    """Same-user path shapes and file metadata never refuse Memory (threat model 2026-10-05)."""
+
+    def test_project_reached_through_a_symlinked_ancestor_publishes_in_the_real_tree(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real" / "project"
+            real.mkdir(parents=True)
+            alias = Path(tmp) / "alias"
+            alias.symlink_to(Path(tmp) / "real", target_is_directory=True)
+            project = alias / "project"
+
+            memory_v2.initialize(project)
+            memory_v2.publish(project, memory_v2.ACTIVE_TEMPLATE, "# Decisions\n\n- Linked.\n")
+
+            self.assertEqual(real.resolve(), memory_v2.secure_project_root(project))
+            self.assertIn("Linked.", (real / "Memory" / "decisions.md").read_text())
+            self.assertIn("Linked.", memory_v2.read_published_snapshot(project).decisions.decode())
+
+    def test_home_stays_refused_as_a_recovery_root_through_a_symlinked_alias(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            home.mkdir()
+            alias = Path(tmp) / "home-alias"
+            alias.symlink_to(home, target_is_directory=True)
+            with mock.patch("pathlib.Path.home", return_value=home):
+                for spelling in (home, alias):
+                    with self.subTest(spelling=spelling.name):
+                        with self.assertRaisesRegex(ValueError, "home directory"):
+                            memory_v2.secure_project_root(spelling, reject_home=True)
+
+    def test_reads_ignore_link_counts_and_file_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            memory_v2.initialize(root)
+            memory_v2.publish(root, memory_v2.ACTIVE_TEMPLATE, "# Decisions\n\n- Linked.\n")
+            for relative in ("Memory/activeContext.md", "Memory/decisions.md", ".asha/config.json",
+                             "Work/session-state/.memory-publication.lock"):
+                os.link(root / relative, Path(tmp) / relative.replace("/", "-"))
+            active = Path(tmp) / "active.draft"
+            active.write_text(memory_v2.ACTIVE_TEMPLATE)
+            os.link(active, Path(tmp) / "active.draft.link")
+            decisions = Path(tmp) / "decisions.draft"
+            decisions.write_text("# Decisions\n\n- Drafted.\n")
+            os.link(decisions, Path(tmp) / "decisions.draft.link")
+            other_uid = os.geteuid() + 1
+
+            self.assertIn("Linked.", memory_v2.read_published_snapshot(root).decisions.decode())
+            with mock.patch("os.geteuid", return_value=other_uid):
+                snapshot = memory_v2.read_published_snapshot(root)
+            digests = memory_v2.snapshot_digests(snapshot)
+            with mock.patch("os.geteuid", return_value=other_uid), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                code = memory_v2.main([
+                    "publish", "--project-dir", str(root), "--active-file", str(active),
+                    "--decisions-file", str(decisions), "--expected-active", digests["active"],
+                    "--expected-decisions", digests["decisions"],
+                ])
+            self.assertEqual(0, code)
+            self.assertIn("Drafted.", (root / "Memory" / "decisions.md").read_text())
+
+    def test_non_regular_memory_file_is_refused_without_blocking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memory_v2.initialize(root)
+            (root / "Memory" / "decisions.md").unlink()
+            os.mkfifo(root / "Memory" / "decisions.md")
+            outcome = []
+
+            def read():
+                try:
+                    memory_v2.read_published_snapshot(root)
+                except ValueError as exc:
+                    outcome.append(str(exc))
+
+            reader = threading.Thread(target=read, daemon=True)
+            reader.start()
+            reader.join(timeout=5)
+            self.assertFalse(reader.is_alive(), "a FIFO must never block a Memory read")
+            self.assertEqual(1, len(outcome))
+            self.assertIn("regular file", outcome[0])
 
 
 if __name__ == "__main__":

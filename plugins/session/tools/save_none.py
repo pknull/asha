@@ -24,7 +24,7 @@ def _draft(path: Path, maximum: int, label: str) -> str:
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     try:
         metadata = os.fstat(fd)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > maximum or metadata.st_uid != os.geteuid() or metadata.st_nlink != 1:
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > maximum:
             raise ValueError(f"{label} is not one bounded regular file")
         chunks: list[bytes] = []
         remaining = maximum + 1

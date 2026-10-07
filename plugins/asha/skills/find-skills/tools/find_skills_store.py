@@ -40,8 +40,6 @@ def _empty_lock() -> dict[str, Any]:
 
 
 def load_lock(path: Path) -> dict[str, Any]:
-    if path.is_symlink():
-        raise ValidationError(f"lockfile must not be a symlink: {path}")
     if not path.exists():
         return _empty_lock()
     if not path.is_file():
@@ -228,7 +226,7 @@ def _compare_files(
 def _status_entry(store: Path, skill_name: str, entry: Mapping[str, Any]) -> dict[str, Any]:
     destination = store / skill_name
     issues: list[dict[str, Any]] = []
-    if destination.is_symlink() or not destination.is_dir():
+    if not destination.is_dir():
         issues.append({"kind": "missing", "path": str(destination)})
     else:
         actual = _read_actual_files(destination, issues)
@@ -320,8 +318,6 @@ def _existing_import(
     existing = lock["skills"].get(name)
     if destination.exists() and not existing:
         raise CollisionError(f"destination exists without an imported lock entry: {destination}")
-    if destination.is_symlink():
-        raise CollisionError(f"destination must not be a symlink: {destination}")
     identity_fields = ("source", "skill_id", "upstream_path")
     if existing and any(
         existing.get(field) != inspection.get(field) for field in identity_fields
@@ -433,10 +429,8 @@ def _noop_result(proposal: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _check_write_state(proposal: Mapping[str, Any], destination: Path, path: Path) -> None:
-    if path.exists() and (path.is_symlink() or not path.is_file()):
+    if path.exists() and not path.is_file():
         raise ValidationError(f"lockfile must be a regular file: {path}")
-    if destination.is_symlink():
-        raise CollisionError(f"destination must not be a symlink: {destination}")
     if proposal["action"] == "create" and destination.exists():
         raise CollisionError(f"destination appeared after the proposal: {destination}")
     expected = proposal["_lock_before_sha256"]
@@ -449,7 +443,7 @@ def _check_write_state(proposal: Mapping[str, Any], destination: Path, path: Pat
 def _writer_lock(store: Path):
     lock = store / ".imported.lock.write.lock"
     flags = os.O_CREAT | os.O_RDWR
-    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0)
     try:
         descriptor = os.open(lock, flags, 0o600)
     except OSError as exc:
@@ -487,8 +481,6 @@ def _backup_destination(destination: Path, name: str) -> Path | None:
     if not destination.exists():
         return None
     backup_root = destination.parent / ".find-skills-backups"
-    if backup_root.is_symlink():
-        raise ValidationError(f"imported skill backup root must not be a symlink: {backup_root}")
     if backup_root.exists() and not backup_root.is_dir():
         raise ValidationError(f"imported skill backup root must be a directory: {backup_root}")
     backup_root.mkdir(exist_ok=True)

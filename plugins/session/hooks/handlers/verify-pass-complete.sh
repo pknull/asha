@@ -30,7 +30,7 @@ MARKER="$MARKER_DIR/pass-declaration.json"
 [[ -d "$MARKER_DIR" ]] || { echo '{}'; exit 0; }
 { exec {LOCK_FD}<"$MARKER_DIR"; } 2>/dev/null || { echo '{}'; exit 0; }
 flock -w 1 -x "$LOCK_FD" 2>/dev/null || { echo '{}'; exit 0; }
-[[ -f "$MARKER" && ! -L "$MARKER" ]] || { echo '{}'; exit 0; }
+[[ -f "$MARKER" ]] || { echo '{}'; exit 0; }
 
 OLD_VALUE="$(marker_old_value "$MARKER")"
 [[ -n "$OLD_VALUE" ]] || { echo '{}'; exit 0; }
@@ -48,7 +48,7 @@ if [[ $GREP_RC -eq 1 ]]; then
   if flock -w 1 -x "$LOCK_FD" 2>/dev/null; then
     # Compare content, not inode: ext4 reuses freed inode numbers, so a marker
     # re-declared during the search can inherit the proved marker's identity.
-    if [[ -f "$MARKER" && ! -L "$MARKER" ]] \
+    if [[ -f "$MARKER" ]] \
        && [[ "$(marker_old_value "$MARKER")" == "$OLD_VALUE" ]]; then
       rm -f "$MARKER" 2>/dev/null || true
     fi

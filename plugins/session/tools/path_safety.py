@@ -9,14 +9,12 @@ from pathlib import Path
 
 
 def secure_project_root(project_dir: Path, *, reject_home: bool = False) -> Path:
-    """Return an absolute project root only when no path component is a symlink."""
+    """Return the resolved project root; ``secure_path`` checks paths below it."""
     supplied = Path(project_dir).expanduser()
     absolute = Path(os.path.abspath(supplied))
     if not absolute.exists() or not absolute.is_dir():
         raise ValueError(f"project root is not a directory: {absolute}")
     resolved = absolute.resolve(strict=True)
-    if resolved != absolute:
-        raise ValueError(f"project root contains a symlink: {absolute}")
     if reject_home and resolved == Path.home().resolve():
         raise ValueError("home directory is not a project recovery root")
     return resolved

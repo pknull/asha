@@ -1112,6 +1112,76 @@ fi
 unset ASHA_TEST_PYTHONPATH
 
 # ---------------------------------------------------------------------------
+# Test 10b: the imported store follows same-user links (threat model
+# 2026-10-05); the drift gate still refuses links inside a skill tree
+# ---------------------------------------------------------------------------
+echo "--- test 10b: imported store paths may be same-user links ---"
+reset_sandbox
+seed_native_configs
+seed_imported_skill
+mkdir -p "$SANDBOX/dotfiles"
+mv "$SANDBOX/.asha/skills/imported.lock.json" "$SANDBOX/dotfiles/imported.lock.json"
+ln -s "$SANDBOX/dotfiles/imported.lock.json" "$SANDBOX/.asha/skills/imported.lock.json"
+linked_lock_out=""
+if linked_lock_out="$(run_install --target claude 2>&1)" \
+   && [[ -e "$SANDBOX/.claude/skills/imported-demo/SKILL.md" ]] \
+   && frontmatter_name_is "$SANDBOX/.claude/skills/imported-demo/SKILL.md" imported-demo; then
+  ok "a symlinked imported lockfile mounts its skills"
+else
+  fail "a symlinked imported lockfile mounts its skills (output: $(tail -8 <<<"$linked_lock_out"))"
+fi
+
+reset_sandbox
+seed_native_configs
+seed_imported_skill
+mkdir -p "$SANDBOX/outside-mounts"
+ln -s "$SANDBOX/outside-mounts" "$SANDBOX/.asha/skills/.mounts"
+linked_root_out=""
+if linked_root_out="$(run_install --target claude 2>&1)" \
+   && [[ -f "$SANDBOX/outside-mounts/imported-demo/SKILL.md" ]] \
+   && frontmatter_name_is "$SANDBOX/outside-mounts/imported-demo/SKILL.md" imported-demo \
+   && [[ -e "$SANDBOX/.claude/skills/imported-demo/SKILL.md" ]]; then
+  ok "a symlinked adapter root receives the derived adapter"
+else
+  fail "a symlinked adapter root receives the derived adapter (output: $(tail -8 <<<"$linked_root_out"))"
+fi
+
+reset_sandbox
+seed_native_configs
+seed_imported_skill
+mkdir -p "$SANDBOX/.asha/skills/.mounts" "$SANDBOX/outside-adapter"
+printf 'keep\n' > "$SANDBOX/outside-adapter/sentinel"
+ln -s "$SANDBOX/outside-adapter" "$SANDBOX/.asha/skills/.mounts/imported-demo"
+linked_adapter_out=""
+if linked_adapter_out="$(run_install --target claude 2>&1)" \
+   && [[ -d "$SANDBOX/.asha/skills/.mounts/imported-demo" \
+         && ! -L "$SANDBOX/.asha/skills/.mounts/imported-demo" \
+         && "$(cat "$SANDBOX/outside-adapter/sentinel")" == keep \
+         && ! -e "$SANDBOX/outside-adapter/SKILL.md" ]] \
+   && frontmatter_name_is "$SANDBOX/.asha/skills/.mounts/imported-demo/SKILL.md" imported-demo; then
+  ok "a symlinked adapter is replaced without touching its target"
+else
+  fail "a symlinked adapter is replaced without touching its target (output: $(tail -8 <<<"$linked_adapter_out"))"
+fi
+
+reset_sandbox
+seed_native_configs
+seed_imported_skill
+mv "$SANDBOX/.asha/skills/demo/SKILL.md" "$SANDBOX/outside-SKILL.md"
+ln -s "$SANDBOX/outside-SKILL.md" "$SANDBOX/.asha/skills/demo/SKILL.md"
+outside_skill_before="$(sha256sum "$SANDBOX/outside-SKILL.md" | awk '{print $1}')"
+linked_skill_out=""
+if linked_skill_out="$(run_install --target claude 2>&1)" \
+   && [[ "$linked_skill_out" == *"imported skill has unsafe symlink drift: demo at $SANDBOX/.asha/skills/demo"* \
+         && "$(sha256sum "$SANDBOX/outside-SKILL.md" | awk '{print $1}')" == "$outside_skill_before" \
+         && ! -e "$SANDBOX/.claude/skills/imported-demo" \
+         && ! -e "$SANDBOX/.asha/skills/.mounts" ]]; then
+  ok "a symlinked imported SKILL.md never mounts and is never rewritten"
+else
+  fail "a symlinked imported SKILL.md never mounts and is never rewritten (output: $(tail -8 <<<"$linked_skill_out"))"
+fi
+
+# ---------------------------------------------------------------------------
 # Test 11: --force never deletes a foreign real skill directory
 # ---------------------------------------------------------------------------
 echo "--- test 11: real destination ownership is manifest-gated ---"
