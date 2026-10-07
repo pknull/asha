@@ -76,19 +76,13 @@ the same flags again.
 | Copilot | `--model M --effort E` | none | none |
 | OpenCode | `-m provider/model` | none | none |
 
-Session rows (`show`, `list`) and experience envelopes carry
-`selection.model`/`selection.effort` (envelopes: `model`/`effort`) as
+Session rows (`show`, `list`) carry `selection.model`/`selection.effort` as
 `{requested, effective, provenance}`. Provenance is `reported` when the native
 stream stated the value, `requested` when Asha passed a flag that nothing
 reported back (all terminal sessions), and `unknown` when neither applies. A
-reroute or fallback is recorded, never refused. `experience stats --model X`
-attributes each event to the selection retained with it: a close to the
-snapshot taken when it was requested, a report (and its completion capture) to
-its envelope, a guidance exposure to its manifest. The effective model counts
-when reported, the requested one otherwise; an event with no retained evidence
-uses the session's requested model or `unknown`, never a later report. `models`
-is that per-event breakdown with provenance; `current_sessions` separately
-lists the live rows' current selection.
+reroute or fallback is recorded, never refused. A close keeps the selection
+snapshot taken when it was requested, and a guidance exposure keeps it in its
+manifest.
 
 ### Token use (#111)
 
@@ -404,6 +398,14 @@ learnings (3 KiB), ordered by project scope, harness scope, source-session evide
 count and rule ID. Repeated `--learning ID` selects explicitly; `--no-learning`
 supplies none. Rooms keep their existing context behavior. Queued guidance becomes
 supplied only through the existing delivery acknowledgement; supply is not use.
+Candidate, retired, stale-version and incompatible selections are excluded with
+their reasons. `show ID --json` lists each delivery's manifest under `guidance`
+(selection, supplied rule versions, exclusions, delivery state). Terminal
+`session messages` returns a `delivery_digest` for a retained emitted body;
+acknowledge that exact body with `session ack-message MESSAGE_ID
+--delivery-digest DIGEST`. An acknowledgement without a digest keeps ordinary
+message handling and leaves guidance supply unknown; an unknown or evicted
+digest is refused, so read again before retrying.
 
 Structured utilities retain messages for eligible turn boundaries and expose
 native permission/clarification requests through Control. They inherit the
@@ -427,12 +429,6 @@ sandbox Control state is read-only, so a report still succeeds only as the one
 plain command its rules run outside the sandbox. Native hooks bound reporting
 time and fail open when the hub is unavailable. A report is the report axis
 alone, so the report command's own hooks never change it.
-
-With effective experience policy enabled, a finished report without an assessment
-returns one bounded assessment request and controller key. Follow up with
-`report --state finished --experience-file FILE --key KEY`; it preserves result
-text and deduplicates retries. An unanswered request followed by exit records
-`missing` / `exited-before-capture`. Structured and review utilities are excluded.
 
 ## Recovery and operation
 
@@ -520,14 +516,15 @@ end a newer request. `stop ID` on a pending close ends it as stopped.
 Every successful publication path records one `hub_memory_publications` row
 naming its source: `explicit-save`, `close` (a handoff naming the request),
 `handoff` (an ordinary handoff) or `attestation` (`no-durable-update`, with its
-detail). "Saved" is read from these rows only. Only an `explicit-save` row
-suppresses a close's experience assessment request.
+detail). "Saved" is read from these rows only.
 
 Compatibility for one release: the retired `control.idle_delivery`,
 `control.no_handoff_close` and `control.session_preview` settings are accepted
 and ignored; hooks in live
 Rooms that still pass `--order`, `--attempts`, `--tool-kind`, `--tool-token`,
-`--sequence` or `--sequence-pane` are accepted and ignored; stale
+`--sequence` or `--sequence-pane` are accepted and ignored; `report` and
+`handoff` from workers briefed before session experience was retired accept and
+ignore `--experience-file`, `--experience-ref`, `--supersedes` and `--key`; stale
 `hub-event-order/` directories and `ASHA_HUB_EVENT_ORDER` in a Room's
 environment are ignored. Close records from earlier versions (states such as
 `acknowledged` or `closed-no-save-claimed`, attempts, `attention`) are read
@@ -563,11 +560,12 @@ the row reads `Working: reported finished`, then `Finished` once the
 observation is stale, and a close asks and waits its bound instead of closing
 at once. A pending close request is re-emitted at the next Stop.
 
-## Optional session experience
+## Retired: session experience capture
 
-[Session experience and reviewed learning](session-experience.md) documents user
-defaults and project overrides, bounded report/close capture, save-time advisory
-reviews, explicit-save dispositions, automatic guidance and coverage metrics.
-Policy defaults to off; native automatic review remains gated pending separately approved probes.
-Ordinary and scope-none Memory publication require both pre-draft snapshot digests;
-close remains independent of successful capture or completed review.
+Session experience capture, review, adoption, dispositions, statistics, the
+`session experience` command, the structured `--result-contract` envelope and
+the native review gate were retired on 2026-10-07 (subtraction N2). Briefs and
+close requests no longer ask for an assessment, and a `session_experience`
+default in the user config is ignored. Records captured before then stay in
+the Control database (`hub_experience*` tables); nothing reads or writes them.
+Selected guidance (above) and the learnings it draws on are unchanged.

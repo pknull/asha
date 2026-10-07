@@ -1,5 +1,10 @@
 # Session experience: automatic defaults and a working loop
 
+> **Historical record — retired.** Session experience capture, review and
+> adoption were retired on 2026-10-07 (subtraction N2);
+> `docs/session-experience.md` went with them. See
+> [the session hub](../session-hub.md#retired-session-experience-capture).
+
 Status: worker-ready amendment, not implementation or deployment. Prepared
 2026-09-13 by the chair against master `1d1cda2` (dormant session experience
 learning) and the live working copy. Amends

@@ -72,9 +72,8 @@ creates its own worktree.
 
 `asha control doctor [--json]` runs Control's probes and prints one line per
 probe, or the `asha.control-doctor.v1` JSON payload: `python`,
-`configuration`, `session-experience`, `supervisor-service`,
-`tmux`, `harness`, `gh`, `rooms-registry`, `managed-sessions`, `hooks` and
-`tui`. The `gh` and `supervisor-service` probes are informational and never
+`configuration`, `supervisor-service`, `tmux`, `harness`, `gh`,
+`rooms-registry`, `managed-sessions`, `hooks` and `tui`. The `gh` and `supervisor-service` probes are informational and never
 fail the check. Hook checks cover only the installed Claude and Codex
 configurations. The retired task substrate's probes (`jj`, `repository`,
 `default-context`, `transactions`, `registry-backend`, `prunable`,

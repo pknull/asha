@@ -1,5 +1,10 @@
 # Session experience capture and reviewed learning
 
+> **Historical record — retired.** Session experience capture, review and
+> adoption were retired on 2026-10-07 (subtraction N2);
+> `docs/session-experience.md` went with them. See
+> [the session hub](../session-hub.md#retired-session-experience-capture).
+
 Amended by [automatic defaults and a working loop](2026-09-13--session-experience-defaults.md)
 (C1–C8). Where the documents conflict, that amendment takes precedence.
 

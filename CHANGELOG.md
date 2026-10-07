@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased — subtraction N2: session experience capture retires (session 2.8.0)
+
+- Session experience capture, review, adoption, dispositions and statistics are
+  deleted with their CLI, `asha control session experience`, which now refuses
+  by name (Keeper ruling, 2026-10-07: 68 captures, 1 review, 0 adoptions).
+  About 2,000 production and 2,100 test lines are removed.
+- Worker briefs and close requests no longer carry the assessment instruction,
+  a finished report no longer issues an assessment request, and a
+  `session_experience` default in `~/.asha/config.json` is ignored. The
+  structured `--result-contract asha.session-result.v1` envelope, the native
+  review gate, the supervisor's review sweep, the `session-experience` doctor
+  probe and capabilities, and the five Codex rules that allowed experience reads
+  outside the sandbox are gone.
+- For one release `session report` and `session handoff` accept and ignore
+  `--experience-file`, `--experience-ref`, `--supersedes` and `--key`, so
+  workers briefed before this change still report.
+- Records already captured stay in the Control database's `hub_experience*`
+  tables; nothing reads, writes or deletes them.
+- Selected guidance (`session_guidance`, its `hub_guidance_exposures` table and
+  `--learning`/`--no-learning`) and the learnings system are unchanged.
+- `/session:save` drops its experience steps; `docs/session-experience.md` is
+  removed; the session hub, harness enforcement and memory architecture guides
+  record the retirement.
+- After landing: run `asha install codex` to re-render the Codex rules without
+  the experience allows, and restart the supervisor to unload the review sweep.
+
 ## Unreleased — subtraction B7: one Room backend, one-shot migrations retire (session 2.7.0)
 
 - SQLite is the only Room registry. A fresh home no longer starts on JSON Room
