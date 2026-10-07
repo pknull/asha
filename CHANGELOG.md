@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased — subtraction B6b: the Codex installer trusts the local user
+
+- The Codex installer no longer defends `~/.codex` and `~/.asha` against
+  same-user tampering (Keeper threat model, 2026-10-05): its ancestor-owner,
+  writable-ancestor, link-count and inode-identity checks are gone, with the
+  `umask go-w` they needed. A 0775 directory above Codex's files no longer
+  refuses install, the doctor or the drift check, and a symlinked or
+  hard-linked `config.toml` (dotfiles) is read instead of refused.
+- `config.toml` is still never written. Install still refuses one that is not
+  a regular file, does not parse, or gives `features`, `hooks` or
+  `features.hooks` the wrong type; uninstall no longer reads it.
+- The legacy inline-hook classifier is gone. Inline hooks that installs before
+  the JSON form fenced between `asha:start` and `asha:end` lines are no longer
+  detected: delete such a block from `config.toml` by hand, or Codex registers
+  those hooks as well as `hooks.json`.
+- Codex `hooks.json` is owned through the generated-artifact ledger like every
+  other generated file: identical bytes are adopted, `--force` replaces a
+  foreign, modified or symlinked file, and uninstall keeps a modified one with
+  a warning instead of failing.
+- `install --bin` and `--default` no longer run the launcher routing
+  preflight. The dispatcher, the shims and the default are written whether or
+  not an adapter in the same run failed and whatever other links point at the
+  dispatcher; the run still exits nonzero for a failed adapter. Retargeting a
+  symlink still needs `--force`, and a foreign real file is never replaced.
+- Generated-artifact staging (Codex, Copilot, OpenCode) uses a `mktemp` file
+  instead of the guessable `${TMPDIR:-/tmp}/asha-artifacts-<h>-<pid>.jsonl`,
+  and the ledger's write steps return their failure to conditional callers.
+- No reinstall is needed: the rendered `hooks.json` bytes and their ledger
+  rows are unchanged.
+
 ## Unreleased — subtraction L-b: the initiative engine, asha task and L3 staging retire (session 2.6.0)
 
 - The legacy initiative engine (`lib/control/orchestration/`), the `asha task`
