@@ -155,7 +155,7 @@ def _room_root(env: Mapping[str, str]) -> Path:
 
 
 def _room_command(args: list[str], env: Mapping[str, str]) -> int:
-    from .rooms import RoomStore, attach_room, close_room, list_rooms, open_room
+    from .rooms import RoomStore, attach_room, close_room, control_config, list_rooms, open_room
 
     command, positional, options = _room_parse(args)
     if command == "help":
@@ -164,7 +164,6 @@ def _room_command(args: list[str], env: Mapping[str, str]) -> int:
     config = load_config(env)
     if command in {"open", "close"}:
         # Opening or ending a Room is a session operator act (K4).
-        from .registry_backend import control_config
         from .sessions import refuse_managed_operator
         refuse_managed_operator(control_config(config), env)
     store = RoomStore(config)

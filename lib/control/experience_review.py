@@ -16,7 +16,6 @@ from .session_experience import (Experiences, canonical, sha, strict_json, shape
     array, ids, safe_content, silenced, REPORT_LIMIT, REVIEW_INPUT_LIMIT)
 from .session_store import SessionStore
 from .store import StoreError, _directory_fd, _managed_start
-from .registry_guards import mutation_guard
 
 PURPOSE = 'experience-review'
 # No environment variable, submitted report, or project policy can bypass this
@@ -173,7 +172,7 @@ def reserve(hub, review_id):
     else:
         sessions = None
     try:
-        with mutation_guard(hub.config), hub.database() as db, db.transaction(write=True) as c:
+        with hub.database() as db, db.transaction(write=True) as c:
             row = _review(c, review_id)
             if row['status'] not in {'selected', 'budget-deferred'}:
                 return row  # Lost replies replay the same durable identity, never another launch.
@@ -233,7 +232,7 @@ def reconcile(hub):
     for row in rows:
         report = experiences.show(row['report_id'])
         project = hub.get(report['session_id'])['project']
-        with mutation_guard(hub.config), hub.database() as db, db.transaction(write=True) as c:
+        with hub.database() as db, db.transaction(write=True) as c:
             current = _review(c, row['review_id'])
             if current['status'] in FINAL:
                 continue

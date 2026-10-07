@@ -8,7 +8,6 @@ from pathlib import Path
 from .session_experience import (Experiences, canonical, sha, shape, string, enum,
     silenced, safe_content, validate_digest, memory_v2, review_subjects)
 from .store import StoreError
-from .registry_guards import mutation_guard
 
 DISPOSITIONS = {'propose', 'corroborate', 'project-decision', 'code-test-followup', 'reject', 'defer'}
 
@@ -46,7 +45,7 @@ def pending(hub, project_id, *, offset=0, limit=50):
 def _complete(hub, disposition_id, receipt, project):
     if silenced(project):
         raise StoreError('learning disposition completion deferred by silence; retain intent for reconciliation')
-    with mutation_guard(hub.config), hub.database() as db, db.transaction(write=True) as c:
+    with hub.database() as db, db.transaction(write=True) as c:
         if silenced(project):
             raise StoreError('learning disposition completion deferred by silence')
         row = c.execute('SELECT state,payload,project_id FROM hub_experience_dispositions WHERE disposition_id=?', (disposition_id,)).fetchone()
@@ -107,7 +106,7 @@ def dispose(hub, project, decision, publication, *, save_session_id):
     validate_digest(decision['finding_digest']); safe_content(decision)
     validate_publication(publication, pid)
     publisher = {'session_id': save_session_id, 'project_id': pid, 'publication_id': publication['publication_id']}
-    with mutation_guard(hub.config), hub.database() as db, db.transaction(write=True) as c:
+    with hub.database() as db, db.transaction(write=True) as c:
         if silenced(root) or experiences.policy_in(c, pid)['mode'] == 'off':
             raise StoreError('adoption deferred by policy or silence')
         review = c.execute("SELECT r.*,e.project_id,e.origin_report_id,e.session_id,e.body,e.envelope FROM hub_experience_reviews r JOIN hub_experiences e USING(report_id) WHERE review_id=?", (decision['review_id'],)).fetchone()

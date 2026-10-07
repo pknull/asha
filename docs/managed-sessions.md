@@ -152,9 +152,8 @@ The active-work deadline pauses during permission waiting. A separate cumulative
 
 SQLite at `$ASHA_HOME/state/control/control.sqlite3` owns managed sessions,
 messages, turn reservations, questions and session events, and keeps the
-retired initiative and task records as read-only evidence. Rooms use the
-selected registry backend; normal operation never maintains two writable
-registry authorities.
+retired initiative and task records as read-only evidence. Rooms are `rooms`
+records in the same database; there is no other registry backend.
 
 `show` distinguishes retained/queued input, submitted input and consumption
 evidence. Claude initialization and successful results do **not** prove message
@@ -457,8 +456,9 @@ old inputs are retained as cancelled and are never replayed automatically.
 
 The offline registry staging, activation, recovery and rollback commands
 (`asha control registry ...`) completed the SQLite cutover on 2026-09-09 and
-retired with the initiative engine (L-b). Rooms keep the backend the
-registry marker selects; a home without that marker keeps file-backed Rooms.
+retired with the initiative engine (L-b). The file-backed Room registry and
+backend selection followed (B7): a fresh home creates the database on its
+first Room or `session init`.
 
 Restore uses a separate, empty recovery state root:
 

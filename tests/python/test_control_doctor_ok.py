@@ -83,9 +83,10 @@ class DoctorVerdictTests(DoctorOkFixture):
         self.assertTrue(clean["ok"])
         self.assertIn("0 durable Room", clean["probes"][0]["detail"])
 
-        rooms = self.config.asha_home / "state/control/rooms"
-        rooms.mkdir(parents=True)
-        (rooms / "11111111-1111-4111-8111-111111111111.json").write_text("{}")
+        from lib.control.database import ControlDatabase
+        from lib.control.record_registry import RecordRegistry
+        with ControlDatabase(self.config, create=True) as db, db.transaction(write=True) as c:
+            RecordRegistry("rooms").put(c, "11111111-1111-4111-8111-111111111111", b"{}")
         broken = run_doctor(
             self.config, probes={"rooms-registry": DEFAULT_PROBES["rooms-registry"]},
         )
