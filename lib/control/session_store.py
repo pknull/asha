@@ -310,10 +310,6 @@ class SessionStore:
         return dict(c.execute("SELECT * FROM session_messages WHERE message_id=?", (mid,)).fetchone())
 
     def enqueue(self, sid, body, *, key, on_retained=None):
-        from .experience_review import owned
-        with self.db.transaction() as c:
-            if owned(c, sid):
-                raise StoreError("experience review is a single-turn utility; resume/followup refused")
         with self.db.transaction(write=True) as c:
             s = self._session(c, sid)
             if s["state"] in {"stopped", "failed"} or s["stop_requested"]:
@@ -576,10 +572,6 @@ class SessionStore:
             "recovery": session.get("recovery")}, sort_keys=True))
 
     def resume(self, sid, *, prompt, expected_digest, max_turns=None, quota_reset_override=None, on_retained=None):
-        from .experience_review import owned
-        with self.db.transaction() as c:
-            if owned(c, sid):
-                raise StoreError("experience review is a single-turn utility; resume/followup refused")
         """Explicit new operator turn; never replay an ambiguous submission."""
         text(prompt, "recovery prompt")
         if quota_reset_override is not None:

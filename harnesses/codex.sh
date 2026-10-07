@@ -364,38 +364,6 @@ prefix_rule(
     decision = "allow",
     justification = "Report status or publish Memory for the session this environment names.",
 )
-
-# The read-only policy form rejects --mode/--clear; allowing the bare policy
-# prefix would also approve writes. Save-review and disposition stay native.
-prefix_rule(
-    pattern = ["asha", "control", "session", "experience", "policy", "--read-only"],
-    decision = "allow",
-    justification = "Inspect effective experience policy without mutation.",
-)
-
-prefix_rule(
-    pattern = ["asha", "control", "session", "experience", "pending"],
-    decision = "allow",
-    justification = "Inspect reviewed experience findings.",
-)
-
-prefix_rule(
-    pattern = ["asha", "control", "session", "experience", "show"],
-    decision = "allow",
-    justification = "Inspect one retained experience report.",
-)
-
-prefix_rule(
-    pattern = ["asha", "control", "session", "experience", "unreviewed"],
-    decision = "allow",
-    justification = "Inspect selected reports remaining for explicit-save review.",
-)
-
-prefix_rule(
-    pattern = ["asha", "control", "session", "experience", "packet"],
-    decision = "allow",
-    justification = "Inspect one frozen advisory review packet.",
-)
 EOF
   cat > "$rules_template" <<'EOF'
 # Managed by asha installer; do not edit.

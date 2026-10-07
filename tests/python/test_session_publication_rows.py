@@ -6,8 +6,14 @@ no-durable-update attestation each insert one, naming their source. Finished
 is never gated on them.
 """
 import json
+import os
+import unittest
+from unittest import mock
 
-from tests.python.test_control_session_closure import ClosureFixture
+from tests.python.test_control_session_closure import ClosureFixture, ACTIVE, DECISIONS
+from tests.python import test_memory_save_cas as save_fixture
+from lib.control.session_closure import memory_v2
+from lib.control.store import StoreError
 
 
 class PublicationRowFixture(ClosureFixture):
@@ -79,12 +85,65 @@ class PublicationRowTests(PublicationRowFixture):
         self.assertNotIn('completion', receipt)
         self.assertEqual(self.sources(row['session_id']), ['explicit-save'])
 
-    def test_attestation_never_suppresses_the_close_assessment(self):
-        from lib.control.session_publication import saved_current_assignment
-        sid = self.launch(profile='room')['session_id']
-        with self.acting_as(sid):
-            self.hub.handoff(None, outcome='no-durable-update', detail='Nothing new')
-        self.assertFalse(saved_current_assignment(self.hub, self.hub.get(sid)))
+
+
+class PublicationLinkageTests(PublicationRowFixture):
+    """Publication identity comes from the verified actor, never receipt input.
+
+    Moved from the retired session experience linkage tests (N2).
+    """
+    def setUp(self):
+        super().setUp()
+        self.sid = self.launch(profile='room')['session_id']
+
+    def publish(self, source='explicit-save'):
+        with self.acting_as(self.sid), mock.patch('lib.control.session_hub.Hub', return_value=self.hub), \
+                mock.patch.dict(os.environ, dict(self.env, ASHA_HUB_SESSION_ID=self.sid,
+                                                ASHA_HUB_GENERATION='1'), clear=True):
+            return memory_v2.publish(self.project, ACTIVE, DECISIONS, publication_source=source)
+
+    def test_unverified_actor_refuses_publication_without_writing_memory(self):
+        before = self.digests()
+        with mock.patch('lib.control.session_hub.Hub', return_value=self.hub), \
+                mock.patch.object(self.hub, 'actor', side_effect=StoreError('unverified actor')), \
+                mock.patch.dict(os.environ, dict(self.env, ASHA_HUB_SESSION_ID=self.sid), clear=True):
+            with self.assertRaises(StoreError):
+                memory_v2.publish(self.project, ACTIVE, DECISIONS)
+        self.assertEqual(before, self.digests())
+        self.assertEqual(self.rows(self.sid), [])
+
+    def test_ordinary_and_close_source_publications_carry_no_hub_linkage(self):
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            receipt = memory_v2.publish(self.project, ACTIVE, DECISIONS)
+        self.assertNotIn('hub_session_id', receipt)
+        self.assertNotIn('hub_session_id', self.publish(source='close'))
+        self.assertEqual(self.rows(self.sid), [])
+
+    def test_recording_failure_retains_successful_memory_receipt(self):
+        with mock.patch('lib.control.session_publication.record_publication', side_effect=StoreError('unavailable')):
+            receipt = self.publish()
+        self.assertEqual(receipt['status'], 'published')
+        self.assertEqual(receipt['hub_publication_status'], 'unavailable')
+        self.assertEqual((self.memory / 'activeContext.md').read_text(), ACTIVE)
+
+
+class PostCommitReceiptTests(unittest.TestCase):
+    """Moved from the retired session experience review regressions (N2)."""
+    def test_publication_receipt_survives_post_commit_config_failure(self):
+        case = save_fixture.SaveCAS('test_user_publish_without_predraft_digests_refuses')
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        publisher = save_fixture.memory_v2
+        before = publisher.snapshot_digests(publisher.read_published_snapshot(case.root))
+        original = publisher._remove_journal
+        def after_commit(root):
+            original(root)
+            (root / '.asha/config.json').write_text('{broken')
+        with mock.patch.object(publisher, '_remove_journal', side_effect=after_commit):
+            result = publisher.publish(case.root, publisher.ACTIVE_TEMPLATE,
+                                       '# Decisions\n\n- Published successfully.\n', expected_preimages=before)
+        self.assertEqual(result['status'], 'published')
+        self.assertIn('Published successfully', (case.root / 'Memory/decisions.md').read_text())
 
 
 class FinishedAndLabelTests(PublicationRowFixture):

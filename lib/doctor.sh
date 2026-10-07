@@ -76,13 +76,11 @@ EOF
   local imported_rc=0
   _asha_doctor_imported_skills_section || imported_rc=$?
   _asha_doctor_session_profile_section "$target"
-  local experience_rc=0
-  _asha_doctor_experience_configuration || experience_rc=$?
   local daemon_rc=0
   _asha_doctor_codex_daemon_section "$target" || daemon_rc=$?
   local budget_rc=0
   _asha_doctor_operational_budget_section || budget_rc=$?
-  [[ $drift_rc -eq 0 && $ws_rc -eq 0 && $imported_rc -eq 0 && $experience_rc -eq 0 && $daemon_rc -eq 0 \
+  [[ $drift_rc -eq 0 && $ws_rc -eq 0 && $imported_rc -eq 0 && $daemon_rc -eq 0 \
      && $budget_rc -eq 0 ]]
 }
 
@@ -111,18 +109,6 @@ _asha_doctor_codex_daemon_section() {
     "${ASHA_HOME:-$HOME/.asha}/state/control/hub-rejected-events.jsonl")
 }
 
-# The public doctor validates the same user-config default Control resolves.
-_asha_doctor_experience_configuration() {
-  python3 - "$MARKET_ROOT" <<'PYEOF'
-import sys
-sys.path.insert(0, sys.argv[1])
-from lib.control.projects import experience_default
-mode, source, error = experience_default()
-print(('FAIL  ' + error) if error else f'PASS  Session experience default: {mode} ({source}); native review gated')
-raise SystemExit(1 if error else 0)
-PYEOF
-}
-
 # What each harness actually does with ASHA_SESSION_PROFILE, read from the
 # capability registry rather than restated here. Never fails doctor: an
 # operator launching a worker needs to see which observations that harness
@@ -133,10 +119,8 @@ _asha_doctor_session_profile_section() {
   _asha_doctor_capability_report session-profile "${1:-all}"
   _asha_doctor_capability_report project-memory "${1:-all}"
   echo ""
-  echo "── Session experience (user default/project override; builtin off; native review gated) ──"
-  _asha_doctor_capability_report session-experience "${1:-all}"
+  echo "── Session guidance (selected active learnings) ──"
   _asha_doctor_capability_report session-guidance "${1:-all}"
-  _asha_doctor_capability_report experience-review "${1:-all}"
 }
 
 # Imported skills are a user-owned source plane, so repository drift checks

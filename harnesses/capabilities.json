@@ -115,34 +115,14 @@
             "Delivery through the Stop seam requires jq in the worker's PATH; the queued message and pointer line remain"
           ]
         },
-        "session-experience": {
-          "support": "partial",
-          "surface": "User default/project override; bounded completion request and report/handoff capture; verified explicit-save linkage",
-          "verifier": "python test_experience_defaults/test_experience_publication_linkage; tests:test-session-hub-hooks/test-install",
-          "limitations": [
-            "Builtin policy is off; invalid config stays off and doctor reports it; no installer enables capture",
-            "Capture, task completion and Memory handoff are independent; finished reporting is not gated on a save",
-            "Fixture-tested seams; native inference probes remain outstanding"
-          ]
-        },
         "session-guidance": {
           "support": "partial",
           "surface": "Automatic active compatible worker guidance on launch/send/resume; --learning selects explicitly and --no-learning supplies none",
-          "verifier": "python test_experience_automatic_guidance/test_experience_guidance_regressions/test_experience_release",
+          "verifier": "python test_experience_automatic_guidance/test_experience_guidance_regressions/test_experience_retired",
           "limitations": [
             "At most three rules and 3 KiB; project scope, harness scope, distinct source-session count then ID; Rooms unchanged",
             "Supply is not proof of use; unknown native version and outcomes remain unknown",
             "Native delivery probes remain outstanding"
-          ]
-        },
-        "experience-review": {
-          "support": "unsupported",
-          "surface": "Native automatic review remains gated; explicit-save advisory review by chair or verified project Room, at most five reports per publication",
-          "verifier": "python test_experience_defaults/test_control_experience_review/test_experience_review_regressions",
-          "limitations": [
-            "Automatic native execution is gated off; advisory-save-review skips own lineage and preserves native custody precedence",
-            "Claude adapter specifies --bare, empty tools, strict empty MCP, no skills, no hooks; only adapter fixtures and local --help checked",
-            "No publication authority, automatic permission approval, recursive review or native token-cap claim"
           ]
         },
         "project-memory": {
@@ -278,34 +258,14 @@
             "Fixture evidence is not a paid native probe"
           ]
         },
-        "session-experience": {
-          "support": "partial",
-          "surface": "User default/project override; bounded completion request and report/handoff capture; verified explicit-save linkage",
-          "verifier": "python test_experience_defaults/test_experience_publication_linkage; tests:test-session-hub-hooks/test-install",
-          "limitations": [
-            "Builtin policy is off; invalid config stays off and doctor reports it; no installer enables capture",
-            "Capture, task completion and Memory handoff are independent; finished reporting is not gated on a save",
-            "Fixture-tested seams; native inference probes remain outstanding"
-          ]
-        },
         "session-guidance": {
           "support": "partial",
           "surface": "Automatic active compatible worker guidance on launch/send/resume; --learning selects explicitly and --no-learning supplies none",
-          "verifier": "python test_experience_automatic_guidance/test_experience_guidance_regressions/test_experience_release",
+          "verifier": "python test_experience_automatic_guidance/test_experience_guidance_regressions/test_experience_retired",
           "limitations": [
             "At most three rules and 3 KiB; project scope, harness scope, distinct source-session count then ID; Rooms unchanged",
             "Supply is not proof of use; unknown native version and outcomes remain unknown",
             "Native delivery probes remain outstanding"
-          ]
-        },
-        "experience-review": {
-          "support": "unsupported",
-          "surface": "Native automatic review remains gated; explicit-save advisory review by chair or verified project Room, at most five reports per publication",
-          "verifier": "python test_experience_defaults/test_control_experience_review/test_experience_review_regressions",
-          "limitations": [
-            "Automatic native execution is gated off; advisory-save-review skips own lineage and preserves native custody precedence",
-            "No equivalent verified packet-only backend adapter; no fallback to another harness",
-            "No publication authority, automatic permission approval, recursive review or native token-cap claim"
           ]
         },
         "project-memory": {
@@ -426,34 +386,14 @@
             "Fixture evidence is not a paid native probe"
           ]
         },
-        "session-experience": {
-          "support": "partial",
-          "surface": "User default/project override; bounded completion request and report/handoff capture; verified explicit-save linkage",
-          "verifier": "python test_experience_defaults/test_experience_publication_linkage; tests:test-session-hub-hooks/test-install",
-          "limitations": [
-            "Builtin policy is off; invalid config stays off and doctor reports it; no installer enables capture",
-            "Capture, task completion and Memory handoff are independent; finished reporting is not gated on a save",
-            "Fixture-tested seams; native inference probes remain outstanding"
-          ]
-        },
         "session-guidance": {
           "support": "partial",
           "surface": "Automatic active compatible worker guidance on launch/send/resume; --learning selects explicitly and --no-learning supplies none",
-          "verifier": "python test_experience_automatic_guidance/test_experience_guidance_regressions/test_experience_release",
+          "verifier": "python test_experience_automatic_guidance/test_experience_guidance_regressions/test_experience_retired",
           "limitations": [
             "At most three rules and 3 KiB; project scope, harness scope, distinct source-session count then ID; Rooms unchanged",
             "Supply is not proof of use; unknown native version and outcomes remain unknown",
             "Native delivery probes remain outstanding"
-          ]
-        },
-        "experience-review": {
-          "support": "unsupported",
-          "surface": "Native automatic review remains gated; explicit-save advisory review by chair or verified project Room, at most five reports per publication",
-          "verifier": "python test_experience_defaults/test_control_experience_review/test_experience_review_regressions",
-          "limitations": [
-            "Automatic native execution is gated off; advisory-save-review skips own lineage and preserves native custody precedence",
-            "No equivalent verified packet-only backend adapter; no fallback to another harness",
-            "No publication authority, automatic permission approval, recursive review or native token-cap claim"
           ]
         },
         "project-memory": {
@@ -574,34 +514,14 @@
             "Fixture evidence is not a paid native probe"
           ]
         },
-        "session-experience": {
-          "support": "partial",
-          "surface": "User default/project override; bounded completion request and report/handoff capture; verified explicit-save linkage",
-          "verifier": "python test_experience_defaults/test_experience_publication_linkage; tests:test-session-hub-hooks/test-install",
-          "limitations": [
-            "Builtin policy is off; invalid config stays off and doctor reports it; no installer enables capture",
-            "Capture, task completion and Memory handoff are independent; finished reporting is not gated on a save",
-            "Fixture-tested seams; native inference probes remain outstanding"
-          ]
-        },
         "session-guidance": {
           "support": "partial",
           "surface": "Automatic active compatible worker guidance on launch/send/resume; --learning selects explicitly and --no-learning supplies none",
-          "verifier": "python test_experience_automatic_guidance/test_experience_guidance_regressions/test_experience_release",
+          "verifier": "python test_experience_automatic_guidance/test_experience_guidance_regressions/test_experience_retired",
           "limitations": [
             "At most three rules and 3 KiB; project scope, harness scope, distinct source-session count then ID; Rooms unchanged",
             "Supply is not proof of use; unknown native version and outcomes remain unknown",
             "Native delivery probes remain outstanding"
-          ]
-        },
-        "experience-review": {
-          "support": "unsupported",
-          "surface": "Native automatic review remains gated; explicit-save advisory review by chair or verified project Room, at most five reports per publication",
-          "verifier": "python test_experience_defaults/test_control_experience_review/test_experience_review_regressions",
-          "limitations": [
-            "Automatic native execution is gated off; advisory-save-review skips own lineage and preserves native custody precedence",
-            "No equivalent verified packet-only backend adapter; no fallback to another harness",
-            "No publication authority, automatic permission approval, recursive review or native token-cap claim"
           ]
         },
         "project-memory": {

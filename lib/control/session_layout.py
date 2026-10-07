@@ -249,11 +249,8 @@ def render_list(rows, *, selected, anchor, space, width, grouping, ascii_only, n
 
 
 def _meta(row):
-    capture = (row.get('closure') or {}).get('capture') or row.get('capture') or {}
-    experience = (f"capture:{capture.get('status', 'disabled')} review:{row.get('experience_review', 'none')}"
-                  if capture else '')
     usage = usage_line(row.get('usage')) if tokens_label(row.get('usage')) else ''
-    return [part for part in (f"{row.get('pending_messages', 0)} queued messages", experience,
+    return [part for part in (f"{row.get('pending_messages', 0)} queued messages",
                               selection_label(row), usage) if part]
 
 

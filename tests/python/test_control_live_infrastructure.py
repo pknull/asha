@@ -16,7 +16,7 @@ LIVE = (
     'lib.control.supervisor_service', 'lib.control.projects', 'lib.control.rooms',
     'lib.control.hub_cli', 'lib.control.session_hub', 'lib.control.session_tui',
     'lib.control.session_modals', 'lib.control.sessions', 'lib.control.session_store',
-    'lib.control.session_experience', 'lib.control.doctor', 'lib.control.text',
+    'lib.control.session_guidance', 'lib.control.doctor', 'lib.control.text',
     'lib.control.tmux',
 )
 
