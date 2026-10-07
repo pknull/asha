@@ -924,28 +924,19 @@ def default_ledger_path() -> Path:
     return asha_home / "state" / "proton-mail" / "replay-ledger.json"
 
 
-def _require_private_mode(path: Path, mode: int) -> None:
-    actual = path.stat().st_mode & 0o777
-    if actual & 0o077 or actual & mode != mode:
-        raise SafetyError(f"{path} must have mode {mode:04o}")
-
-
+# Ledger state is created private (0700 directory, 0600 files); existing modes
+# are the local user's own and are not re-validated.
 def _private_directory(path: Path) -> None:
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     if path.is_symlink() or not path.is_dir():
         raise SafetyError("replay ledger directory must be a real directory")
-    _require_private_mode(path, 0o700)
 
 
 def _open_private_lock(path: Path) -> int:
     flags = os.O_CREAT | os.O_RDWR
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    fd = os.open(path, flags, 0o600)
-    if os.fstat(fd).st_mode & 0o077:
-        os.close(fd)
-        raise SafetyError("replay ledger lock must have mode 0600")
-    return fd
+    return os.open(path, flags, 0o600)
 
 
 def _read_ledger(path: Path) -> dict[str, Any]:
@@ -953,7 +944,6 @@ def _read_ledger(path: Path) -> dict[str, Any]:
         return {"version": 1, "reservations": {}}
     if path.is_symlink() or not path.is_file():
         raise SafetyError("replay ledger must be a regular file")
-    _require_private_mode(path, 0o600)
     if path.stat().st_size > MAX_LEDGER_BYTES:
         raise SafetyError("replay ledger exceeds configured byte limit")
     try:

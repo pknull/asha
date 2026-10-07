@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -73,6 +74,33 @@ class BrokerFixture(unittest.TestCase):
         )
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("asha.process-route.v1", json.loads(result.stdout)["contract"])
+
+    def test_opt_in_telemetry_appends_through_a_same_user_symlink(self):
+        state = Path(self.tmp.name) / "asha-home" / "state"
+        state.mkdir(parents=True)
+        elsewhere = Path(self.tmp.name) / "other-disk" / "broker-events.jsonl"
+        elsewhere.parent.mkdir()
+        elsewhere.write_text("")
+        (state / "broker-events.jsonl").symlink_to(elsewhere)
+        with mock.patch.dict(os.environ, {"ASHA_BROKER_TELEMETRY": "1"}):
+            broker._telemetry("route", {"selected": ["x"]}, self.project, "claude")
+        events = [json.loads(line) for line in elsewhere.read_text().splitlines()]
+        self.assertEqual(["route"], [event["event"] for event in events])
+        self.assertTrue((state / "broker-events.jsonl").is_symlink())
+
+    def test_opt_in_telemetry_skips_a_non_regular_target_without_blocking(self):
+        state = Path(self.tmp.name) / "asha-home" / "state"
+        state.mkdir(parents=True)
+        os.mkfifo(state / "broker-events.jsonl")
+        with mock.patch.dict(os.environ, {"ASHA_BROKER_TELEMETRY": "1"}):
+            writer = threading.Thread(
+                target=broker._telemetry,
+                args=("route", {"selected": []}, self.project, "claude"),
+                daemon=True,
+            )
+            writer.start()
+            writer.join(timeout=5)
+        self.assertFalse(writer.is_alive(), "telemetry must never block on a FIFO")
 
 
 if __name__ == "__main__":

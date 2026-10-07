@@ -109,7 +109,7 @@ validate_skill_source() {
   ASHA_IMPORTED_SKILLS_DRIFTED=0
   lock="$src_dir/imported.lock.json"
   [[ -e "$lock" || -L "$lock" ]] || return 0
-  [[ -f "$lock" && ! -L "$lock" ]] \
+  [[ -f "$lock" ]] \
     || die "imported skill lockfile must be a regular file: $lock" 4
   while IFS= read -r name; do
     [[ "$name" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] \
@@ -184,16 +184,11 @@ prepare_imported_skill_adapter() {
     log "would derive imported skill adapter: $source -> $adapter"
     return 0
   fi
-  [[ ! -L "$adapters" ]] || die "imported skill adapter root must not be a symlink: $adapters" 4
   ensure_dir "$adapters"
   stage="$(mktemp -d "$adapters/.${mounted_name}.XXXXXX")"
   if ! cp -R "$source/." "$stage/"; then
     rm -rf "$stage"
     die "failed to copy imported skill into mount adapter: $source" 4
-  fi
-  if [[ -L "$stage/SKILL.md" ]]; then
-    rm -rf "$stage"
-    die "imported SKILL.md must not be a symlink: $source/SKILL.md" 4
   fi
   if ! python3 - "$stage/SKILL.md" "$mounted_name" <<'PY'
 import sys
@@ -291,7 +286,6 @@ PY
     rm -rf "$stage"
     die "failed to rewrite imported skill mount name: $source" 4
   fi
-  [[ ! -L "$adapter" ]] || { rm -rf "$stage"; die "imported skill adapter must not be a symlink: $adapter" 4; }
   [[ ! -e "$adapter" || -d "$adapter" ]] \
     || { rm -rf "$stage"; die "imported skill adapter must be a directory: $adapter" 4; }
   rm -rf "$adapter"

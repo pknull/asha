@@ -181,10 +181,8 @@ def _read_regular_bytes(path: Path, maximum: int, label: str) -> tuple[bytes, in
         raise ValueError(f"cannot open {label} read-only: {exc}") from exc
     try:
         metadata = os.fstat(fd)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-            raise ValueError(f"{label} must be one regular file")
-        if metadata.st_uid != os.geteuid():
-            raise ValueError(f"{label} is not owned by the effective user")
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"{label} must be a regular file")
         if metadata.st_size > maximum:
             raise ValueError(f"{label} exceeds {maximum} UTF-8 bytes")
         chunks: list[bytes] = []
@@ -271,8 +269,8 @@ def read_published_snapshot(project_dir: Path) -> PublishedSnapshot:
         raise ValueError(f"cannot open Memory publication lock read-only: {exc}") from exc
     try:
         metadata = os.fstat(fd)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-            raise ValueError("Memory publication lock must be one regular file")
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("Memory publication lock must be a regular file")
         fcntl.flock(fd, fcntl.LOCK_EX)
         return _read_published_snapshot_unlocked(root)
     finally:

@@ -12,7 +12,6 @@ import argparse
 import json
 import os
 import re
-import stat
 import sys
 import time
 from dataclasses import dataclass
@@ -405,19 +404,15 @@ def _telemetry(command: str, result: dict[str, Any], project_root: Path, harness
     path = asha_home / "state" / "broker-events.jsonl"
     try:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if path.exists():
-            mode = path.lstat().st_mode
-            if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
-                return
+        # Never open a FIFO or device: an append would block the broker.
+        if path.exists() and not path.is_file():
+            return
         event = {
             "version": 1, "timestamp": int(time.time()), "event": command,
             "harness": harness, "status": "ok",
             "result_count": len(result.get("relevant_sources", result.get("selected", []))),
         }
-        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-        if hasattr(os, "O_NOFOLLOW"):
-            flags |= os.O_NOFOLLOW
-        fd = os.open(path, flags, 0o600)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
             os.write(fd, (json.dumps(event, separators=(",", ":")) + "\n").encode())
             os.fchmod(fd, 0o600)

@@ -104,6 +104,11 @@ writing. A first import atomically regenerates `imported.lock.json`; later
 imports retain previous entries in lock history. Replacement moves prior user
 content into `.find-skills-backups/` rather than deleting it.
 
+The store trusts the local user: the lockfile, a skill directory, the backup
+root and the `.mounts` adapters may be links you made (for example into
+dotfiles), and the tool and installer follow them. A symlink inside an imported
+skill's own tree is still drift and blocks its mount.
+
 Run `find_skills.py status` or `asha doctor` to recompute local hashes. Drift is
 reported but never repaired automatically. Re-inspect upstream content at a new
 commit and obtain fresh approval for any update.

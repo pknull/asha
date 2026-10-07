@@ -308,6 +308,34 @@ else
 fi
 rm -f "$PROJECT/Work/markers/pass-declaration.json"
 
+# A same-user symlinked declaration is followed (threat model 2026-10-05); an
+# empty proof removes the link and never its target.
+LINK_OLD="link-old-$RANDOM-should-disappear"
+LINKED_DECLARATION="$WORK/linked-pass-declaration.json"
+printf '%s\n' "$LINK_OLD" > "$PROJECT/src/pass-proof.txt"
+(cd "$PROJECT" && HOME="$HOME_DIR" CLAUDE_PROJECT_DIR="$PROJECT" \
+  "$REPO_ROOT/plugins/session/tools/declare-pass.sh" "$LINK_OLD" replacement \
+  >/dev/null)
+mv "$PROJECT/Work/markers/pass-declaration.json" "$LINKED_DECLARATION"
+ln -s "$LINKED_DECLARATION" "$PROJECT/Work/markers/pass-declaration.json"
+VERIFY_LINKED="$(run_hook verify-pass-complete.sh \
+  '{"session_id":"verify-linked","cwd":"'"$PROJECT"'","stop_hook_active":false}')"
+printf '%s' "$VERIFY_LINKED" | jq -e --arg old "$LINK_OLD" \
+  '.decision == "block" and (.reason | contains($old) and contains("src/pass-proof.txt"))' \
+  >/dev/null 2>&1 \
+  && ok "verification Stop follows a same-user symlinked declaration" \
+  || fail "verification Stop follows a same-user symlinked declaration"
+printf 'replacement\n' > "$PROJECT/src/pass-proof.txt"
+VERIFY_LINKED_EMPTY="$(run_hook verify-pass-complete.sh \
+  '{"session_id":"verify-linked-2","cwd":"'"$PROJECT"'","stop_hook_active":false}')"
+[[ "$VERIFY_LINKED_EMPTY" == '{}' \
+   && ! -e "$PROJECT/Work/markers/pass-declaration.json" \
+   && ! -L "$PROJECT/Work/markers/pass-declaration.json" \
+   && -f "$LINKED_DECLARATION" ]] \
+  && ok "empty proof removes a symlinked declaration, never its target" \
+  || fail "empty proof removes a symlinked declaration, never its target"
+rm -f "$PROJECT/Work/markers/pass-declaration.json" "$LINKED_DECLARATION"
+
 # Hooks run outside the Codex sandbox, so they must never execute a file the
 # project (and so a sandboxed agent) can write: no project-local style auditor
 # and no project .asha/.venv interpreter. Both are planted here and must stay

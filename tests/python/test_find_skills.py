@@ -805,28 +805,78 @@ class ImportAndStatusTests(unittest.TestCase):
         lock = json.loads((self.asha_home / "skills/imported.lock.json").read_text())
         self.assertEqual(len(lock["history"]["demo"]), 1)
 
-    def test_replace_refuses_symlinked_backup_root_before_moving_destination(self):
+    def _import_then_change_locally(self):
+        inspection, _client, _skill_md = inspection_fixture()
+        first = find_skills.build_import_proposal(inspection, self.asha_home, self.repo)
+        find_skills._write_import(first, approve=True, replace=False)
+        (self.asha_home / "skills/demo/reference.txt").write_bytes(b"Keeper local bytes\n")
+        return inspection
+
+    def test_replace_follows_a_same_user_symlinked_backup_root(self):
+        inspection = self._import_then_change_locally()
+        outside = Path(self.temp.name) / "dotfiles-backups"
+        outside.mkdir()
+        (self.asha_home / "skills/.find-skills-backups").symlink_to(outside, target_is_directory=True)
+        retry = find_skills.build_import_proposal(inspection, self.asha_home, self.repo)
+
+        result = find_skills._write_import(retry, approve=True, replace=True)
+
+        backup = Path(result["backup"])
+        self.assertEqual(backup.parent.resolve(), outside.resolve())
+        self.assertEqual((outside / backup.name / "reference.txt").read_bytes(), b"Keeper local bytes\n")
+        self.assertEqual(find_skills.status_store(self.asha_home)["state"], "clean")
+
+    def test_store_reads_and_writes_a_same_user_symlinked_lockfile(self):
+        inspection = self._import_then_change_locally()
+        lock_path = self.asha_home / "skills/imported.lock.json"
+        outside = Path(self.temp.name) / "dotfiles" / "imported.lock.json"
+        outside.parent.mkdir()
+        lock_path.rename(outside)
+        lock_path.symlink_to(outside)
+
+        self.assertIn("demo", find_skills_store.load_lock(lock_path)["skills"])
+        retry = find_skills.build_import_proposal(inspection, self.asha_home, self.repo)
+        result = find_skills._write_import(retry, approve=True, replace=True)
+
+        self.assertTrue(result["written"])
+        self.assertEqual(len(find_skills_store.load_lock(lock_path)["history"]["demo"]), 1)
+        self.assertEqual(find_skills.status_store(self.asha_home)["state"], "clean")
+
+    def test_writer_lock_follows_a_same_user_symlink(self):
+        inspection = self._import_then_change_locally()
+        writer_lock = self.asha_home / "skills/.imported.lock.write.lock"
+        outside = Path(self.temp.name) / "writer.lock"
+        outside.write_bytes(b"")
+        writer_lock.unlink()
+        writer_lock.symlink_to(outside)
+        retry = find_skills.build_import_proposal(inspection, self.asha_home, self.repo)
+
+        result = find_skills._write_import(retry, approve=True, replace=True)
+
+        self.assertTrue(result["written"])
+        self.assertEqual(find_skills.status_store(self.asha_home)["state"], "clean")
+
+    def test_status_and_replace_follow_a_same_user_symlinked_skill_directory(self):
         inspection, _client, _skill_md = inspection_fixture()
         first = find_skills.build_import_proposal(inspection, self.asha_home, self.repo)
         find_skills._write_import(first, approve=True, replace=False)
         destination = self.asha_home / "skills/demo"
-        changed = destination / "reference.txt"
-        changed.write_bytes(b"Keeper local bytes\n")
+        outside = Path(self.temp.name) / "dotfiles-demo"
+        destination.rename(outside)
+        destination.symlink_to(outside, target_is_directory=True)
+
+        self.assertEqual(find_skills.status_store(self.asha_home)["state"], "clean")
+        noop = find_skills.build_import_proposal(inspection, self.asha_home, self.repo)
+        self.assertEqual(noop["action"], "noop")
+
+        (outside / "reference.txt").write_bytes(b"Keeper local bytes\n")
         retry = find_skills.build_import_proposal(inspection, self.asha_home, self.repo)
-        lock_path = self.asha_home / "skills/imported.lock.json"
-        lock_before = lock_path.read_bytes()
-        outside = Path(self.temp.name) / "outside-backups"
-        outside.mkdir()
-        backup_root = self.asha_home / "skills/.find-skills-backups"
-        backup_root.symlink_to(outside, target_is_directory=True)
+        result = find_skills._write_import(retry, approve=True, replace=True)
 
-        with self.assertRaisesRegex(find_skills.ValidationError, "must not be a symlink"):
-            find_skills._write_import(retry, approve=True, replace=True)
-
-        self.assertTrue(destination.is_dir())
-        self.assertEqual(changed.read_bytes(), b"Keeper local bytes\n")
-        self.assertEqual(lock_path.read_bytes(), lock_before)
-        self.assertEqual(list(outside.iterdir()), [])
+        self.assertTrue(destination.is_dir() and not destination.is_symlink())
+        self.assertTrue(Path(result["backup"]).is_symlink())
+        self.assertEqual((outside / "reference.txt").read_bytes(), b"Keeper local bytes\n")
+        self.assertEqual(find_skills.status_store(self.asha_home)["state"], "clean")
 
     def test_replace_refuses_nondirectory_backup_root_before_moving_destination(self):
         inspection, _client, _skill_md = inspection_fixture()

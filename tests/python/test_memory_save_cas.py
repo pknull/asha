@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -59,3 +60,20 @@ class SaveCAS(unittest.TestCase):
             self.assertEqual(result['publication']['status'], 'published')
             self.assertFalse(result['git_invoked'])
             self.assertNotEqual(result['after']['Memory/decisions.md'], result['current']['decisions'])
+
+    def test_managed_drafts_read_regardless_of_link_count_and_owner(self):
+        os.link(self.active, self.root / 'active.draft.link')
+        os.link(self.decisions, self.root / 'decisions.draft.link')
+        self.assertEqual(save_none._draft(self.active, memory_v2.ACTIVE_LIMIT, 'active draft'),
+                         memory_v2.ACTIVE_TEMPLATE)
+        with mock.patch('os.geteuid', return_value=os.geteuid() + 1):
+            self.assertIn('First.', save_none._draft(self.decisions, memory_v2.DECISIONS_LIMIT, 'decisions draft'))
+
+    def test_managed_draft_must_still_be_a_bounded_regular_file(self):
+        fifo = self.root / 'fifo.draft'
+        os.mkfifo(fifo)
+        with self.assertRaisesRegex(ValueError, 'bounded regular file'):
+            save_none._draft(fifo, memory_v2.ACTIVE_LIMIT, 'active draft')
+        self.active.write_text('x' * (memory_v2.ACTIVE_LIMIT + 1))
+        with self.assertRaisesRegex(ValueError, 'bounded regular file'):
+            save_none._draft(self.active, memory_v2.ACTIVE_LIMIT, 'active draft')
