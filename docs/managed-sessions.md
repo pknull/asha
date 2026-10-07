@@ -128,6 +128,7 @@ Rooms retain their existing tmux attach/close behavior.
 ## Commands
 
 ```sh
+asha control projects --match NAME --json
 asha control session create --cwd /absolute/project --prompt 'Assignment' --max-turns 12 --json
 asha control supervisor start --json
 asha control session list --json
@@ -146,6 +147,11 @@ asha control session quiesce --json
 asha control session search 'manuscript review' --limit 50 --json
 asha control session rebuild-search --json
 ```
+
+`projects` lists the Asha projects a session can launch in, indexed from
+`--root DIR`, then `ASHA_PROJECTS_ROOT`, then the configured `project_roots`,
+then the current directory; `--match` selects by name, directory, relative
+path or project ID.
 
 `create` records work; the supervisor starts its owner on the next sweep. An
 operator can also run `session owner SESSION_ID` in the foreground. One owner is

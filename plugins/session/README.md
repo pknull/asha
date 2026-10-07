@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 2.5.0
+**Version**: 2.5.1
 
 Compact explicit memory publication, bounded crash recovery, reviewed learning
 lifecycle, policy guardrails, guarded loops, and workspace management.
@@ -135,6 +135,12 @@ for the repository; workspace state answers what coordinates the repositories.
   checks required by `AGENTS.md`.
 
 ## Version history
+
+### 2.5.1
+
+The `operate-control` skill resolves a project through
+`asha control projects --match NAME --json`, the project index's new Control
+verb, instead of the retiring `asha initiative projects`.
 
 ### 2.5.0
 

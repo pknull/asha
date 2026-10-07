@@ -95,6 +95,7 @@ def _control_usage(stream=sys.stdout) -> None:
 Run `asha control` in a terminal to open the Control TUI.
 Use `asha control --initiatives` for advanced staged workflows.
 Use `asha control session list --json` as the non-interactive fallback.
+Use `asha control projects [--match TEXT] [--json]` to list the projects sessions can launch in.
 Use `asha control tmux` to print the optional tmux integration snippet.
 Use `asha control session launch --project PROJECT --prompt TEXT [--harness HARNESS]`
 to start a native worker; add `--profile room` for an Asha project conversation,
@@ -1989,6 +1990,52 @@ def _room_command(args: list[str], env: Mapping[str, str]) -> int:
     return 0
 
 
+_PROJECTS_USAGE = "Usage: asha control projects [--root DIR]... [--depth N] [--match TEXT] [--json]"
+
+
+def _projects_command(args: list[str], env: Mapping[str, str]) -> int:
+    """List the projects a session or Room can launch in, as the chair resolves them."""
+    from .projects import DEFAULT_DEPTH, list_projects_across, resolve_roots
+    if args and args[0] in {"-h", "--help", "help"}:
+        print(_PROJECTS_USAGE)
+        return 0
+    options: dict[str, Any] = {"root": [], "depth": None, "match": None, "json": False}
+    index = 0
+    while index < len(args):
+        argument, name = args[index], args[index][2:]
+        if argument not in {"--root", "--depth", "--match", "--json"}:
+            raise ValueError(f"unknown projects argument: {argument}")
+        if name != "root" and options[name] not in {None, False}:
+            raise ValueError(f"{argument} may be specified only once")
+        if name == "json":
+            options["json"], index = True, index + 1
+            continue
+        if index + 1 >= len(args):
+            raise ValueError(f"{argument} requires a value")
+        if name == "root":
+            options["root"].append(args[index + 1])
+        else:
+            options[name] = args[index + 1]
+        index += 2
+    try:
+        depth = DEFAULT_DEPTH if options["depth"] is None else int(options["depth"])
+    except ValueError as exc:
+        raise ValueError("projects --depth must be an integer") from exc
+    roots, roots_from = resolve_roots(options["root"], env=env)
+    payload = list_projects_across(roots, depth=depth, match=options["match"], source_of_roots=roots_from)
+    if options["json"]:
+        _json(payload)
+        return 0
+    width = max([len(entry["name"]) for entry in payload["projects"]], default=0)
+    for entry in payload["projects"]:
+        print(f"{entry['name']:<{width}}  {entry['root']}")
+    if not payload["projects"]:
+        print("No projects.")
+    for item in payload["skipped"]:
+        print(f"skipped {item['root']}: {item['reason']}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     values = os.environ if env is None else env
@@ -2030,6 +2077,8 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             if tail and tail[0] == "session":
                 from .sessions import main as session_main
                 return session_main(tail[1:], env=values)
+            if tail and tail[0] == "projects":
+                return _projects_command(tail[1:], values)
             if tail and tail[0] == "registry":
                 from .registry_cli import main as registry_main
                 return registry_main(tail[1:], env=values)

@@ -1,4 +1,4 @@
-"""The coordinator's project index: declared manifest first, bounded discovery otherwise."""
+"""The project index sessions launch from: declared manifest first, bounded discovery otherwise."""
 
 from __future__ import annotations
 
@@ -9,12 +9,35 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from lib.control.orchestration import cli
+from lib.control import cli
 from lib.control.projects import (
     PROJECT_LIST_CONTRACT, ProjectIndexError, configured_roots, display_name,
     list_projects, list_projects_across, resolve_roots,
 )
-from tests.python.orchestration_workspace_fixtures import write_manifest, write_member
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def write_member(root: Path, project_id: str) -> None:
+    (root / ".asha").mkdir(parents=True)
+    (root / "Memory").mkdir()
+    (root / "Work/session-state").mkdir(parents=True)
+    (root / ".git").mkdir()
+    (root / ".asha/config.json").write_text(json.dumps({
+        "initialized": True, "memory_version": 2, "project_id": project_id,
+    }) + "\n")
+    (root / "Memory/activeContext.md").write_text(
+        "# Objective\n\nO\n\n# State\n\nS\n\n# Next\n\n- N\n\n# Blockers\n\n- None.\n"
+    )
+    (root / "Memory/decisions.md").write_text("# Decisions\n\n- One.\n")
+
+
+def write_manifest(workspace: Path, members: tuple[str, ...]) -> None:
+    (workspace / ".asha").mkdir(parents=True, exist_ok=True)
+    (workspace / ".asha/workspace.json").write_text(json.dumps({
+        "version": 1, "workspace_name": "fixture-workspace",
+        "repositories": [{"path": member} for member in members],
+    }) + "\n")
 
 
 class ProjectIndexTests(unittest.TestCase):
@@ -40,12 +63,16 @@ class ProjectIndexTests(unittest.TestCase):
         nested = self.root / "group" / "deep"
         write_member(nested, "deep-project")
 
+    def run_cli(self, *args: str) -> tuple[int, str, str]:
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = cli.main(["control", "projects", *args], env=self.env)
+        return rc, out.getvalue(), err.getvalue()
+
     def payload(self, *args: str) -> dict:
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            rc = cli.main(["initiative", "projects", "--root", str(self.root), *args, "--json"], env=self.env)
+        rc, out, _err = self.run_cli("--root", str(self.root), *args, "--json")
         self.assertEqual(rc, 0)
-        return json.loads(out.getvalue())
+        return json.loads(out)
 
     def test_discovery_lists_bounded_asha_projects_in_name_order(self) -> None:
         payload = list_projects(self.root)
@@ -95,13 +122,9 @@ class ProjectIndexTests(unittest.TestCase):
         entry = next(item for item in payload["projects"] if item["name"] == "pk.zalgo")
         self.assertTrue(entry["jj_colocated"])
         self.assertEqual(entry["relative_path"], "bots/pk.zalgo")
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            rc = cli.main(
-                ["initiative", "projects", "--root", str(self.root)], env=self.env,
-            )
+        rc, out, _err = self.run_cli("--root", str(self.root))
         self.assertEqual(rc, 0)
-        self.assertIn("[bots/pk.zalgo]", out.getvalue())
+        self.assertIn(f"pk.zalgo  {nested}", out)
 
     def test_match_resolves_a_nested_project_by_relative_path(self) -> None:
         bots = self.root / "bots"
@@ -160,11 +183,49 @@ class ProjectIndexTests(unittest.TestCase):
         payload = self.payload("--match", "termart")
         self.assertEqual(payload["contract"], PROJECT_LIST_CONTRACT)
         self.assertEqual([item["name"] for item in payload["projects"]], ["termart"])
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
-            rc = cli.main(["initiative", "projects", "--root", str(self.root), "--depth", "x", "--json"], env=self.env)
-        self.assertEqual(rc, 2)
-        self.assertIn("--depth must be an integer", err.getvalue())
+        for args, error in (
+            (("--depth", "x"), "projects --depth must be an integer"),
+            (("--depth",), "--depth requires a value"),
+            (("--match", "a", "--match", "b"), "--match may be specified only once"),
+            (("--json", "--json"), "--json may be specified only once"),
+            (("--repo", "x"), "unknown projects argument: --repo"),
+            (("termart",), "unknown projects argument: termart"),
+        ):
+            with self.subTest(args=args):
+                rc, out, err = self.run_cli("--root", str(self.root), *args)
+                self.assertEqual((rc, out), (2, ""))
+                self.assertEqual(err, f"asha control: {error}\n")
+
+    def test_text_lists_each_project_with_its_root(self) -> None:
+        rc, out, err = self.run_cli("--root", str(self.root), "--depth", "1")
+        self.assertEqual((rc, err), (0, ""))
+        self.assertEqual(out.splitlines(), [
+            f"asha     {self.root / 'asha'}", f"termart  {self.root / 'termart'}",
+        ])
+        rc, out, _err = self.run_cli("--root", str(self.root), "--match", "nothing")
+        self.assertEqual((rc, out), (0, "No projects.\n"))
+        rc, out, _err = self.run_cli("--root", str(self.root / "missing"))
+        self.assertEqual(rc, 0)
+        self.assertIn(f"skipped {self.root / 'missing'}: project root is not a directory", out)
+
+    def test_help_names_the_verb(self) -> None:
+        rc, out, _err = self.run_cli("--help")
+        self.assertEqual(rc, 0)
+        self.assertIn("asha control projects [--root DIR]... [--depth N] [--match TEXT] [--json]", out)
+
+    def test_the_legacy_initiative_verb_lists_the_same_index(self) -> None:
+        # L-b deletes this with `asha initiative`; until then both verbs share the index.
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = cli.main(["initiative", "projects", "--root", str(self.root), "--json"], env=self.env)
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out.getvalue()), self.payload())
+
+    def test_the_operate_control_skill_resolves_projects_through_the_control_verb(self) -> None:
+        skill = (ROOT / "plugins/session/skills/operate-control/SKILL.md").read_text()
+        self.assertIn("asha control projects --match NAME --json", skill)
+        self.assertNotIn("asha initiative\nprojects", skill)
+        self.assertNotIn("asha initiative projects", skill)
 
 
 if __name__ == "__main__":
