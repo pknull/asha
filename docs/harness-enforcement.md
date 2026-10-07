@@ -169,43 +169,31 @@ workspace contains the checkout that `~/.local/bin/asha` points to.
 
 #### Installer preservation boundary
 
-Direct hook registration, full Codex install/update, and uninstall share a
-bounded, nofollow, read-only preflight in `harnesses/codex.sh`. **Shared
-`config.toml` is never created, written, replaced, removed, backed up, renamed,
-or chmodded.** Features, MCP, native hook trust, workspace trust, comments,
-line endings, and trailing bytes remain native-owned. A concurrent native
-replacement or in-place save is not overwritten or restored from a snapshot.
-There is no TOML publisher, feature insertion, trust grant, or migration.
+Install, update and uninstall **never create, write, replace, remove, back up,
+rename or chmod Codex's shared `config.toml`.** Features, MCP, native hook
+trust, workspace trust, comments, line endings and trailing bytes remain
+native-owned. A concurrent native replacement or in-place save is not
+overwritten or restored from a snapshot. There is no TOML publisher, feature
+insertion, trust grant or migration. Install reads the file, following a
+dotfiles symlink, and refuses only when it is not a regular file, does not
+parse as TOML, or gives `features` or `hooks` a non-table value or
+`features.hooks` a non-boolean one. Uninstall does not read it. Inline hooks
+are not inspected: a leftover pre-JSON `asha:start` block is the user's to
+delete (INSTALLER.md).
 
 Asha renders deterministic native `CODEX_HOME/hooks.json`, without
-`hooks.state`. Existing JSON requires strict current adapter source/type/path
-and current-hash ownership in the generated-artifact manifest. Unrecorded
-(even identical), modified, symlink/nonregular, malformed/duplicate, unsafe or
-ambiguous artifacts refuse before corresponding adapter staging, mounts,
-rules, agents, or legacy cleanup. All consumed ledger rows are structurally
-validated; the unrelated modified-artifact policy is unchanged. `--force`
-cannot bypass hook ownership. Direct sourced hook calls partial-finalize their
-own manifest cycle, retaining unrelated records and caller shell/stage state.
-Full install records the hook in its own cycle; owned-only uninstall uses the
-same strict proof before the generic lifecycle.
-
-Legacy TOML inspection retains the lexical/parser safety: nested, quoted and
-dotted tables, split native trust, and fake fences inside multiline values
-are classified, not rewritten. Exactly equivalent selected/canary/current-root
-Asha inline definitions mean a genuine hook **no-op**, without duplicate JSON;
-independently requested primitives may proceed. Needed inline update/removal,
-old-root migration, unknown tags, or inline/JSON Asha duplication refuse with
-manual-inspection guidance. Uninstall refuses while Asha inline remains; it
-never reports a fake complete removal. Foreign inline handlers coexist with
-nonduplicate owned JSON and a mixed-source warning.
-
-Absent JSON publication uses an atomic no-clobber link: a newly appeared
-foreign destination survives. Detectable owned-artifact/manifest drift refuses;
-the last recheck and owned-file replacement are **not arbitrary-writer CAS**.
-Interrupted publication without a ledger is an actionable ownership refusal,
-not automatic adoption. This is not a general transaction/rollback framework
-or a crash-atomicity claim. Dry-run performs the same strict preflight without
-publishing config, hooks, or ownership.
+`hooks.state`, and owns it through the generated-artifact ledger like every
+other generated file: identical bytes are adopted, a foreign, modified or
+symlinked file refuses unless `--force`, and uninstall removes it only while
+its bytes match the recorded hash (a modified file stays, with a warning).
+Install renders the hooks and checks the config before any staging, mounts,
+rules, agents or legacy cleanup, so that refusal changes nothing. Direct
+sourced hook calls partial-finalize their own manifest cycle, retaining
+unrelated records and caller shell/stage state. Dry-run performs the same
+checks without publishing hooks or ownership. The local user and their
+processes are trusted (Keeper threat model, 2026-10-05): no ancestor, owner,
+link-count or identity check guards these paths, and the ledger's replacement
+is not compare-and-swap against a concurrent writer.
 
 The preserved `f491` last-config-rename failure and its red receipt remain
 historical evidence; they were not waived or relabeled. The obsolete writer
@@ -214,9 +202,10 @@ publication/removal, plus full-process syscall evidence of zero installer
 config writes. Removing the shared-config writer removes that native-save
 loss path, not every possible race against arbitrary artifact writers.
 
-Both installed drift and Control hook probes inspect JSON-only, combined,
-legacy, absent, malformed and ownership evidence against actual expected
-commands/filters, including verification `Stop` and recovery `PostToolUse`.
+Both installed drift and Control hook probes inspect absent, malformed and
+ownership evidence (the installed `hooks.json` must match its ledger row)
+against actual expected commands/filters, including verification `Stop` and
+recovery `PostToolUse`.
 Explicit `features.hooks=false` is disabled. The retained **0.153.4** empty-config
 default-true evidence applies only to that release; other absent-flag versions
 remain unavailable/unsupported. Neither probe inserts a feature flag.

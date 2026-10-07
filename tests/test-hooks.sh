@@ -766,39 +766,39 @@ class PreservationTests(unittest.TestCase):
         if not data.get('hooks'): data.pop('hooks', None)
         return data
 
+    def uninstall(self, **env):
+        return subprocess.run([str(ROOT/'uninstall.sh'), '--target', 'codex'], cwd=ROOT,
+            env=dict(ENV, HOME=str(self.home), **env), capture_output=True, timeout=120)
+
+    def recorded(self):
+        return [r['sha256'] for r in json.loads(self.manifest.read_bytes())['artifacts']
+                if r['destination'] == str(self.hooks)]
+
     def test_raw_parsed_split_trust_mcp_and_reinstall(self):
-        block = self.block()
         prefix = ('# foreign root\n"features"."hooks" = false\n'
                   'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\n'
                   'description = """fake header\n[hooks.state.fake]\n' + START + '\n' + END + '\n"""\n')
         inside = ('# foreign inside\n[mcp_servers."play\\u0077right"]\n'
-                  'command = "npx"\nargs = ["a", ["b", "c"]]\n'
+                  'command = "npx"\nargs = ["a", ["b", "c"]]  # retained inline comment\n'
                   '[hooks."state"."inside.slot"]\ntrusted_hash = "inside-hash"\n')
+        foreign = ('[[hooks.Stop]]\nmatcher = "foreign"\n'
+                   '[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "foreign"  # retained inline comment\n'
+                   'args = [["one"], ["two", "three"]]\n# keep foreign comment\n')
         outside = ('[hooks.state."outside.slot"]\ntrusted_hash = "outside-hash"\n'
                    '[mcp_servers.outside]\ncommand = "foreign"\n# trailing\n\n\n')
-        decorated = ''.join(line.rstrip('\n') + '  # retained inline comment\n'
-                            if line.startswith(('[[hooks.', 'command =')) else line
-                            for line in block.splitlines(keepends=True))
-        raw = (prefix + decorated.replace(END, inside + END) + outside).replace('\n', '\r\n').encode()
+        raw = (prefix + inside + foreign + outside).replace('\n', '\r\n').encode()
         self.config.write_bytes(raw)
-        before = self.foreign(raw, block)
         p = self.adapter()
         self.assertEqual(p.returncode, 0, p.stderr.decode())
-        for span in (prefix, inside, outside):
-            self.assertIn(span.replace('\n', '\r\n').encode(), self.config.read_bytes())
-        self.assertEqual(self.foreign(self.config.read_bytes(), block), before)
+        self.assertEqual(self.config.read_bytes(), raw)
         self.assertEqual(self.config.stat().st_mode & 0o777, 0o640)
-        self.assertEqual(self.config.read_bytes().count(b'  # retained inline comment\r\n'),
-                         raw.count(b'  # retained inline comment\r\n'))
+        self.assertEqual(self.recorded(), [hashlib.sha256(self.hooks.read_bytes()).hexdigest()])
         state = snapshot(self.home)
         p = self.adapter()
         self.assertEqual(p.returncode, 0, p.stderr.decode())
         self.assertEqual(snapshot(self.home), state)
-        p = subprocess.run([str(ROOT/'uninstall.sh'), '--target', 'codex'], cwd=ROOT,
-            env=dict(ENV, HOME=str(self.home)), capture_output=True, timeout=120)
-        self.assertEqual(p.returncode, 1, p.stderr.decode())
-        self.assertIn(b'legacy inline hooks need update/removal', p.stderr)
-        self.assertEqual(snapshot(self.home), state)
+        p = self.uninstall()
+        self.assertEqual(p.returncode, 0, p.stderr.decode())
         self.assertEqual(self.config.read_bytes(), raw)
         self.assertFalse(self.hooks.exists())
 
@@ -821,26 +821,34 @@ class PreservationTests(unittest.TestCase):
                     else: self.assertEqual(after[key], value)
                 self.assertEqual(self.config.stat().st_mode & 0o777, 0o640)
 
-    def test_untagged_nested_foreign_hook_inside_fence(self):
+    def test_config_toml_is_never_classified(self):
+        # Pre-JSON installs fenced Asha hooks inline. config.toml is native and
+        # read-only, so leftovers are the user's to delete (INSTALLER.md); they
+        # neither block nor replace the owned hooks.json.
         block = self.block()
-        foreign = ('[[hooks.Stop]]\nmatcher = "foreign"\n'
-                   '[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "foreign"\n'
-                   'args = [["one"], ["two", "three"]]\n# keep foreign comment\n')
-        raw = ('features.hooks = false\n' + block.replace(END, foreign + END)).encode()
-        self.config.write_bytes(raw)
-        p = self.adapter()
+        wanted = tomllib.loads(block)['hooks']
+        for text in (block, block.replace(str(ROOT), '/old/root'),
+                     block.replace('env ASHA_HARNESS=codex ', ''),
+                     block.replace('# asha:session', '# asha:unknown'),
+                     block.replace(END, block + END), START + '\n', END + '\n' + START + '\n'):
+            with self.subTest(text=text[:80]):
+                for path in (self.hooks, self.manifest):
+                    if path.exists(): path.unlink()
+                self.config.write_text(text)
+                p = self.adapter('codex_install')
+                self.assertEqual(p.returncode, 0, p.stderr.decode())
+                self.assertEqual(self.config.read_text(), text)
+                self.assertEqual(json.loads(self.hooks.read_bytes())['hooks'], wanted)
+        self.config.write_text(block)
+        p = self.uninstall()
         self.assertEqual(p.returncode, 0, p.stderr.decode())
-        self.assertIn(foreign.encode(), self.config.read_bytes())
-        self.assertEqual(self.foreign(raw, block), self.foreign(self.config.read_bytes(), block))
+        self.assertFalse(self.hooks.exists())
+        self.assertEqual(self.config.read_text(), block)
 
-    def test_refusals_preserve_artifacts_backups_and_features(self):
+    def test_malformed_config_refuses_install_before_any_change(self):
         bad = ['broken = [', 'a=1\na=2\n',
                '[hooks.state.a]\ntrusted_hash="x"\n[hooks.state.a]\ntrusted_hash="y"',
-               'hooks.state = []\n', '[hooks.state.a]\ntrusted_hash=1\n',
-               '[hooks.state.a]\nenabled="yes"\n',
-               START+'\n', END+'\n', START+'\n'+START+'\n'+END+'\n',
-               START+'\n'+END+'\n'+START+'\n'+END+'\n', 'features = []\n',
-               START+'\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ncommand="unknown"\n# asha:unknown\n'+END+'\n']
+               'features = []\n', 'features.hooks = "yes"\n', 'hooks = 1\n']
         artifact = self.home/'.codex/skills/retained/SKILL.md'
         artifact.parent.mkdir(parents=True)
         artifact.write_bytes(b'foreign artifact\n')
@@ -856,40 +864,66 @@ class PreservationTests(unittest.TestCase):
                     self.assertEqual(p.returncode, 4, p.stderr.decode())
                     self.assertIn(b'preservation refused', p.stderr)
                     self.assertEqual(snapshot(self.home), before)
+        # Uninstall removes owned artifacts only; it never needs the config.
         self.config.write_bytes(b'bad = [')
-        before = snapshot(self.home)
-        p = subprocess.run([str(ROOT/'uninstall.sh'), '--target', 'codex'], cwd=ROOT,
-            env=dict(ENV, HOME=str(self.home)), capture_output=True, timeout=120)
-        self.assertEqual(p.returncode, 1, p.stderr.decode())
-        self.assertEqual(snapshot(self.home), before)
+        p = self.uninstall()
+        self.assertEqual(p.returncode, 0, p.stderr.decode())
+        self.assertEqual(self.config.read_bytes(), b'bad = [')
+        self.assertEqual(artifact.read_bytes(), b'foreign artifact\n')
 
-    def test_unsafe_identity_and_replacement_refuse(self):
+    def test_non_regular_config_refuses_and_linked_config_is_only_read(self):
         original = self.config.read_bytes()
-        target = self.home/'foreign.toml'
-        target.write_bytes(original)
-        self.config.unlink()
-        self.config.symlink_to(target)
-        before = snapshot(self.home)
-        p = self.adapter('codex_install', 'FORCE=1; ')
-        self.assertEqual(p.returncode, 4, p.stderr.decode())
-        self.assertEqual(snapshot(self.home), before)
         self.config.unlink()
         os.mkfifo(self.config)
         p = self.adapter()
         self.assertEqual(p.returncode, 4, p.stderr.decode())
+        self.assertIn(b'not a regular file', p.stderr)
         self.assertTrue(stat.S_ISFIFO(self.config.lstat().st_mode))
+        self.assertFalse(self.hooks.exists())
         self.config.unlink()
-        os.link(target, self.config)
+        self.config.mkdir()
         p = self.adapter()
         self.assertEqual(p.returncode, 4, p.stderr.decode())
-        self.config.unlink()
-        self.config.write_bytes(original)
-        linked = self.home/'linked-native'
-        linked.symlink_to(self.config.parent)
-        before = snapshot(self.home)
-        p = self.adapter('codex_install', 'CODEX_CONFIG_FILE="$HOME/linked-native/config.toml"; ')
-        self.assertEqual(p.returncode, 4, p.stderr.decode())
-        self.assertEqual(snapshot(self.home), before)
+        self.assertIn(b'not a regular file', p.stderr)
+        self.config.rmdir()
+        # A dotfiles-managed (symlinked) or hard-linked config is still Codex's
+        # own file: the installer reads it and leaves the link as it found it.
+        target = self.home/'dotfiles-config.toml'
+        target.write_bytes(original)
+        for kind in ('symlink', 'hardlink'):
+            with self.subTest(kind=kind):
+                if kind == 'symlink': self.config.symlink_to(target)
+                else: os.link(target, self.config)
+                p = self.adapter('codex_install')
+                self.assertEqual(p.returncode, 0, p.stderr.decode())
+                self.assertTrue(self.hooks.is_file())
+                self.assertEqual(target.read_bytes(), original)
+                self.assertEqual(self.config.is_symlink(), kind == 'symlink')
+                self.assertTrue(os.path.samefile(self.config, target))
+                self.config.unlink()
+
+    def test_group_writable_ancestors_and_umask_install_and_reinstall(self):
+        # The #115 twin: umask 002 and 0775 directories above Codex's files are
+        # the local user's own layout. /tmp gives a chain with no private
+        # (0700) ancestor, which is where the old ancestor check refused.
+        home = pathlib.Path(tempfile.mkdtemp(prefix='asha-u8-gw-', dir='/tmp'))
+        self.addCleanup(shutil.rmtree, home)
+        home.chmod(0o775)
+        (home/'.codex').mkdir()
+        (home/'.codex').chmod(0o775)
+        (home/'.codex/config.toml').write_bytes(b'# native\n')
+        script = ('set -euo pipefail; source "$1/lib/install.sh"; '
+                  'DRY_RUN=0; FORCE=0; VERBOSE=0; ONLY=test; WITH_CANARY=0; '
+                  'source "$1/harnesses/codex.sh"; codex_install')
+        for attempt in (1, 2):
+            with self.subTest(attempt=attempt):
+                p = subprocess.run(['bash', '-c', script, 'u8', str(ROOT)], cwd=ROOT,
+                    env=dict(ENV, HOME=str(home)), capture_output=True, timeout=120,
+                    preexec_fn=lambda: os.umask(0o002))
+                self.assertEqual(p.returncode, 0, p.stderr.decode())
+        self.assertTrue((home/'.codex/hooks.json').is_file())
+        self.assertEqual((home/'.codex/config.toml').read_bytes(), b'# native\n')
+
     def test_dry_run_and_conditional_call_refusal(self):
         before = snapshot(self.home)
         p = self.adapter('codex_install_hooks', 'DRY_RUN=1; ')
@@ -927,8 +961,7 @@ class PreservationTests(unittest.TestCase):
         p = self.adapter('codex_install_hooks', 'ONLY=admin; WITH_CANARY=1; ')
         self.assertEqual(p.returncode, 0, p.stderr.decode())
         self.assertIn(b'/plugins/test/', self.hooks.read_bytes())
-        p = subprocess.run([str(ROOT/'uninstall.sh'), '--target', 'codex'], cwd=ROOT,
-            env=dict(ENV, HOME=str(self.home)), capture_output=True, timeout=120)
+        p = self.uninstall()
         self.assertEqual(p.returncode, 0, p.stderr.decode())
         self.assertFalse(self.hooks.exists())
         self.assertFalse(self.manifest.exists())
@@ -955,113 +988,56 @@ class PreservationTests(unittest.TestCase):
         self.assertEqual(json.loads(self.hooks.read_bytes()), {'hooks': {}})
         self.assertFalse(self.config.exists())
 
-    def test_hook_ownership_refuses_foreign_identical_modified_force_and_dryrun(self):
+    def test_hook_ownership_follows_the_generated_artifact_ledger(self):
         p = self.adapter()
         self.assertEqual(p.returncode, 0, p.stderr.decode())
-        ledger, content = self.manifest.read_bytes(), self.hooks.read_bytes()
-        for kind in ('unrecorded-identical', 'modified', 'malformed-json', 'duplicate-json', 'symlink'):
-            for flags in ('', 'FORCE=1; ', 'DRY_RUN=1; FORCE=1; '):
-                with self.subTest(kind=kind, flags=flags):
-                    if self.hooks.is_symlink(): self.hooks.unlink()
-                    self.hooks.write_bytes(content); self.manifest.write_bytes(ledger)
-                    if kind == 'unrecorded-identical': self.manifest.unlink()
-                    elif kind == 'modified': self.hooks.write_bytes(content+b' ')
-                    elif kind == 'malformed-json': self.hooks.write_bytes(b'[')
-                    elif kind == 'duplicate-json': self.hooks.write_bytes(b'{"hooks":{},"hooks":{}}')
-                    elif kind == 'symlink':
-                        self.hooks.unlink(); self.hooks.symlink_to(self.config)
-                    before = snapshot(self.home)
-                    p = self.adapter('codex_install', flags)
-                    self.assertEqual(p.returncode, 4, p.stderr.decode())
-                    self.assertEqual(snapshot(self.home), before)
-                    p = subprocess.run([str(ROOT/'uninstall.sh'), '--target', 'codex'], cwd=ROOT,
-                        env=dict(ENV, HOME=str(self.home)), capture_output=True, timeout=120)
-                    self.assertEqual(p.returncode, 1, p.stderr.decode())
-                    self.assertEqual(snapshot(self.home), before)
-
-    def test_all_consumed_manifest_rows_are_structurally_safe(self):
-        p = self.adapter()
-        self.assertEqual(p.returncode, 0, p.stderr.decode())
-        ledger = json.loads(self.manifest.read_bytes())
-        row = ledger['artifacts'][0]
-        cases = [None, [], {'artifacts': []}, dict(ledger, harness='other'),
-                 dict(ledger, artifacts=[row, row]), dict(ledger, artifacts=[None])]
-        for key, value in [('source', str(ROOT/'wrong')), ('type', 'wrong'),
-                           ('destination', str(self.config)), ('orphan', True),
-                           ('sha256', 'bad')]:
-            cases.append(dict(ledger, artifacts=[dict(row, **{key:value})]))
-        cases.append(dict(ledger, artifacts=[row, dict(row, destination='../escape')]))
-        cases.append(dict(ledger, artifacts=[row, dict(row, type='codex-command-skill',
-                                                      destination=str(self.config), source=str(ROOT/'missing'))]))
-        for case in cases:
-            with self.subTest(case=case):
-                self.manifest.write_text(json.dumps(case))
-                before = snapshot(self.home)
-                p = self.adapter('codex_install', 'FORCE=1; ')
-                self.assertEqual(p.returncode, 4, p.stderr.decode())
-                self.assertEqual(snapshot(self.home), before)
-        self.manifest.write_text('{"artifacts":[],"artifacts":[]}')
-        before = snapshot(self.home)
-        p = self.adapter()
-        self.assertEqual(p.returncode, 4, p.stderr.decode())
-        self.assertEqual(snapshot(self.home), before)
-
-    def test_legacy_selection_root_and_json_duplication_refuse(self):
-        block = self.block()
-        for raw in (block.replace(str(ROOT), '/old/root'),
-                    block.replace('env ASHA_HARNESS=codex ', ''),
-                    block.replace('# asha:session', '# asha:unknown'),
-                    block.replace(END, block + END)):
-            self.config.write_text(raw)
-            before = snapshot(self.home)
-            p = self.adapter('codex_install', 'FORCE=1; ')
-            self.assertEqual(p.returncode, 4, p.stderr.decode())
-            self.assertEqual(snapshot(self.home), before)
-        self.config.write_text(block)
-        before = snapshot(self.home)
-        p = self.adapter('codex_install', 'ONLY=admin; ')
-        self.assertEqual(p.returncode, 4, p.stderr.decode())
-        self.assertEqual(snapshot(self.home), before)
-        # A matching legacy hook operation is genuinely no-op even in full
-        # install; independently requested skills/agents are still allowed.
+        content = self.hooks.read_bytes()
+        digest = hashlib.sha256(content).hexdigest()
+        # Identical bytes without a ledger row are adopted, as everywhere else.
+        self.manifest.unlink()
         p = self.adapter('codex_install')
         self.assertEqual(p.returncode, 0, p.stderr.decode())
-        self.assertFalse(self.hooks.exists())
-        self.assertEqual(self.config.read_text(), block)
-        self.config.write_text('')
-        p = self.adapter()
+        self.assertEqual(self.hooks.read_bytes(), content)
+        self.assertEqual(self.recorded(), [digest])
+        ledger = self.manifest.read_bytes()
+        for kind in ('modified', 'malformed-json', 'duplicate-json', 'symlink'):
+            with self.subTest(kind=kind):
+                def seed():
+                    if self.hooks.is_symlink(): self.hooks.unlink()
+                    self.hooks.write_bytes(content); self.manifest.write_bytes(ledger)
+                    if kind == 'modified': self.hooks.write_bytes(content+b' ')
+                    elif kind == 'malformed-json': self.hooks.write_bytes(b'[')
+                    elif kind == 'duplicate-json': self.hooks.write_bytes(b'{"hooks":{},"hooks":{}}')
+                    else: self.hooks.unlink(); self.hooks.symlink_to(self.config)
+                seed()
+                before = snapshot(self.home)
+                p = self.adapter('codex_install')
+                self.assertEqual(p.returncode, 2, p.stderr.decode())
+                self.assertIn(b'refusing to overwrite', p.stderr)
+                self.assertIn(b'use --force', p.stderr)
+                self.assertEqual(snapshot(self.home), before)
+                p = self.adapter('codex_install', 'DRY_RUN=1; FORCE=1; ')
+                self.assertEqual(p.returncode, 0, p.stderr.decode())
+                self.assertEqual(snapshot(self.home), before)
+                # --force is the user's consent, for hooks.json as for the rest.
+                p = self.adapter('codex_install', 'FORCE=1; ')
+                self.assertEqual(p.returncode, 0, p.stderr.decode())
+                self.assertFalse(self.hooks.is_symlink())
+                self.assertEqual(self.hooks.read_bytes(), content)
+                self.assertEqual(self.recorded(), [digest])
+        # Uninstall keeps a modified hooks.json and its row for review.
+        self.hooks.write_bytes(content+b' ')
+        p = self.uninstall()
         self.assertEqual(p.returncode, 0, p.stderr.decode())
-        self.config.write_text(block)
-        before = snapshot(self.home)
-        p = self.adapter()
-        self.assertEqual(p.returncode, 4, p.stderr.decode())
-        self.assertEqual(snapshot(self.home), before)
-
-    def test_fresh_publication_never_clobbers_new_foreign_path(self):
-        tools = self.home/'fixture-tools'; tools.mkdir()
-        marker = self.home/'publication-seen'
-        bridge = tools/'boundary.py'
-        bridge.write_text('import os,pathlib,sys\n'
-            'sys.argv=sys.argv[1:]\ncode=sys.stdin.read()\n'
-            'def audit(event,args):\n'
-            '    if event == "os.link" and args[1] == '+repr(str(self.hooks))+':\n'
-            '        pathlib.Path(args[1]).write_text("foreign appeared")\n'
-            '        pathlib.Path('+repr(str(marker))+').write_text("seen")\n'
-            'sys.addaudithook(audit)\nexec(compile(code,"<stdin>","exec"))\n')
-        wrapper = tools/'python3'
-        wrapper.write_text('#!/bin/bash\nif [[ "$1" == - ]]; then exec '+repr(sys.executable)+' '+repr(str(bridge))+' "$@"; fi\nexec '+repr(sys.executable)+' "$@"\n')
-        wrapper.chmod(0o755)
-        p = self.adapter('codex_install', 'PATH='+repr(str(tools))+':$PATH; export PATH; ')
-        self.assertEqual(p.returncode, 4, p.stderr.decode())
-        self.assertEqual(marker.read_text(), 'seen')
-        self.assertEqual(self.hooks.read_text(), 'foreign appeared')
-        self.assertFalse(self.manifest.exists())
-        self.assertFalse((self.home/'.codex/skills').exists())
+        self.assertIn(b'preserving modified managed artifact', p.stderr)
+        self.assertEqual(self.hooks.read_bytes(), content+b' ')
+        self.assertEqual(self.recorded(), [digest])
 
     def test_native_replacement_and_inplace_saves_survive_owned_publication(self):
         # f491's red last-config-rename test and receipt remain predecessor
         # evidence. That writer no longer exists. This fixture performs actual
-        # native I/O at the NEW owned-artifact boundary, never mocks validation.
+        # native saves at the owned hooks.json publication (the ledger's mv) and
+        # removal (the ledger's unlink), and fails any installer config write.
         tools = self.home/'fixture-tools'; tools.mkdir()
         marker = self.home/'native-save-seen'
         forbidden = self.home/'installer-config-write'
@@ -1069,6 +1045,7 @@ class PreservationTests(unittest.TestCase):
         concurrent = (b'# native save\r\nfeatures.hooks=false\r\n'
                       b'[mcp_servers.concurrent]\r\ncommand="keep"\r\n'
                       b'[hooks.state.concurrent]\r\ntrusted_hash="native"\r\n\r\n')
+        (self.home/'native-save.toml').write_bytes(concurrent)
         bridge.write_text('import os,pathlib,sys\n'
             'sys.argv=sys.argv[1:]\ncode=sys.stdin.read()\n'
             'active=False\n'
@@ -1082,7 +1059,7 @@ class PreservationTests(unittest.TestCase):
             '    if event in ("os.rename","os.remove","os.chmod","os.chown") and config in args[:2]:\n'
             '        pathlib.Path('+repr(str(forbidden))+').write_text("forbidden")\n'
             '        raise RuntimeError("installer attempted config mutation")\n'
-            '    if ((event in ("os.link","os.rename") and args[1] == hooks) or (event == "os.remove" and args[0] == hooks)):\n'
+            '    if event == "os.remove" and args[0] == hooks:\n'
             '        active=True\n'
             '        if os.environ.get("NATIVE_SAVE") == "replace":\n'
             '            replacement=pathlib.Path(config+".native")\n'
@@ -1096,10 +1073,17 @@ class PreservationTests(unittest.TestCase):
         wrapper = tools/'python3'
         wrapper.write_text('#!/bin/bash\nif [[ "$1" == - ]]; then exec '+repr(sys.executable)+' '+repr(str(bridge))+' "$@"; fi\nexec '+repr(sys.executable)+' "$@"\n')
         wrapper.chmod(0o755)
+        save = ('native_save() { if [[ $NATIVE_SAVE == replace ]]; then '
+                'cp "$HOME/native-save.toml" "$HOME/.codex/config.toml.native"; '
+                'chmod 640 "$HOME/.codex/config.toml.native"; '
+                'command mv "$HOME/.codex/config.toml.native" "$HOME/.codex/config.toml"; '
+                'else cat "$HOME/native-save.toml" > "$HOME/.codex/config.toml"; fi; '
+                'printf seen > "$HOME/native-save-seen"; }; '
+                'mv() { if [[ ${2:-} == "$HOME/.codex/hooks.json" ]]; then native_save; fi; command mv "$@"; }; ')
         for mode, only in [('replace', 'test'), ('inplace', 'admin')]:
             with self.subTest(mode=mode):
                 self.config.write_bytes(b'# before native save\n')
-                p = self.adapter('codex_install', 'ONLY='+only+'; NATIVE_SAVE='+mode+'; export NATIVE_SAVE; PATH='+repr(str(tools))+':$PATH; export PATH; ')
+                p = self.adapter('codex_install', 'ONLY='+only+'; NATIVE_SAVE='+mode+'; export NATIVE_SAVE; PATH='+repr(str(tools))+':$PATH; export PATH; '+save)
                 self.assertEqual(p.returncode, 0, p.stderr.decode())
                 self.assertEqual(marker.read_text(), 'seen')
                 marker.unlink()
@@ -1108,9 +1092,7 @@ class PreservationTests(unittest.TestCase):
                 self.assertEqual(tomllib.loads(self.config.read_text()), tomllib.loads(concurrent.decode()))
                 self.assertFalse(forbidden.exists())
                 self.assertEqual(list(self.config.parent.glob('config.toml.bak-*')), [])
-        p = subprocess.run([str(ROOT/'uninstall.sh'), '--target', 'codex'], cwd=ROOT,
-            env=dict(ENV, HOME=str(self.home), PATH=str(tools)+':'+ENV['PATH'], NATIVE_SAVE='replace'),
-            capture_output=True, timeout=120)
+        p = self.uninstall(PATH=str(tools)+':'+ENV['PATH'], NATIVE_SAVE='replace')
         self.assertEqual(p.returncode, 0, p.stderr.decode())
         self.assertEqual(marker.read_text(), 'seen')
         self.assertEqual(self.config.read_bytes(), concurrent)
@@ -1131,7 +1113,8 @@ class PreservationTests(unittest.TestCase):
             self.assertEqual(p.returncode, 0, p.stderr.decode())
             rows = [line for line in trace.read_text().splitlines()
                     if '"'+str(self.config)+'"' in line and 'execve(' not in line]
-            self.assertTrue(any('O_RDONLY' in line for line in rows), 'must observe actual config reads')
+            if args[0].endswith('install.sh') and 'uninstall' not in args[0]:
+                self.assertTrue(any('O_RDONLY' in line for line in rows), 'must observe actual config reads')
             forbidden = [line for line in rows if re.search(
                 r'O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|rename\w*\(|unlink\w*\(|chmod\w*\(|chown\w*\(', line)]
             self.assertEqual(forbidden, [])
@@ -1140,8 +1123,8 @@ class PreservationTests(unittest.TestCase):
 
 unittest.main(argv=['u8-hooks'], verbosity=2)
 PY_U8
-then ok "U8 raw/parsed/trust/identity preservation through real Codex entry points"
-else fail "U8 raw/parsed/trust/identity preservation through real Codex entry points"
+then ok "U8 Codex hooks: native config read-only, hooks.json owned through the ledger"
+else fail "U8 Codex hooks: native config read-only, hooks.json owned through the ledger"
 fi
 
 echo "test-hooks: $PASS passed, $FAIL failed"

@@ -90,13 +90,10 @@ warnings without deleting the evidence or backups.
 
 ### One-time migration from pre-manifest installs
 
-Generated Codex, Copilot, and OpenCode files use ownership manifests.
-**Codex `hooks.json` is the strict exception to adoption:** an existing file
-requires the current adapter source, exact destination/type, and current hash
-in a valid ledger. Foreign, identical-but-unrecorded, modified, or ambiguous
-hooks refuse even with `--force`. Inspect interrupted publication manually.
-Other legacy generated files retain their existing adoption policy. Run the relevant install once with
-`--force`:
+Generated Codex, Copilot, and OpenCode files, Codex `hooks.json` included,
+use ownership manifests. An existing file whose bytes equal the deterministic
+output is adopted; a foreign or modified one is refused unless you pass
+`--force`. Run the relevant install once with `--force`:
 
 ```bash
 asha install codex --force
@@ -137,9 +134,9 @@ successful removal whilst leaving live workflows behind.
 │                                       from plugins/<ns>/agents/<agent>.md
 ├── rules/asha.rules                  → native Codex execution-policy prompts
 │                                       for coarse command approval fallback
-├── hooks.json                       # strictly owned native hooks, ledger-recorded
+├── hooks.json                       # generated native hooks, ledger-recorded
 │                                    # hooks.Event[].hooks[]; no hooks.state
-└── config.toml                      # native-owned; bounded read-only inspection
+└── config.toml                      # native-owned; read, never written
 ```
 
 **No persona overlay.** The `asha codex` launch path regenerates the capped hot
@@ -337,8 +334,8 @@ Claude settings edits back up the affected file with a timestamped suffix:
 
 - `~/.claude/settings.json` → `.bak-<YYYYMMDD-HHMMSS>`
 
-Routine Codex install, update, and uninstall inspect `config.toml` read-only:
-they never write or back it up. Native settings, features, and hook trust remain
+Routine Codex install and update read `config.toml`, and uninstall does not
+touch it: none of them writes or backs it up. Native settings, features, and hook trust remain
 Codex/user-owned; Asha's generated `hooks.json` uses its ownership ledger instead.
 
 ## Test plugin
@@ -400,11 +397,11 @@ nonoptional hook set; an explicitly selected canary joins that set.
 
 Shared `config.toml`, including features, MCP, workspace trust, and hash-bound
 native hook trust, is strictly read-only during install/update/uninstall.
-Exactly equivalent current-root/selected/canary legacy inline definitions
-produce a hook no-op, with no duplicate JSON. Needed legacy updates/removal or
-ambiguous ownership refuse before the corresponding adapter changes; uninstall
-cannot claim completion while Asha inline hooks remain. Foreign inline hooks
-may coexist with nonduplicate owned JSON, with a mixed-source warning.
+Asha no longer inspects it for the inline hooks that installs made before the
+native JSON form, fenced between `# ===== asha:start` and `# ===== asha:end`
+lines. If your `config.toml` still has such a block, delete it by hand;
+otherwise Codex registers those hooks as well as `hooks.json`. Foreign inline
+hooks may coexist with the owned JSON; the doctor reports mixed sources.
 
 Explicit `features.hooks=false` remains disabled. The absent-flag default-true
 evidence is specific to native 0.153.4; unknown versions/defaults report

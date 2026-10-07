@@ -77,7 +77,7 @@ asha_artifact_install_prepared() {
     if [[ -L "$destination" ]]; then
       [[ ${FORCE:-0} -eq 1 ]] \
         || die "refusing to overwrite foreign symlink artifact: $destination (use --force)" 2
-      [[ ${DRY_RUN:-0} -eq 1 ]] || rm -f "$destination"
+      [[ ${DRY_RUN:-0} -eq 1 ]] || rm -f "$destination" || return $?
     elif [[ ! -f "$destination" ]]; then
       die "refusing to overwrite foreign non-file artifact: $destination" 2
     fi
@@ -96,11 +96,12 @@ asha_artifact_install_prepared() {
     say "  EMIT [$type]  $source -> $destination"
     return 0
   fi
-  ensure_dir "$(dirname "$destination")"
+  # Explicit returns: callers may run this in an if/OR-list, where errexit is off.
+  ensure_dir "$(dirname "$destination")" || return $?
   if [[ ! -f "$destination" ]] || ! cmp -s "$prepared" "$destination"; then
     local tmp="$destination.tmp.$$"
-    cat "$prepared" > "$tmp"
-    mv "$tmp" "$destination"
+    cat "$prepared" > "$tmp" || return $?
+    mv "$tmp" "$destination" || return $?
   fi
   asha_artifact_record "$source" "$destination" "$type" "$expected"
 }

@@ -231,9 +231,10 @@ def codex_hooks_probe(home: Path, asha_home: Path, *, user_home: Path,
                       root: Path | None = None, with_canary: bool = False) -> Probe:
     """Read-only installed drift, shared by Control and the installed doctor.
 
-    The real adapter supplies expected commands AND strict ownership/legacy
-    preflight. No copied renderer or permissive ledger parser can turn an empty
-    extraction into green. No staging or native trust operation runs.
+    The real adapter supplies the expected commands, the native config bytes and
+    the installed hooks.json only when the ledger records exactly those bytes.
+    No copied renderer can turn an empty extraction into green. No staging or
+    native trust operation runs.
     """
     root = root or Path(__file__).resolve().parents[2]
     env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(user_home),
@@ -251,18 +252,15 @@ def codex_hooks_probe(home: Path, asha_home: Path, *, user_home: Path,
             raise ValueError(result.stderr.decode("utf-8", "replace")[-2000:])
         plan = json.loads(result.stdout)
         expected = json.loads(plan["content"])["hooks"]
-        # The diagnostic-only capture carries the same bounded/nofollow bytes
-        # that passed preflight, not an independent pathname-following read.
         value = tomllib.loads(plan["config_text"])
-        groups = (value.get("hooks", {}) if plan["mode"] == "legacy" else
-                  json.loads(plan["json_text"])["hooks"]
-                  if plan["hook_identity"] is not None else {})
+        groups = (json.loads(plan["json_text"])["hooks"]
+                  if plan["json_text"] is not None else {})
         missing = [event for event, wanted in expected.items()
                    if any(groups.get(event, []).count(group) != 1 for group in wanted)]
         if not expected or missing:
             return Probe("hooks", "missing", "Codex missing/duplicate expected hook groups: " +
                          (", ".join(missing) or "empty source selection"))
-        if plan["mode"] == "json" and groups != expected:
+        if groups != expected:
             return Probe("hooks", "mismatch", "Codex owned hooks.json differs from selected source commands/filters")
         commands = [h["command"] for blocks in expected.values()
                     for group in blocks for h in group["hooks"]]
@@ -291,7 +289,7 @@ def codex_hooks_probe(home: Path, asha_home: Path, *, user_home: Path,
             if version.returncode or version.stdout.strip() != b"codex-cli 0.153.4":
                 return Probe("hooks", "unavailable", "Codex hooks registered; absent feature flag default unsupported for this native version; trust/execution unverified")
             feature_detail = "0.153.4 default-true evidence only"
-        mixed = "; mixed foreign inline/JSON sources" if plan["mode"] == "json" and value.get("hooks", {}).keys() - {"state"} else ""
+        mixed = "; mixed foreign inline/JSON sources" if value.get("hooks", {}).keys() - {"state"} else ""
         return Probe("hooks", "match", f"Codex {len(commands)} expected commands registered, executable paths verified; verification Stop and recovery PostToolUse checked; {feature_detail}{mixed}; native trust and execution NOT verified")
     except (OSError, ValueError, TypeError, KeyError, RecursionError, subprocess.TimeoutExpired) as exc:
         return Probe("hooks", "unavailable", "Codex hook inspection refused: " + _safe_detail(exc)[:460])

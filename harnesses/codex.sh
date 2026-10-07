@@ -13,8 +13,9 @@
 #                                  plugins/<ns>/commands/<cmd>.md
 #   agents/<ns>-<agent>.toml     → generated Codex custom-agent TOML from
 #                                  plugins/<ns>/agents/<agent>.md
-#   hooks.json                   → strictly owned native hook definitions
-#   config.toml                  → native user config, inspected READ-ONLY
+#   hooks.json                   → native hook definitions, owned through the
+#                                  generated-artifact ledger
+#   config.toml                  → native user config, read, never written
 #   rules/asha.rules             → native Codex execution-policy prompts for
 #                                  coarse shell approvals where hooks cannot
 #                                  be relied upon as the enforcement boundary
@@ -539,7 +540,7 @@ codex_install_rules() {
 }
 
 # ---------------------------------------------------------------------------
-# Hooks (native owned JSON; legacy TOML is read-only)
+# Hooks (native owned JSON; config.toml is read-only)
 # ---------------------------------------------------------------------------
 
 _codex_emit_hooks_for_plugin() {
@@ -612,19 +613,7 @@ _codex_build_hook_block() {
   local plugin_dir ns plugin_root abs_root hooks_json count=0 plugin_list
   local emitted="$CODEX_HOOK_FENCE_START"$'\n'
 
-  plugin_list="$(
-    if [[ "${1:-}" != all ]] && declare -F all_plugin_dirs >/dev/null; then
-      all_plugin_dirs
-    else
-      # Uninstall has no install-only enumeration helpers. Ownership includes
-      # previously enabled optional plugins as well as currently selected ones.
-      for plugin_root in "$PLUGINS_DIR"/*/; do
-        [[ -d "$plugin_root" ]] || continue
-        plugin_root="${plugin_root%/}"
-        printf '%s\n' "${plugin_root##*/}"
-      done
-    fi
-  )" || return 4
+  plugin_list="$(all_plugin_dirs)" || return 4
   while read -r plugin_dir; do
     [[ -n "$plugin_dir" ]] || continue
     [[ -d "$PLUGINS_DIR/$plugin_dir" ]] || continue
@@ -654,89 +643,42 @@ _codex_build_hook_block() {
   printf '%s' "$emitted"
 }
 
-# Codex-local preflight and publication. The lexical TOML reader is retained
-# solely to classify legacy inline definitions, never to rewrite shared config.
-# Plans bind the owned JSON and consumed manifest, NOT a native config snapshot.
+# Codex's config.toml is read, never written: a malformed config refuses (Codex
+# could not load the hooks either) and its bytes feed only the doctor. The
+# selected hooks render as native JSON; hooks.json ownership is the generic
+# generated-artifact ledger, so --force adopts it like any other artifact.
 _codex_hook_plan() {
   local manifest
   manifest="$(asha_artifact_manifest_path codex)" || return $?
-  python3 - "$CODEX_CONFIG_FILE" "$CODEX_HOOK_FENCE_START" "$CODEX_HOOK_FENCE_END" \
-    "$CODEX_HOOKS_FILE" "$manifest" "$MARKET_ROOT/harnesses/codex.sh" "$$" "$@" <<'PYEOF'
+  python3 - "$CODEX_CONFIG_FILE" "$CODEX_HOOKS_FILE" "$manifest" "$@" <<'PYEOF'
 import hashlib
 import json
-import math
 import os
-import re
 import stat
 import sys
-import tempfile
 
 tomllib = __import__('tomllib' if sys.version_info >= (3, 11) else 'tomli')
-path, start, end, destination, manifest, source, shell_pid, action = sys.argv[1:9]
+config, destination, manifest, action, wanted = sys.argv[1:6]
 LIMIT = 4 * 1024 * 1024
 
 def refuse(message):
     raise ValueError(message)
 
-def identity(s):
-    return [s.st_dev, s.st_ino, s.st_uid, s.st_gid, s.st_mode,
-            s.st_size, s.st_mtime_ns, s.st_ctime_ns, s.st_nlink]
-
-def canonical(value):
-    return (isinstance(value, str) and value.startswith('/') and
-            os.path.normpath(value) == value and not value.startswith('//') and
-            not any(ord(c) < 32 or ord(c) == 127 for c in value))
-
-def parents(filename):
-    if not canonical(filename):
-        refuse('noncanonical path: ' + str(filename))
-    result = []
-    root_uid = os.lstat('/').st_uid
-    system_paths = ('/', '/tmp', '/home', '/Users', '/private', '/private/tmp')
-    parent = os.path.dirname(filename)
-    while True:
-        try:
-            s = os.lstat(parent)
-        except FileNotFoundError:
-            parent = os.path.dirname(parent)
-            continue
-        if not stat.S_ISDIR(s.st_mode):
-            refuse('symlink or non-directory ancestor: ' + parent)
-        if s.st_uid not in (0, os.getuid()) and not (parent in system_paths and s.st_uid == root_uid):
-            refuse('unsafe ancestor: ' + parent)
-        result.append([parent, s.st_dev, s.st_ino, s.st_uid, s.st_gid, s.st_mode])
-        if parent == '/':
-            break
-        parent = os.path.dirname(parent)
-    private = False
-    for parent, _, _, uid, _, mode in reversed(result):
-        system = uid == 0 or (parent in system_paths and uid == root_uid)
-        if mode & 0o022 and not private and not (system and mode & stat.S_ISVTX):
-            refuse('unsafe writable ancestor: ' + parent)
-        if uid == os.getuid() and not mode & 0o077:
-            private = True
-    return result
-
-def capture(filename):
-    ancestry = parents(filename)
+def read(filename):
+    # Links are followed (a dotfiles-managed config is common). O_NONBLOCK and
+    # the regular-file check keep a FIFO or directory from hanging the read.
     try:
-        s = os.lstat(filename)
+        fd = os.open(filename, os.O_RDONLY | os.O_NONBLOCK)
     except FileNotFoundError:
-        return None, b''
-    if not stat.S_ISREG(s.st_mode) or s.st_uid != os.getuid() or s.st_nlink != 1:
-        refuse('not a regular file owned by this user with one link (no symlinks): ' + filename)
-    if s.st_size > LIMIT:
-        refuse('bounded read limit exceeded: ' + filename)
-    fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        return None
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        refuse('not a regular file: ' + filename)
     with os.fdopen(fd, 'rb') as handle:
-        if identity(os.fstat(handle.fileno())) != identity(s):
-            refuse('identity changed while opening: ' + filename)
         data = handle.read(LIMIT + 1)
-        if len(data) > LIMIT or identity(os.fstat(handle.fileno())) != identity(s):
-            refuse('identity changed or read limit exceeded: ' + filename)
-    if identity(os.lstat(filename)) != identity(s) or parents(filename) != ancestry:
-        refuse('identity changed while capturing: ' + filename)
-    return identity(s), data
+    if len(data) > LIMIT:
+        refuse('bounded read limit exceeded: ' + filename)
+    return data
 
 def pairs(items):
     result = {}
@@ -750,304 +692,51 @@ def json_value(raw):
     return json.loads(raw, object_pairs_hook=pairs,
                       parse_constant=lambda value: refuse('invalid JSON constant: ' + value))
 
-def statements(text):
-    # Split ONLY at lexical statement boundaries. Header/fence-looking lines
-    # in multiline strings or nested arrays are ordinary value bytes. Parsing
-    # validity remains tomllib's job; this scanner never repairs invalid TOML.
-    offset = i = depth = 0
-    quote = None
-    while i < len(text):
-        c = text[i]
-        if quote:
-            if quote[0] == '"' and c == '\\':
-                i += 2
-                continue
-            if text.startswith(quote, i):
-                width = len(quote)
-                if width == 3:
-                    # TOML permits one or two quote characters immediately
-                    # before a multiline closing delimiter (runs of 4 or 5).
-                    while i + width < len(text) and text[i + width] == quote[0]:
-                        width += 1
-                i += width
-                quote = None
-                continue
-        elif c in ('"', "'"):
-            quote = c * 3 if text.startswith(c * 3, i) else c
-            i += len(quote)
-            continue
-        elif c == '#':
-            newline = text.find('\n', i)
-            i = len(text) if newline < 0 else newline
-            if i == len(text):
-                break
-            c = '\n'
-        elif c in '[{':
-            depth += 1
-        elif c in ']}':
-            depth -= 1
-        if c == '\n' and not quote and depth == 0:
-            yield offset, i + 1, text[offset:i + 1]
-            offset = i + 1
-        i += 1
-    if offset < len(text):
-        yield offset, len(text), text[offset:]
-
-def header(raw):
-    raw = raw.lstrip()
-    if not raw.startswith('['):
-        return None
-    array = raw.startswith('[[')
-    # Let TOML decode quoted, escaped and dotted key components for us.
-    value = tomllib.loads(raw)
-    keys = []
-    while isinstance(value, dict) and len(value) == 1:
-        key, value = next(iter(value.items()))
-        keys.append(key)
-        if isinstance(value, list):
-            value = value[0]
-    return tuple(keys), array
-
-def same(left, right):
-    # TOML booleans, integers and floats are distinct, unlike Python's ==.
-    # NaN is a valid TOML value and must compare equal to its reparse here.
-    if type(left) is not type(right):
-        return False
-    if isinstance(left, dict):
-        return left.keys() == right.keys() and all(same(left[k], right[k]) for k in left)
-    if isinstance(left, list):
-        return len(left) == len(right) and all(same(a, b) for a, b in zip(left, right))
-    if isinstance(left, float) and math.isnan(left):
-        return math.isnan(right)
-    return left == right
-
-def classify(raw, wanted, catalog, installing):
+def native_config():
+    raw = read(config)
+    if raw is None:
+        return ''
     text = raw.decode('utf-8')
-    original = tomllib.loads(text)
-    hooks = original.get('hooks', {})
-    if not isinstance(hooks, dict) or not isinstance(hooks.get('state', {}), dict):
-        refuse('hooks and hooks.state must be tables')
-    for slot, trust in hooks.get('state', {}).items():
-        if not isinstance(trust, dict):
-            refuse('malformed hook trust slot: ' + slot)
-        if 'trusted_hash' in trust and not isinstance(trust['trusted_hash'], str):
-            refuse('malformed trusted_hash in hook trust slot: ' + slot)
-        if 'enabled' in trust and not isinstance(trust['enabled'], bool):
-            refuse('malformed enabled value in hook trust slot: ' + slot)
-    for event, groups in hooks.items():
-        if event != 'state':
-            validate_groups(event, groups)
-    tokens = list(statements(text))
-    fences = [(i, r.strip()) for i, (_, _, r) in enumerate(tokens)
-              if r.strip() in (start, end)]
-    if fences and ([v for _, v in fences] != [start, end]):
-        refuse('unmatched, nested or multiple managed fences')
-    lo, hi = (fences[0][0], fences[1][0]) if fences else (-1, -1)
-    known = tomllib.loads(catalog).get('hooks', {})
-    catalog_tags = {}
-    catalog_indexes = {}
-    current = None
-    for _, _, r in statements(catalog):
-        h = header(r)
-        if h and h[1] and len(h[0]) == 2 and h[0][0] == 'hooks':
-            event = h[0][1]
-            index = catalog_indexes.get(event, 0)
-            catalog_indexes[event] = index + 1
-            current = (event, index)
-        if current and re.fullmatch(r'# asha:[A-Za-z0-9_-]+', r.strip()):
-            catalog_tags[current] = r.strip()
-    desired = tomllib.loads(wanted).get('hooks', {})
-    headers = [(i, header(r)) for i, (_, _, r) in enumerate(tokens)
-               if r.lstrip().startswith('[')]
-    counters = {}
-    owned = {}
-    accounted_tags = set()
-    for position, (i, (keys, array)) in enumerate(headers):
-        if not (array and len(keys) == 2 and keys[0] == 'hooks'):
-            continue
-        event = keys[1]
-        index = counters.get(event, 0)
-        counters[event] = index + 1
-        j = len(tokens)
-        for next_i, (next_keys, _) in headers[position + 1:]:
-            if next_keys[:2] != keys or len(next_keys) <= 2:
-                j = next_i
-                break
-        group = original['hooks'][event][index]
-        if not lo < i < hi:
-            # Unfenced generated-looking handlers are ambiguous, not foreign.
-            if any('/plugins/' in str(h.get('command', '')) or
-                   'ASHA_HARNESS=codex' in str(h.get('command', ''))
-                   for h in group.get('hooks', []) if isinstance(h, dict)):
-                refuse('unfenced Asha inline hooks require manual inspection')
-            continue
-        tags = [r.strip() for _, _, r in tokens[i:min(j, hi)]
-                if r.strip().startswith('# asha:')]
-        accounted_tags.update(k for k in range(i, min(j, hi))
-                              if tokens[k][2].strip().startswith('# asha:'))
-        candidates = known.get(event, [])
-        proven = any(same(group, candidate) and
-                     tags == [catalog_tags.get((event, ci))]
-                     for ci, candidate in enumerate(candidates))
-        if not proven:
-            if tags:
-                refuse('tagged hook ownership cannot be proven for ' + event)
-            if any('/plugins/' in str(h.get('command', '')) or
-                   'ASHA_HARNESS=codex' in str(h.get('command', ''))
-                   for h in group.get('hooks', []) if isinstance(h, dict)):
-                refuse('untagged Asha inline ownership is ambiguous')
-            continue  # genuinely foreign group: keep every byte and value
-        # Assignments beyond the fence make its ownership region ambiguous.
-        for k in range(i, j):
-            r = tokens[k][2].strip()
-            if k >= hi and r and not r.startswith('#'):
-                refuse('generated hook extends beyond its managed fence')
-        owned.setdefault(event, []).append(group)
-    for i, (_, _, raw_token) in enumerate(tokens):
-        if raw_token.strip().startswith('# asha:') and i not in accounted_tags:
-            refuse('unassociated Asha inline ownership tag')
-    for event, groups in hooks.items():
-        if event == 'state':
-            continue
-        proven_groups = list(owned.get(event, []))
-        for group in groups:
-            if group in proven_groups:
-                proven_groups.remove(group)
-            elif any('/plugins/' in str(h.get('command', '')) or
-                     'ASHA_HARNESS=codex' in str(h.get('command', ''))
-                     for h in group['hooks']):
-                refuse('unproven dotted/inline or duplicate Asha hook definition')
-    features = original.get('features', {})
-    if not isinstance(features, dict):
-        refuse('features is not a table')
-    if 'hooks' in features and not isinstance(features['hooks'], bool):
-        refuse('features.hooks must be a boolean')
-    for event, groups in hooks.items():
-        if event == 'state':
-            continue
-        validate_groups(event, groups)
-    if owned:
-        if not installing or not same(owned, desired):
-            refuse('legacy inline hooks need update/removal; config.toml is read-only; inspect and migrate manually')
-        return 'legacy'
-    if fences:
-        refuse('managed fence without proven selected hooks requires manual inspection')
-    return 'json'
+    value = tomllib.loads(text)
+    features = value.get('features', {})
+    if not isinstance(features, dict) or not isinstance(features.get('hooks', False), bool):
+        refuse('features must be a table and features.hooks a boolean')
+    if not isinstance(value.get('hooks', {}), dict):
+        refuse('hooks must be a table')
+    return text
 
-def validate_groups(event, groups):
-    if not isinstance(groups, list):
-        refuse('hook event is not an array: ' + event)
-    for group in groups:
-        if not isinstance(group, dict) or not isinstance(group.get('hooks'), list):
-            refuse('malformed hook group: ' + event)
-        if 'matcher' in group and not isinstance(group['matcher'], str):
-            refuse('malformed matcher: ' + event)
-        for hook in group['hooks']:
-            if not isinstance(hook, dict) or hook.get('type', 'command') != 'command' or not isinstance(hook.get('command'), str):
-                refuse('malformed hook command: ' + event)
+def content():
+    hooks = tomllib.loads(wanted).get('hooks', {})
+    return json.dumps({'hooks': hooks}, indent=2, sort_keys=True) + '\n'
 
-def inspect(wanted, catalog, installing, diagnostic=False):
-    if destination != os.path.dirname(path) + '/hooks.json' or os.path.basename(path) != 'config.toml':
-        refuse('native config and owned hooks paths are incoherent')
-    _, raw = capture(path)
-    mode = classify(raw, wanted, catalog, installing)
-    hook_id, hook_raw = capture(destination)
-    manifest_id, manifest_raw = capture(manifest)
-    if os.path.lexists(manifest + '.tmp.' + shell_pid):
-        refuse('existing generic manifest staging path; inspect interrupted publication')
-    record = None
-    if manifest_id is not None:
-        ledger = json_value(manifest_raw)
-        if (not isinstance(ledger, dict) or set(ledger) != {'schema_version', 'harness', 'artifacts'} or
-                type(ledger['schema_version']) is not int or ledger['schema_version'] != 1 or
-                ledger['harness'] != 'codex' or not isinstance(ledger['artifacts'], list)):
-            refuse('invalid Codex generated-artifact manifest')
-        seen = set()
-        home = os.path.dirname(destination)
-        for row in ledger['artifacts']:
-            if (not isinstance(row, dict) or set(row) != {'source', 'destination', 'type', 'sha256', 'orphan'} or
-                    not canonical(row['source']) or not canonical(row['destination']) or
-                    not isinstance(row['type'], str) or type(row['orphan']) is not bool or
-                    not isinstance(row['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', row['sha256'])):
-                refuse('malformed consumed manifest row')
-            dest = row['destination']
-            if dest in seen:
-                refuse('duplicate/conflicting manifest destination: ' + dest)
-            seen.add(dest)
-            allowed = ((row['type'] == 'codex-hooks-json' and dest == destination) or
-                       (row['type'] == 'codex-command-skill' and dest.startswith(home + '/skills/') and dest.endswith('/SKILL.md')) or
-                       (row['type'] == 'codex-agent-toml' and dest.startswith(home + '/agents/') and dest.endswith('.toml')))
-            if not allowed:
-                refuse('unsafe manifest type/destination: ' + dest)
-            parents(dest)  # generic lifecycle must never follow an unsafe parent
-            if dest == destination:
-                if row['source'] != source or row['orphan']:
-                    refuse('hook manifest source/type ownership does not match current adapter')
-                record = row
-    if hook_id is not None:
-        value = json_value(hook_raw)
-        if not isinstance(value, dict) or set(value) != {'hooks'} or not isinstance(value['hooks'], dict) or 'state' in value['hooks']:
-            refuse('malformed native hooks.json (hooks.state is native-only)')
-        for event, groups in value['hooks'].items():
-            validate_groups(event, groups)
-        if record is None or record['sha256'] != hashlib.sha256(hook_raw).hexdigest():
-            refuse('hooks.json is unrecorded or modified; FORCE cannot authorize adoption; inspect ownership manually')
-    elif record is not None:
-        refuse('recorded hooks.json is missing; inspect interrupted ownership manually')
-    if mode == 'legacy' and hook_id is not None:
-        refuse('ambiguous inline/JSON Asha hook duplication')
-    if mode == 'json' and tomllib.loads(raw.decode('utf-8')).get('hooks', {}).keys() - {'state'}:
-        print('WARN: foreign inline hooks coexist with owned JSON; native trust remains user-controlled', file=sys.stderr)
-    desired = tomllib.loads(wanted).get('hooks', {})
-    result = {'mode': mode, 'hook_identity': hook_id,
-            'hook_hash': hashlib.sha256(hook_raw).hexdigest(),
-            'manifest_identity': manifest_id,
-            'manifest_hash': hashlib.sha256(manifest_raw).hexdigest(),
-            'wanted': wanted, 'catalog': catalog,
-            'content': json.dumps({'hooks': desired}, indent=2, sort_keys=True) + '\n'}
-    if diagnostic:
-        # Only read-only doctor evidence includes native bytes. Publication
-        # never binds, rewrites or restores a shared-config snapshot.
-        result.update(config_text=raw.decode('utf-8'), json_text=hook_raw.decode('utf-8'))
-    return result
+def owned_hooks():
+    # Doctor evidence only: the installed hooks.json and whether the ledger
+    # records exactly these bytes.
+    raw = read(destination)
+    if raw is None:
+        return None
+    value = json_value(raw)
+    if not isinstance(value, dict) or set(value) != {'hooks'} or not isinstance(value['hooks'], dict):
+        refuse('malformed native hooks.json')
+    ledger = read(manifest)
+    data = json_value(ledger) if ledger is not None else {'artifacts': []}
+    if not isinstance(data, dict) or not isinstance(data.get('artifacts'), list):
+        refuse('invalid Codex generated-artifact manifest')
+    recorded = [row.get('sha256') for row in data['artifacts'] if isinstance(row, dict)
+                and os.path.abspath(str(row.get('destination'))) == os.path.abspath(destination)]
+    if recorded != [hashlib.sha256(raw).hexdigest()]:
+        refuse('hooks.json is unrecorded or modified; reinstall, with --force to replace it')
+    return raw.decode('utf-8')
 
 try:
-    if action in ('install', 'uninstall', 'inspect'):
-        print(json.dumps(inspect(sys.argv[9], sys.argv[10], action != 'uninstall', action == 'inspect')))
-    elif action in ('publish', 'recheck'):
-        plan = json_value(sys.argv[9])
-        current = inspect(plan['wanted'], plan['catalog'], action == 'publish')
-        if current != plan:
-            refuse('owned hooks/manifest drift since preflight; inspect before retrying')
-        if action == 'publish' and plan['mode'] != 'legacy' and sys.argv[10] != '1':
-            content = plan['content'].encode('utf-8')
-            if plan['hook_identity'] is None or hashlib.sha256(content).hexdigest() != plan['hook_hash']:
-                directory = os.path.dirname(destination)
-                os.makedirs(directory, exist_ok=True)
-                parents(destination)
-                fd, temporary = tempfile.mkstemp(prefix='.asha-hooks-', dir=directory)
-                try:
-                    with os.fdopen(fd, 'wb') as handle:
-                        handle.write(content)
-                        handle.flush()
-                        os.fsync(handle.fileno())
-                    if inspect(plan['wanted'], plan['catalog'], True) != plan:
-                        refuse('owned hooks/manifest drift before publication')
-                    if plan['hook_identity'] is None:
-                        # Atomic no-clobber for absent destinations, including
-                        # newly appeared foreign paths at the last syscall.
-                        os.link(temporary, destination)
-                    else:
-                        # Detectable drift refuses. This is NOT arbitrary-writer
-                        # compare-and-swap at the final replace syscall.
-                        os.replace(temporary, destination)
-                finally:
-                    if os.path.lexists(temporary):
-                        os.unlink(temporary)
-        if action == 'publish':
-            print('legacy' if plan['mode'] == 'legacy' else hashlib.sha256(plan['content'].encode()).hexdigest())
+    if action == 'install':
+        native_config()
+        sys.stdout.write(content())
+    elif action == 'inspect':
+        print(json.dumps({'content': content(), 'config_text': native_config(),
+                          'json_text': owned_hooks()}))
     else:
-        refuse('unknown owned hook action')
+        refuse('unknown Codex hook action: ' + action)
 except (OSError, ValueError, TypeError, KeyError, RecursionError) as exc:
     print('ERROR: Codex preservation refused: ' + str(exc), file=sys.stderr)
     sys.exit(4)
@@ -1055,33 +744,26 @@ PYEOF
 }
 
 _codex_prepare_hooks() {
-  local action="$1" block="" catalog="" rc
-  if [[ "$action" == install || "$action" == inspect ]]; then
-    block="$(_codex_build_hook_block)" || { rc=$?; [[ $rc -eq 1 ]] || return "$rc"; }
-  fi
-  catalog="$(_codex_build_hook_block all)" || { rc=$?; [[ $rc -eq 1 ]] || return "$rc"; }
-  _codex_hook_plan "$action" "$block" "$catalog"
+  local action="$1" block="" rc
+  block="$(_codex_build_hook_block)" || { rc=$?; [[ $rc -eq 1 ]] || return "$rc"; }
+  _codex_hook_plan "$action" "$block"
 }
 
-# Publish through the strict Codex seam; reuse only generic ledger recording.
-# No --force adoption and no shared config writer exists in this path.
 _codex_publish_hooks() {
-  local plan="$1" digest
-  digest="$(_codex_hook_plan publish "$plan" "${DRY_RUN:-0}")" || return $?
-  [[ "$digest" != legacy ]] || { log "[codex] equivalent legacy inline hooks: no-op"; return 0; }
-  [[ ${DRY_RUN:-0} -ne 1 ]] || { say "  EMIT [codex-hooks-json] $CODEX_HOOKS_FILE"; return 0; }
-  asha_artifact_record "$MARKET_ROOT/harnesses/codex.sh" "$CODEX_HOOKS_FILE" codex-hooks-json "$digest" || return $?
+  local content="$1" prepared rc=0
+  prepared="$(mktemp)" || return $?
+  printf '%s\n' "$content" > "$prepared" || rc=$?
+  [[ $rc -ne 0 ]] || asha_artifact_install_prepared codex "$MARKET_ROOT/harnesses/codex.sh" \
+    "$CODEX_HOOKS_FILE" codex-hooks-json "$prepared" || rc=$?
+  rm -f "$prepared"
+  return "$rc"
 }
 
 # A standalone sourced call owns a partial manifest cycle. A subshell isolates
 # all stage/result/option state from a caller's active, unrelated artifact cycle.
 codex_install_hooks() (
-  # New generated directories must pass the next install's ownership check,
-  # even when the caller uses a group-writable umask. Keep stricter masks.
-  umask go-w
-  local plan TMPDIR ASHA_ARTIFACT_HARNESS ASHA_ARTIFACT_STAGE
-  plan="$(_codex_prepare_hooks install)" || return $?
-  [[ "$(printf '%s' "$plan" | python3 -c 'import json,sys; print(json.load(sys.stdin)["mode"])')" != legacy ]] || return 0
+  local content TMPDIR ASHA_ARTIFACT_HARNESS ASHA_ARTIFACT_STAGE
+  content="$(_codex_prepare_hooks install)" || return $?
   TMPDIR="$(mktemp -d)" || return $?
   trap 'rc=$?
     if [[ $rc -eq 0 ]]; then
@@ -1091,7 +773,7 @@ codex_install_hooks() (
     fi
     exit "$rc"' EXIT
   asha_artifact_begin codex || return $?
-  _codex_publish_hooks "$plan" || return $?
+  _codex_publish_hooks "$content" || return $?
   asha_artifact_finalize codex 0 || return $?
 )
 
@@ -1141,13 +823,12 @@ _codex_migrate_legacy() {
 # ---------------------------------------------------------------------------
 
 codex_install() (
-  umask go-w
   command -v python3 >/dev/null 2>&1 || die "python3 required for Codex install (TOML + frontmatter parsing)" 3
 
   : "${ABS_MARKET_ROOT:=$(resolve_path "$MARKET_ROOT")}"
 
-  local plan TMPDIR ASHA_ARTIFACT_HARNESS ASHA_ARTIFACT_STAGE
-  plan="$(_codex_prepare_hooks install)" || return $?
+  local content TMPDIR ASHA_ARTIFACT_HARNESS ASHA_ARTIFACT_STAGE
+  content="$(_codex_prepare_hooks install)" || return $?
   TMPDIR="$(mktemp -d)" || return $?
   trap 'rc=$?
     if [[ $rc -eq 0 ]]; then
@@ -1157,7 +838,7 @@ codex_install() (
     fi
     exit "$rc"' EXIT
   asha_artifact_begin codex || return $?
-  _codex_publish_hooks "$plan" || return $?
+  _codex_publish_hooks "$content" || return $?
   ensure_dir "$CODEX_SKILLS_DIR" || return $?
   say "[codex] target = $CODEX_HOME"
 
@@ -1199,12 +880,9 @@ codex_install() (
 # ---------------------------------------------------------------------------
 
 codex_uninstall() {
-  command -v python3 >/dev/null 2>&1 || die "python3 required for Codex uninstall (TOML validation)" 3
-  local hook_plan
-  hook_plan="$(_codex_prepare_hooks uninstall)" || return $?
+  command -v python3 >/dev/null 2>&1 || die "python3 required for Codex uninstall (manifest parsing)" 3
   [[ -d "$CODEX_HOME" ]] || { say "[codex] $CODEX_HOME does not exist; nothing to remove"; CODEX_UNINSTALL_TOTAL=0; return 0; }
-  # Legacy generated artifacts retain their separate adoption path. Strict
-  # hook proof never authorizes adoption of native JSON or TOML.
+  # Legacy generated artifacts retain their separate adoption path.
   local ownership_manifest
   ownership_manifest="$(asha_artifact_manifest_path codex)"
   if [[ ! -f "$ownership_manifest" ]] && {
@@ -1214,15 +892,10 @@ codex_uninstall() {
     die "pre-manifest Codex artifacts detected; run 'asha install codex --force' once, then retry uninstall" 2
   fi
 
-  _codex_hook_plan recheck "$hook_plan" >/dev/null || return $?
   say "[codex] target = $CODEX_HOME"
 
   local total=0 n
   n="$(asha_artifact_uninstall codex)" || return $?
-  if [[ ${DRY_RUN:-0} -ne 1 && ( -e "$CODEX_HOOKS_FILE" || -L "$CODEX_HOOKS_FILE" ) ]]; then
-    info "ERROR: Codex owned hooks remained after removal; inspect concurrent drift"
-    return 4
-  fi
   [[ "$n" -gt 0 ]] && say "[codex] removed $n owned generated artifact(s)"
   total=$((total + n))
 

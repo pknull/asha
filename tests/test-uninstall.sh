@@ -306,12 +306,19 @@ class UninstallLauncherTests(unittest.TestCase):
         (self.home/'.claude').mkdir()
         (self.home/'.claude/settings.json').write_bytes(b'{}\n')
 
+    def fail_codex(self):
+        # A pre-manifest generated skill makes Codex uninstall refuse before
+        # any change. (Uninstall no longer reads config.toml at all.)
+        legacy = self.home/'.codex/skills/legacy-cmd/SKILL.md'
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_bytes(b'## Codex harness adapter\n')
+
     def run_uninstall(self, *args):
         return subprocess.run([str(ROOT/'uninstall.sh'), *args], cwd=ROOT,
             env=dict(ENV, HOME=str(self.home)), capture_output=True, timeout=120)
 
     def test_mixed_failure_keeps_codex_dispatcher_and_foreign(self):
-        self.config.write_bytes(b'bad = [')
+        self.fail_codex()
         (self.bin/'foreign').symlink_to(ROOT/'plugins/test/skills/ping')
         (self.bin/'asha-unknown').write_bytes(b'unknown consumer\n')
         before = snapshot(self.home/'.codex')
@@ -364,7 +371,7 @@ class UninstallLauncherTests(unittest.TestCase):
         p = self.run_uninstall('--target','all','--dry-run')
         self.assertEqual(p.returncode, 0, p.stderr.decode())
         self.assertEqual(snapshot(self.home), before)
-        self.config.write_bytes(b'bad = [')
+        self.fail_codex()
         before = snapshot(self.home)
         p = self.run_uninstall('--target','codex')
         self.assertEqual(p.returncode, 1, p.stderr.decode())

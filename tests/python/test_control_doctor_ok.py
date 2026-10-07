@@ -252,15 +252,12 @@ class NativeOwnedCodexHookTests(DoctorOkFixture):
         self.fake_codex.chmod(0o755)
         self.path = str(self.tools) + os.pathsep + os.environ["PATH"]
 
-    def install(self, *, legacy: bool = False) -> None:
+    def install(self) -> None:
         script = ('source "$1/lib/install.sh"; DRY_RUN=0; FORCE=0; VERBOSE=0; '
-                  'ONLY=""; WITH_CANARY=0; source "$1/harnesses/codex.sh"; ' +
-                  ('_codex_build_hook_block' if legacy else 'codex_install_hooks'))
+                  'ONLY=""; WITH_CANARY=0; source "$1/harnesses/codex.sh"; codex_install_hooks')
         result = subprocess.run(["bash", "-c", script, "doctor-fixture", str(self.repo)],
             cwd=self.repo, env=dict(self.env, PATH=self.path), capture_output=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr.decode())
-        if legacy:
-            self.cfg.write_bytes(b'features.hooks=true\n' + result.stdout)
 
     def probe(self):
         with mock.patch.dict(os.environ, {"PATH": self.path}):
@@ -331,17 +328,6 @@ class NativeOwnedCodexHookTests(DoctorOkFixture):
             probe = self.probe()
             self.assertEqual(probe.outcome, "missing", probe.detail)
             self.assertIn(event, probe.detail)
-
-    def test_exact_legacy_is_inspected_but_duplicate_native_json_refuses(self):
-        self.install(legacy=True)
-        probe = self.probe()
-        self.assertEqual(probe.outcome, "match", probe.detail)
-        raw = self.cfg.read_bytes()
-        self.install()
-        self.assertFalse(self.hooks.exists())
-        self.assertEqual(self.cfg.read_bytes(), raw)
-        self.hooks.write_text('{"hooks":{}}')
-        self.assertEqual(self.probe().outcome, "unavailable")
 
 
 if __name__ == "__main__":
