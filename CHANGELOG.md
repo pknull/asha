@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — subtraction B3 and N9: the session preview goes, the socket reaper moves to the tests
+
+- The dashboard's live session preview is deleted (Keeper ruling N9,
+  2026-10-07): the side panel and the narrow full-width detail show the
+  selected session's facts only, `PgUp`/`PgDn` scroll nothing, and Control
+  never captures a pane or reads tmux hooks for display.
+  `control.session_preview` is accepted and ignored for one release.
+- `asha control doctor`'s tmux probe runs on a private socket in a temporary
+  directory, so it leaves no socket file behind; the tmux socket reaper is now
+  a test fixture.
+
 ## Unreleased — subtraction B6b: the Codex installer trusts the local user
 
 - The Codex installer no longer defends `~/.codex` and `~/.asha` against
