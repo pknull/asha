@@ -1347,20 +1347,21 @@ class ReadOnlyObservationTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual((value["status"], code), ("unavailable", 2))
         spawn.assert_not_called()
 
-    def test_symlink_and_inode_replacement_refuse(self):
+    def test_a_symlinked_lock_is_followed_not_refused(self):
+        # The lock's no-follow and inode re-checks only defended Control's
+        # private state against the trusted local user (threat model,
+        # 2026-10-05); the flock and the process identity still decide.
         from lib.control import supervisor_service as daemon
+        config = self.config.control
+        lock = daemon.supervisor_lock_path(config)
+        lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        target = self.root / "elsewhere-lock"
+        target.write_text(""); target.chmod(0o600)
+        lock.symlink_to(target)
+        self.assertEqual(daemon.supervisor_status(config)[1], 1)
         self.retained()
-        lock = daemon.supervisor_lock_path(self.config.control)
-        foreign = self.root / "foreign-lock"
-        foreign.write_text(""); foreign.chmod(0o600)
-        lock.symlink_to(foreign)
-        self.assertEqual(daemon.supervisor_status(self.config.control)[1], 2)
-        lock.unlink()
-        with daemon._exclusive_lock(self.config.control):
-            real_stat = os.stat
-            def replaced(path, *args, **kwargs):
-                if path == "supervisor.lock":
-                    return foreign.stat()
-                return real_stat(path, *args, **kwargs)
-            with mock.patch.object(daemon.os, "stat", side_effect=replaced):
-                self.assertEqual(daemon.supervisor_status(self.config.control)[1], 2)
+        with daemon._exclusive_lock(config) as held:
+            self.assertTrue(held)
+            value, code = daemon.supervisor_status(config)
+        self.assertEqual((value["status"], value["lock_held"], code), ("running", True, 0))
+        self.assertTrue(lock.is_symlink())

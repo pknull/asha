@@ -438,10 +438,7 @@ def _exclusive_lock(config: ControlConfig) -> Iterator[bool]:
     with _directory_fd(root, create=True, managed_start=managed_start) as directory_fd:
         if directory_fd is None:
             raise StoreError("failed to create supervisor state directory")
-        flags = (
-            os.O_RDWR | getattr(os, "O_NONBLOCK", 0)
-            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-        )
+        flags = os.O_RDWR | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
         created = False
         try:
             fd = os.open(
@@ -472,16 +469,14 @@ def _exclusive_lock(config: ControlConfig) -> Iterator[bool]:
 
 
 def _lock_held(config: ControlConfig) -> bool:
-    if not getattr(os, "O_NOFOLLOW", 0):
-        raise StoreError("safe no-follow lock observation is unsupported on this platform")
     root, managed_start = _control_root(config)
     with _directory_fd(root, create=False, managed_start=managed_start) as directory_fd:
         if directory_fd is None:
             return False
         try:
             fd = os.open(
-                "supervisor.lock", os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
-                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                "supervisor.lock",
+                os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0),
                 dir_fd=directory_fd,
             )
         except FileNotFoundError:
@@ -491,17 +486,9 @@ def _lock_held(config: ControlConfig) -> bool:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                held = True
-            else:
-                held = False
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            # Do not report on an unlinked/replaced inode. Never follow a link
-            # in either the initial open or the post-probe name check.
-            before = os.fstat(fd)
-            after = os.stat("supervisor.lock", dir_fd=directory_fd, follow_symlinks=False)
-            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
-                raise StoreError("supervisor lock changed during observation")
-            return held
+                return True
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
         finally:
             _close_quietly(fd)
 
