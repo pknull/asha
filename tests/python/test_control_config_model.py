@@ -11,7 +11,6 @@ from unittest import mock
 from lib.control.config import (
     ConfigError,
     load_config,
-    validate_workspace_root,
 )
 from lib.control.model import (
     ModelError,
@@ -390,13 +389,6 @@ class ControlConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "directory"):
                 load_config({"HOME": str(home), "ASHA_HOME": str(blocker / "asha")})
 
-            workspace = root / "workspace-file"
-            workspace.write_text("not a directory")
-            config_path = root / "config.json"
-            write_config(config_path, json.dumps({"control": {"workspace_root": str(workspace)}}))
-            with self.assertRaisesRegex(ConfigError, "directory"):
-                load_config({"HOME": str(home), "ASHA_CONFIG": str(config_path)})
-
     def test_empty_env_values_use_unset_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             home = Path(td) / "home"
@@ -579,28 +571,6 @@ class ControlConfigTests(unittest.TestCase):
             message = str(caught.exception)
             self.assertIn("nesting", message)
             self.assertNotIn("[[[", message)
-
-    def test_workspace_root_rejects_dangerous_relationship_to_repository(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td).resolve()
-            home = root / "home"
-            repo = home / "Code/project"
-            repo.mkdir(parents=True)
-            for directory in (home, home / "Code", repo):
-                directory.chmod(0o700)
-            with self.assertRaisesRegex(ConfigError, "HOME"):
-                validate_workspace_root(home, home=home, repository=repo)
-            with self.assertRaisesRegex(ConfigError, "ancestor"):
-                validate_workspace_root(home / "Code", home=home, repository=repo)
-            with self.assertRaisesRegex(ConfigError, "source repository"):
-                validate_workspace_root(repo, home=home, repository=repo)
-            doubled_repo = Path(f"//{str(repo).lstrip('/')}")
-            with self.assertRaisesRegex(ConfigError, "canonical"):
-                validate_workspace_root(root / "workspaces", home=home, repository=doubled_repo)
-            self.assertEqual(
-                validate_workspace_root(root / "workspaces", home=home, repository=repo),
-                root / "workspaces",
-            )
 
 
 class ControlModelTests(unittest.TestCase):

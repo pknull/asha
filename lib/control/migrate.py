@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 import stat
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,8 +32,6 @@ from .config import (
     ConfigError,
     legacy_populated,
     migration_layout,
-    namespace_remediation,
-    namespace_safety_step,
     reject_symlink_components,
 )
 
@@ -196,30 +195,12 @@ def preflight(layout: Mapping[str, Path], inventory: Mapping[str, Any], *,
                 "atomic rename cannot merge into it; move it aside and re-run"
             )
         # An empty new_state is replaced atomically by rename(2); no refusal.
-    euid = os.geteuid()
-    current = Path(layout["asha_home"].anchor)
-    boundary = False
-    for part in layout["asha_home"].parts[1:]:
-        current = current / part
-        try:
-            metadata = current.lstat()
-        except FileNotFoundError:
-            continue
-        problem, boundary = namespace_safety_step(
-            metadata, euid, boundary, namespace_root=current == layout["asha_home"],
-        )
-        if problem:
-            problems.append(
-                f"{problem} rejected in ASHA_HOME: {current}"
-                f"{namespace_remediation(problem, current)}"
-            )
-            break
     live = [name for name in tmux_sessions if name.startswith("asha-")]
     if live:
         problems.append(
             f"{len(live)} live Control tmux session(s) exist "
             f"({', '.join(live[:3])}{'…' if len(live) > 3 else ''}); stop them "
-            "(asha task stop / tmux kill-session) and re-run"
+            "(tmux kill-session) and re-run"
         )
     for task_id in inventory["non_archived_tasks"]:
         problems.append(
@@ -495,10 +476,13 @@ def run(args: list[str], env: Mapping[str, str], *, tmux=None, jj=None) -> int:
         return 2
 
     if jj is None:
-        from .jj import JjAdapter
-
         def jj_forget(source: Path, name: str) -> None:
-            JjAdapter().forget_workspace(source, name)
+            # Through the source repository; the materialization may be partial.
+            subprocess.run(
+                [os.environ.get("ASHA_JJ") or "jj", "-R", str(source), "--ignore-working-copy",
+                 "workspace", "forget", name],
+                check=True, capture_output=True, timeout=60,
+            )
     else:
         jj_forget = jj
 

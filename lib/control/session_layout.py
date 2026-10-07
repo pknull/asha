@@ -99,13 +99,13 @@ def _g(name, ascii_only):
 
 
 def cells(text):
-    from .tui import _cell_width
+    from .session_modals import _cell_width
     return _cell_width(text)
 
 
 def fit(text, budget, ascii_only=False):
     """Safe text clipped to ``budget`` cells, with an ellipsis when clipped."""
-    from .tui import _prefix_cells, _safe_text
+    from .session_modals import _prefix_cells, _safe_text
     text = _safe_text(text)
     if budget <= 0:
         return ''
@@ -279,7 +279,7 @@ def detail_lines(row, ascii_only=False):
 
 def panel_lines(row, width, ascii_only=False):
     """The side panel (wide) or full-width peek: the whole identity, state and facts."""
-    from .tui import _cell_lines, _safe_text
+    from .session_modals import _cell_lines, _safe_text
     if row is None:
         return [('No session selected', 'muted', INERT)]
     if row.get('kind') == 'section':

@@ -1,7 +1,7 @@
 """Transactional managed-session custody, turn claims, and outstanding requests.
 
-This database owns the new session domain. Existing initiative records remain
-authoritative for plans, work attempts, approvals and accepted evidence.
+This database owns the session domain. The retired initiative and task
+records stay beside it as read-only evidence.
 """
 from __future__ import annotations
 
@@ -568,30 +568,6 @@ class SessionStore:
         with self.db.transaction(write=True) as c:
             self._owner(c, sid, generation)
             self._stopped(c, sid)
-
-    def require_legacy_handoff(self, sid, initiative_id):
-        """Read-only transfer gate, called while holding the initiative lock.
-
-        Stopping execution cannot settle an ambiguous submission. A legacy
-        successor must not turn loss of the owner into permission to repeat work.
-        """
-        with self.db.transaction() as c:
-            session = self._session(c, sid)
-            if session['initiative_id'] != initiative_id:
-                raise StoreError('managed predecessor belongs to another initiative')
-            if (session['state'] != 'stopped' or self._provider_live(c, sid)
-                    or session['owner_pid'] and process_live(session['owner_pid'], session['owner_identity'])):
-                raise StoreError('stop the managed session and wait for its owner/provider before changing transport')
-            # Reservation events are ordered durably even if the wall clock
-            # moves backward. The event and turn row are committed together.
-            latest = c.execute('''SELECT state FROM session_turns WHERE session_id=? AND turn_id=(
-                SELECT turn_id FROM session_events WHERE session_id=? AND kind='turn-reserved'
-                ORDER BY sequence DESC LIMIT 1)''', (sid, sid)).fetchone()
-            if latest is None and c.execute('SELECT 1 FROM session_turns WHERE session_id=? LIMIT 1', (sid,)).fetchone():
-                raise StoreError('managed turn reservation evidence is missing; inspect before changing transport')
-            recovery = session.get('recovery') or {}
-            if (latest and latest['state'] in {'running', 'uncertain'}) or recovery.get('delivery') == 'uncertain':
-                raise StoreError('managed submission is uncertain; inspect and resolve it before changing transport')
 
     @staticmethod
     def recovery_digest(session):

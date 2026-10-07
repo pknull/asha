@@ -244,24 +244,21 @@ class SessionTests(unittest.TestCase):
             self.assertEqual(ensure_owners(self.config)["owners_started"], 0)
         self.assertEqual(self.store.get(self.sid)["state"], "stopped")
 
-    def test_tui_and_cli_share_question_projection_and_resolution(self):
+    def test_dashboard_and_cli_share_question_projection_and_resolution(self):
         from unittest import mock
-        from lib.control import tui
+        from lib.control import session_modals
         from lib.control.sessions import overview
         turn = self.claim()
         request_id = str(uuid.uuid4())
         self.store.request(self.sid, turn["turn_id"], "Which chapter?", request_id=request_id)
         self.store.finish(self.sid, self.generation, turn["turn_id"], success=True)
         self.assertEqual(overview(self.config)["questions"], 1)
-        model = tui.TuiModel()
-        intent = model.dispatch_key("M")
-        self.assertEqual(intent.kind, tui.IntentKind.SESSION_QUESTIONS)
+        model = session_modals.SessionModel()
         # This test process stands in for both roles; independent role tests
         # prove that the actual operator CLI refuses owner ancestry.
         with mock.patch("lib.control.sessions.refuse_managed_operator"), \
-             mock.patch("lib.control.session_modals._prompt_line", side_effect=[request_id, "Chapter two"]):
-            tui._execute_intent(intent, stdscr=None, curses_module=None, model=model,
-                                config=self.config, env=self.env, store=None, journals=None, jj=None)
+             mock.patch("lib.control.session_modals._prompt_line", side_effect=["Chapter two"]):
+            session_modals._answer_session_request(None, None, model, self.config, self.env, request_id)
         self.assertEqual(overview(self.config)["questions"], 0)
         self.assertEqual(self.store.snapshot(self.sid)["requests"], [])
         self.assertIn("0 questions", model.managed_summary)

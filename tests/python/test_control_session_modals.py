@@ -1,8 +1,7 @@
-"""Retirement step L-a2: the dashboard's modal helpers live outside the legacy TUI.
+"""Retirement steps L-a2 and L-b: the dashboard's modals stand on their own.
 
-The dashboard must build its modal model without loading ``tui`` or the task
-substrate it imports, while the legacy TUI keeps working on the same helpers
-until the engine retires.
+The dashboard builds its modal model without the retired legacy TUI or the
+task substrate, and a prompt repaints the dashboard's own live view beneath it.
 """
 import json
 import subprocess
@@ -10,8 +9,10 @@ import sys
 import unittest
 from pathlib import Path
 
-from lib.control import session_modals, tui
-from lib.control.prerequisites import ControlTermination
+from unittest import mock
+
+from lib.control import session_modals, session_tui
+from tests.python.control_curses_fakes import FakeCurses, FakeScreen
 
 ROOT = Path(__file__).resolve().parents[2]
 # What ``tui`` loaded into a dashboard that only wanted its modal helpers.
@@ -79,35 +80,38 @@ class IsolationTests(unittest.TestCase):
         self.assertEqual([m for m in built['added'] if m in LEGACY], [])
 
 
-class LegacyReuseTests(unittest.TestCase):
-    def test_the_legacy_tui_uses_the_same_helpers(self):
-        for name in ('_prompt_line', '_project_launch_form', '_managed_session_view', '_popup_room_command',
-                     '_decide_managed_permission', '_select_managed_request', 'init_colours', '_attribute',
-                     '_repaint_after_suspend', '_cell_width', '_cell_lines', '_prefix_cells', '_safe_text',
-                     'ModalCandidate', 'ModalFrame', 'modal_frame', '_draw_modal_frame', '_read_modal_key'):
-            with self.subTest(name=name):
-                self.assertIs(getattr(tui, name), getattr(session_modals, name))
+class BackdropTests(unittest.TestCase):
+    def dashboard(self):
+        class Quiet:
+            def timeout(self, _ms):
+                pass
 
-    def test_the_legacy_shutdown_still_crosses_repository_transactions(self):
-        self.assertTrue(issubclass(tui._TuiShutdown, ControlTermination))
-        self.assertTrue(issubclass(tui._TuiShutdown, session_modals._TuiShutdown))
-        shutdown = tui._TuiShutdown(15)
-        self.assertEqual((shutdown.signum, shutdown.detail, str(shutdown)), (15, None, '15'))
+            def getmaxyx(self):
+                return (24, 100)
 
+        with mock.patch.object(session_tui, 'Hub'), \
+                mock.patch.object(session_tui, 'ThreadPoolExecutor', return_value=mock.MagicMock()), \
+                mock.patch.object(session_tui, '_title_writer', return_value=mock.MagicMock()), \
+                mock.patch.object(session_tui.session_modals, 'init_colours', return_value=False):
+            return session_tui.Dashboard(Quiet(), object(), {})
 
-class UnderlayTests(unittest.TestCase):
-    def test_a_dashboard_prompt_repaints_what_the_tui_model_did(self):
-        model = session_modals.SessionModel()
-        model.coloured, model.message, model.managed_summary = True, 'Started Fresh', '1 question'
-        legacy = tui.TuiModel([])
-        legacy.coloured, legacy.message, legacy.managed_summary = True, 'Started Fresh', '1 question'
-        for height, width in ((14, 80), (6, 40), (30, 140)):
-            with self.subTest(size=(height, width)):
-                painted, expected = Screen(height, width), Screen(height, width)
-                model.dirty = legacy.dirty = True
-                model.paint_underlay(painted, Curses)
-                tui._paint(expected, Curses, legacy)
-                self.assertEqual(painted.writes, expected.writes)
+    def test_a_dashboard_prompt_repaints_the_dashboards_own_live_view(self):
+        dash = self.dashboard()
+        with mock.patch.object(dash, 'paint') as paint:
+            dash.model.paint_underlay(Screen(), Curses)
+        paint.assert_called_once_with()
+
+    def test_the_backdrop_repaints_on_entry_and_resize_but_not_on_idle_timeouts(self):
+        painted = []
+        model = session_modals.SessionModel(backdrop=lambda: painted.append('dashboard'))
+        screen = FakeScreen([-1, -1, FakeCurses.KEY_RESIZE, -1, '\x1b'], height=12, width=60)
+        self.assertIsNone(session_modals._prompt_line(screen, FakeCurses(), model, 'Message: ', title='Send'))
+        self.assertEqual(painted, ['dashboard', 'dashboard'])
+
+    def test_a_model_without_a_backdrop_clears_the_screen_behind_a_prompt(self):
+        screen = Screen()
+        session_modals.SessionModel().paint_underlay(screen, Curses)
+        self.assertEqual(screen.writes, ['erase'])
 
 
 if __name__ == '__main__':

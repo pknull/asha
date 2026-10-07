@@ -1,11 +1,9 @@
-"""Modal helpers the session dashboard shares with the legacy TUI.
+"""Modal helpers for the session dashboard.
 
 Prompts, the project launch form, the session reader, question answering and
 the permission review, plus the text and colour helpers they draw with. They
-moved out of ``tui`` without behaviour changes (retirement step L-a2) so the
-dashboard no longer loads the legacy TUI and the task substrate it imports;
-``tui`` imports them back until it retires. Branches only the legacy TUI
-reaches still call into ``tui`` lazily.
+moved out of the legacy TUI (retirement step L-a2), which retired with the
+initiative engine (L-b).
 """
 
 from __future__ import annotations
@@ -18,7 +16,7 @@ from functools import wraps
 from typing import Any, Iterable, Mapping
 
 from .config import ControlConfig
-from .harness import HARNESSES, validate_role
+from .harness import HARNESSES
 from .store import StoreError
 from .text import (
     prompt_character_allowed as _shared_prompt_character_allowed,
@@ -29,42 +27,27 @@ from .tui_style import (
 )
 
 
-class ModalHost:
-    """The screen a modal helper draws over.
+class SessionModel:
+    """The session dashboard's modal state.
 
-    Editors mark the host ``dirty`` when they close, and an overlay prompt asks
-    it to repaint what the prompt covers.
+    ``message`` carries a modal's outcome back to the dashboard. An overlay
+    prompt repaints what it covers through ``backdrop``, the dashboard's own
+    painter, so the live session view stays behind the prompt; without one the
+    screen is cleared. Editors mark the model ``dirty`` when they close.
     """
 
-    def paint_underlay(self, stdscr, curses_module) -> None:
-        raise NotImplementedError
-
-
-class SessionModel(ModalHost):
-    """The session dashboard's modal state, in place of ``tui.TuiModel``.
-
-    ``message`` carries a modal's outcome back to the dashboard. Until the
-    legacy TUI retires, an overlay prompt repaints the empty legacy control tree
-    beneath it with this model's colour, message and summary, as it did while
-    the dashboard held a ``TuiModel``; that is this model's only use of ``tui``.
-    """
-
-    def __init__(self) -> None:
+    def __init__(self, backdrop=None) -> None:
         self.coloured = False
         self.message: str | None = None
         self.managed_summary: str | None = None
         self.dirty = True
-        self._underlay = None
+        self.backdrop = backdrop
 
     def paint_underlay(self, stdscr, curses_module) -> None:
-        from . import tui
-        if self._underlay is None:
-            self._underlay = tui.TuiModel([])
-        underlay = self._underlay
-        underlay.coloured, underlay.message = self.coloured, self.message
-        underlay.managed_summary = self.managed_summary
-        underlay.dirty = True
-        tui._paint(stdscr, curses_module, underlay)
+        if self.backdrop is not None:
+            self.backdrop()
+        else:
+            stdscr.erase()
 
 
 class _TuiShutdown(Exception):
@@ -649,7 +632,7 @@ def _cursor_editor(function):
             # Editors draw outside the tree painter. Their final frame must be
             # cleared even when the returned status message did not change.
             model = args[0] if args else kwargs.get("model")
-            if isinstance(model, ModalHost):
+            if isinstance(model, SessionModel):
                 model.dirty = True
     return wrapped
 
@@ -663,7 +646,7 @@ def _modal_controls(*, candidates: bool = False) -> str:
 
 @_cursor_editor
 def _prompt_line(
-    stdscr, curses_module, model: ModalHost, prompt: str,
+    stdscr, curses_module, model: SessionModel, prompt: str,
     *, initial: str = "", maximum: int = 500, hint: str | None = None,
     candidates: Iterable[ModalCandidate] = (), selected: int | None = None,
     title: str = "", context: str = "",
@@ -905,16 +888,6 @@ def _canonical_field_value(
              if item.value.encode("ascii").lower() == folded),
             None,
         )
-    if field == 3:
-        matched = next(
-            (item.value for item in candidates if _ascii_prefix(item.value, value)
-             and len(item.value) == len(value)),
-            value,
-        )
-        try:
-            return validate_role(matched)
-        except ValueError:
-            return None
     return value
 
 
@@ -995,7 +968,7 @@ def _popup_room_command(
 
 @_cursor_editor
 def _project_launch_form(
-    stdscr, curses_module, model: ModalHost, config: ControlConfig,
+    stdscr, curses_module, model: SessionModel, config: ControlConfig,
     env: Mapping[str, str], *, session: Mapping[str, Any],
 ) -> str:
     """The session dashboard's launch form (#102).
@@ -1171,45 +1144,6 @@ def _project_launch_form(
     return f"{subject} launch cancelled"
 
 
-def _select_managed_request(stdscr, curses_module, model, config):
-    """Page questions independently of session counts; selection never resolves one."""
-    from .session_store import SessionStore
-
-    after = None
-    while True:
-        with SessionStore(config) as sessions:
-            snapshot = sessions.current_work(kind="requests", limit=_MAX_MODAL_CANDIDATES, after=after)
-        pending = snapshot["rows"]
-        candidates = [ModalCandidate(r["request_id"], _safe_text(r["question"])[:160],
-                                    display=r["session_id"][:8]) for r in pending]
-        next_cursor = snapshot["next_cursor"]
-        more = not snapshot["complete"]
-        advancing = more and next_cursor is not None and next_cursor != after
-        if advancing:
-            candidates.append(ModalCandidate("next", "Next request page"))
-        elif more:
-            candidates.append(ModalCandidate("retry", "Retry this partial page"))
-        candidates.append(ModalCandidate("refresh", "Refresh from the beginning"))
-        selected = _prompt_line(
-            stdscr, curses_module, model, "Request: ", maximum=36,
-            title="Managed questions and permissions",
-            context=(f"{len(pending)} requests on this page; " +
-                     ("more requests may be unread" if more else "end of current requests") +
-                     ". Pages can change between reads. Enter a request ID or select one."),
-            candidates=tuple(candidates),
-        )
-        if selected == "next" and advancing:
-            after = next_cursor
-        elif selected == "retry" and more and not advancing:
-            continue
-        elif selected == "refresh":
-            after = None
-        elif selected in {"next", "retry"}:
-            continue
-        else:
-            return selected
-
-
 def _decide_managed_permission(stdscr, curses_module, model, config, env, request_id):
     """Shared exact-invocation review for the selected head's a key and global M."""
     from .sessions import overview, refuse_managed_operator
@@ -1229,11 +1163,8 @@ def _decide_managed_permission(stdscr, curses_module, model, config, env, reques
     return "native permission decision retained; response delivery is pending"
 
 
-def _answer_session_request(stdscr, curses_module, model, config, env, request_id=None) -> None:
-    """Answer one pending session question or permission; the outcome is ``model.message``.
-
-    Without a request the legacy TUI's ``M`` key pages the pending ones first.
-    """
+def _answer_session_request(stdscr, curses_module, model, config, env, request_id) -> None:
+    """Answer one pending session question or permission; the outcome is ``model.message``."""
     from .sessions import overview, refuse_managed_operator
     from .session_store import SessionStore
     refuse_managed_operator(config, env)
@@ -1241,10 +1172,7 @@ def _answer_session_request(stdscr, curses_module, model, config, env, request_i
     if not current["questions"] and not current.get("permissions", 0):
         model.message = current["summary"]
         return
-    selected_request = request_id or _select_managed_request(stdscr, curses_module, model, config)
-    if not selected_request:
-        model.message = "question selection cancelled"
-        return
+    selected_request = request_id
     with SessionStore(config) as sessions:
         request = sessions.get_request(selected_request)
     if request["state"] != "pending":

@@ -8,7 +8,6 @@ import posixpath
 import re
 import stat
 import unicodedata
-from .trust import TRUST_MODES
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Any
@@ -46,6 +45,9 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 # release so an existing config still loads.
 IGNORED_CONTROL_KEYS = frozenset({"idle_delivery", "no_handoff_close"})
 # How long a close waits for a Memory save before it terminates (D5).
+# control.workspace_trust stays a validated key so existing configuration keeps
+# loading; the task substrate that read it was retired (L-b).
+TRUST_MODES = ("inherit", "never")
 CLOSE_WAIT_DEFAULT = 60
 CLOSE_WAIT_LIMIT = 600
 
@@ -131,126 +133,6 @@ def require_existing_directory_components(path: Path, name: str = "path") -> Non
             raise ConfigError(f"cannot inspect {name} directory component: {exc}") from exc
         if not stat.S_ISDIR(metadata.st_mode):
             raise ConfigError(f"existing {name} component must be a directory: {current}")
-
-
-def namespace_ancestor_problem(
-    metadata: os.stat_result, euid: int, *, root_uid: int | None = None
-) -> str | None:
-    """Return the safety failure for an existing namespace ancestor, if any."""
-    problem, _ = namespace_safety_step(
-        metadata, euid, private_boundary=False, root_uid=root_uid
-    )
-    return problem
-
-
-def namespace_safety_step(
-    metadata: os.stat_result,
-    euid: int,
-    private_boundary: bool,
-    *,
-    root_uid: int | None = None,
-    namespace_root: bool = False,
-) -> tuple[str | None, bool]:
-    """Validate one ancestor and carry forward a private namespace boundary."""
-    # User namespaces can map the filesystem-root owner away from numeric UID 0.
-    if root_uid is None:
-        root_uid = os.stat("/").st_uid
-    if metadata.st_uid not in {0, root_uid, euid}:
-        return "ancestor is not owned by root or the effective user", private_boundary
-    mode = metadata.st_mode
-    is_directory = stat.S_ISDIR(mode)
-    sticky = bool(mode & stat.S_ISVTX)
-    # A leading sticky directory such as /tmp may precede a private boundary:
-    # its owner cannot replace an entry owned by the effective user. It is not
-    # safe as the managed namespace root or below a private boundary, where an
-    # attacker can pre-create the exact child name Control intends to use.
-    if is_directory and mode & 0o002 and not sticky:
-        return "world-writable non-sticky ancestor", private_boundary
-    if is_directory and mode & 0o020 and not sticky:
-        return "writable non-sticky ancestor", private_boundary
-    if (is_directory and mode & 0o022 and sticky
-            and (private_boundary or namespace_root)):
-        return "writable sticky ancestor", private_boundary
-    # The boundary answers path SUBSTITUTION, which requires write access, so
-    # the test is group/other WRITABILITY (0o022) rather than total group/other
-    # access (0o077). Demanding 0700 rejected an ordinary 0750 home and with it
-    # every repository beneath one, while 0750 already denies creation and
-    # replacement to everyone but the owner. A writable descendant never
-    # inherits trust from this boundary; the checks above reject it.
-    private_boundary = private_boundary or (
-        is_directory and metadata.st_uid == euid and not mode & 0o022
-    )
-    return None, private_boundary
-
-
-def namespace_remediation(problem: str | None, path: Path) -> str:
-    """Name the operator command that clears a writable-ancestor refusal.
-
-    Group- and other-writable directories are the operator's to fix; Control
-    never changes the mode of a directory it did not create. Returned text is
-    appended to the refusal so `task start`, `task doctor`, and every other
-    verb print the same exact remediation.
-    """
-    if problem is None or "writable" not in problem:
-        return ""
-    if "sticky" in problem and "non-sticky" not in problem:
-        return (
-            "; a writable sticky directory cannot host the managed namespace: "
-            "point control.workspace_root or XDG state at a private directory"
-        )
-    return f"; remediate with: chmod g-w,o-w {path}"
-
-
-def reject_unsafe_writable_ancestors(path: Path, name: str = "path") -> None:
-    """Reject existing untrusted namespace ancestors."""
-    if not path.is_absolute():
-        raise ConfigError(f"{name} must be an absolute path")
-    current = Path(path.anchor)
-    private_boundary = False
-    for part in path.parts[1:]:
-        current /= part
-        try:
-            metadata = current.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            raise ConfigError(f"cannot inspect {name} ancestor {current}: {exc}") from exc
-        problem, private_boundary = namespace_safety_step(
-            metadata, os.geteuid(), private_boundary,
-            namespace_root=current == path,
-        )
-        if problem:
-            raise ConfigError(
-                f"{problem} rejected in {name}: {current}"
-                f"{namespace_remediation(problem, current)}"
-            )
-
-
-def validate_workspace_root(
-    workspace_root: Path,
-    *,
-    home: Path,
-    repository: Path | None = None,
-) -> Path:
-    if not is_canonical_absolute_path(str(workspace_root)):
-        raise ConfigError("control.workspace_root must be an absolute canonical path")
-    if not is_canonical_absolute_path(str(home)):
-        raise ConfigError("HOME must be an absolute canonical path")
-    if workspace_root == Path("/"):
-        raise ConfigError("control.workspace_root must not be filesystem root")
-    if workspace_root == home:
-        raise ConfigError("control.workspace_root must not be HOME")
-    if repository is not None:
-        if not is_canonical_absolute_path(str(repository), resolved=True):
-            raise ConfigError("source repository must be an exact resolved canonical path")
-        if workspace_root == repository:
-            raise ConfigError("control.workspace_root must not be the source repository")
-        if repository.is_relative_to(workspace_root):
-            raise ConfigError("control.workspace_root must not be an ancestor of the source repository")
-        if workspace_root.is_relative_to(repository):
-            raise ConfigError("control.workspace_root must not be below the source repository")
-    require_existing_directory_components(workspace_root, "control.workspace_root")
-    return workspace_root
 
 
 def _open_config_file(path: Path) -> tuple[int, os.stat_result] | None:
@@ -473,13 +355,12 @@ def load_config(
                 ) from exc
             raise
 
+    # Task workspaces were retired (L-b); the key still parses so existing
+    # configuration loads, and only the legacy-layout gate reads it.
     raw_workspace = control.get("workspace_root", str(asha_home / "workspaces"))
     if not isinstance(raw_workspace, str) or not raw_workspace:
         raise ConfigError("control.workspace_root must be a non-empty string")
-    workspace_root = validate_workspace_root(
-        _absolute(raw_workspace, "control.workspace_root", home=home),
-        home=home,
-    )
+    workspace_root = _absolute(raw_workspace, "control.workspace_root", home=home)
 
     root_harness = root.get("default_harness")
     if "default_harness" in control:

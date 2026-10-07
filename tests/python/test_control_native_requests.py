@@ -60,36 +60,20 @@ class NativeRequestTests(unittest.TestCase):
 
     def test_control_decides_native_request_without_enqueuing_a_model_turn(self):
         from unittest import mock
-        from lib.control import session_modals, tui
+        from lib.control import session_modals
         from lib.control.sessions import overview
         request = self.open()
         self.assertEqual(overview(self.config)["permissions"], 1)
         self.assertEqual(overview(self.config)["questions"], 0)
-        model = tui.TuiModel()
+        model = session_modals.SessionModel()
         with mock.patch("lib.control.sessions.refuse_managed_operator"), \
-             mock.patch.object(session_modals, "_prompt_line", return_value=request["request_id"]), \
              mock.patch.object(session_modals, "_native_permission_prompt", return_value="deny") as dialog:
-            tui._execute_intent(model.dispatch_key("M"), stdscr=None, curses_module=None,
-                                model=model, config=self.config, env={}, store=None, journals=None, jj=None)
+            session_modals._answer_session_request(None, None, model, self.config, {}, request["request_id"])
         self.assertEqual(dialog.call_args.args[2]["digest"], request["digest"])
         self.assertEqual(self.requests.get(request["request_id"])["answer"], "deny")
         self.assertEqual(overview(self.config)["permissions"], 0)
         self.assertEqual(self.store.get(self.sid)["turns"], 1)
         self.assertNotIn("queued", self.store.snapshot(self.sid)["message_counts"])
-
-    def test_control_can_resolve_a_request_outside_its_bounded_suggestions(self):
-        from unittest import mock
-        from lib.control import session_modals, tui
-        request = self.open()
-        model = tui.TuiModel()
-        with mock.patch("lib.control.sessions.refuse_managed_operator"), \
-             mock.patch.object(SessionStore, "current_work", return_value={"rows": [], "complete": False, "next_cursor": None}), \
-             mock.patch.object(session_modals, "_prompt_line", return_value=request["request_id"]) as picker, \
-             mock.patch.object(session_modals, "_native_permission_prompt", return_value="allow"):
-            tui._execute_intent(model.dispatch_key("M"), stdscr=None, curses_module=None,
-                                model=model, config=self.config, env={}, store=None, journals=None, jj=None)
-        self.assertIn("Enter a request ID", picker.call_args.kwargs["context"])
-        self.assertEqual(self.requests.get(request["request_id"])["answer"], "allow")
 
     def test_allow_binds_exact_input_and_submission_is_not_replayed(self):
         request = self.open()

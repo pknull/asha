@@ -35,7 +35,6 @@ _SHA256 = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _COMMAND_TTY = re.compile(r"/dev/[A-Za-z0-9_./-]{1,256}", re.ASCII)
 _USER_OPTION = re.compile(r"@[a-z][a-z0-9_]{0,63}", re.ASCII)
 _ENVIRONMENT_KEY = re.compile(r"[A-Z][A-Z0-9_]{0,63}", re.ASCII)
-_RESULT_STAGING_TOKEN = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _PERCENT = re.compile(r"(?:[1-9][0-9]?|100)%", re.ASCII)
 _SESSION_PREFIX = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30})?", re.ASCII)
 # Every other path this adapter handles reaches tmux as one argv element and is
@@ -965,37 +964,6 @@ class TmuxAdapter:
             args.extend([";", "set-option", "-p", "-t", pane_target, key, value])
         args.extend([";", "select-pane", "-t", pane_target, "-T", title])
         return _validate_pane_id(self._one_line(self._run(args), "created pane id"))
-
-    def set_result_staging_token(self, session: str, token: str) -> None:
-        """Set the private session token over stdin so it never enters argv."""
-        name = _validate_session_name(session)
-        if (
-            not isinstance(token, str)
-            or _RESULT_STAGING_TOKEN.fullmatch(token) is None
-        ):
-            raise TmuxError("result staging token is invalid")
-        command = (
-            f"set-environment -t {name} ASHA_CONTROL_RESULT_TOKEN {token}\n\n"
-        ).encode("ascii")
-        returncode, stdout, _stderr = self._capture_bytes(
-            self.executable,
-            ["-C", "attach-session", "-t", name],
-            input_data=command,
-        )
-        protocol_error = any(
-            line.startswith(b"%error ") for line in stdout.splitlines()
-        )
-        if returncode != 0 or protocol_error:
-            # Control-mode diagnostics may echo input; never relay them.
-            raise TmuxError("tmux private session environment update failed")
-
-    def clear_result_staging_token(self, session: str) -> None:
-        """Drop the session copy after the worker process has inherited it."""
-        name = _validate_session_name(session)
-        self._run([
-            "set-environment", "-u", "-t", name,
-            "ASHA_CONTROL_RESULT_TOKEN",
-        ])
 
     @staticmethod
     def _validated_environment(

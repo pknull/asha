@@ -1,4 +1,4 @@
-"""Project index: which projects sessions, Rooms and initiatives may target.
+"""Project index: which projects sessions and Rooms may target.
 
 A declared workspace manifest (`.asha/workspace.json` at or above the start
 directory) is the index when present. Otherwise the index is a bounded,
