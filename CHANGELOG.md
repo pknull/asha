@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — subtraction B5: the managed-session runtime trusts the local user
+
+- The actor-to-owner request socket no longer reads peer credentials, a peer
+  pidfd or process ancestry on either end, and the client no longer re-checks
+  the endpoint's mode and owner (Keeper threat model, 2026-10-05). The owner
+  still creates the endpoint 0600 in a private directory, never replaces an
+  existing listener, accepts only `ask`, and binds each request to its session,
+  generation and running turn. Managed sessions no longer need kernel
+  `SO_PEERPIDFD` support; `asha control session doctor` drops its `actor_ipc`
+  probe and Control's doctor no longer reports it.
+- The session operator refusal decides by environment label alone: managed
+  actor labels, the worker profile and non-chair sessions on a sandboxed
+  harness. The walk that refused any caller descending from a live managed
+  owner, and failed closed when a process tree could not be read, is gone; so
+  is the experience refusal that walked every open worker pane and refused all
+  experience operator actions when one pane's ownership was unreadable.
+- Managed-owner anchors rest on the retained process identity; the `/proc` uid
+  comparison is gone. Experience report and evidence reads keep their
+  no-follow walk, size bound and secret exclusion and drop the owner and
+  link-count checks.
+- A test pins the Codex actor tool's operation set to exactly `ask`.
+- After landing: restart the supervisor once; it loads `session_ipc`,
+  `sessions` and `session_store`.
+
 ## Unreleased — subtraction N3: workspace knowledge, promotion, work-item and worktree tools removed (session 2.9.0)
 
 - `asha workspace knowledge|promote|work-item|worktree` and their cores
