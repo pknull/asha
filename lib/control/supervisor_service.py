@@ -1,4 +1,9 @@
-"""flock-owned process loop and CLI for the orchestration supervisor."""
+"""flock-owned process loop, CLI and systemd unit for the Control supervisor.
+
+The supervisor starts structured session owners and, until the legacy engine
+retires (L-b), runs its initiative tick. That tick is the only part of the
+engine this module loads, lazily, through ``_initiative_sweep`` and ``tick``.
+"""
 
 from __future__ import annotations
 
@@ -19,18 +24,13 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
-from ..config import is_canonical_absolute_path
-from ..harness import HarnessError, process_identity, verify_process
-from ..process import capture_bytes
-from ..store import (
+from .config import ConfigError, ControlConfig, is_canonical_absolute_path, load_config
+from .harness import HarnessError, process_identity, verify_process
+from .process import capture_bytes
+from .store import (
     StoreError, TaskStore, _close_quietly, _directory_fd, _managed_start,
     _open_existing_file, _validate_open_file,
 )
-from .cli import reconcile_one_initiative
-from .config import OrchestrationConfig, OrchestrationConfigError, load_config
-from .ingestion import ingest_pending_results
-from .store import InitiativeStore
-from .supervisor import tick
 
 
 MAX_STATUS_BYTES = 16 * 1024
@@ -71,12 +71,12 @@ def _exception_message(exc: BaseException) -> str:
     return (detail or type(exc).__name__)[:450]
 
 
-def supervisor_lock_path(config: OrchestrationConfig) -> Path:
-    return config.control.tasks_dir.parent / "supervisor.lock"
+def supervisor_lock_path(config: ControlConfig) -> Path:
+    return config.tasks_dir.parent / "supervisor.lock"
 
 
-def status_path(config: OrchestrationConfig) -> Path:
-    return config.control.tasks_dir.parent / "supervisor.json"
+def status_path(config: ControlConfig) -> Path:
+    return config.tasks_dir.parent / "supervisor.json"
 
 
 def supervisor_service_path(env: Mapping[str, str]) -> Path:
@@ -121,8 +121,8 @@ def render_supervisor_service(
     # npm/asdf harness outside the sanitized PATH failed with exit 127 (#120).
     # Resolve the directory but keep the launcher entry itself: Claude's
     # updater repoints its launcher link and an asdf shim picks the version.
-    from ..harness import HEADLESS_HARNESSES
-    from ..rooms import HARNESS_COMMAND_ENV
+    from .harness import HEADLESS_HARNESSES
+    from .rooms import HARNESS_COMMAND_ENV
     harness_lines = ""
     for harness in sorted(HEADLESS_HARNESSES):
         variable = HARNESS_COMMAND_ENV[harness]
@@ -301,12 +301,12 @@ def _linger_advisory() -> str:
 
 
 def install_supervisor_service(
-    config: OrchestrationConfig, env: Mapping[str, str], *,
+    config: ControlConfig, env: Mapping[str, str], *,
     asha_root: Path | None = None, dry_run: bool = False,
     runner: Callable[..., Any] | None = None,
     which: Callable[[str], str | None] | None = None,
 ) -> tuple[dict[str, Any], int]:
-    root = asha_root or Path(__file__).resolve().parents[3]
+    root = asha_root or Path(__file__).resolve().parents[2]
     path = supervisor_service_path(env)
     body = render_supervisor_service(env, root, which=which)
     if _unit_exists(path) and not _owned_service(path):
@@ -427,13 +427,13 @@ def uninstall_supervisor_service(
     }, 0
 
 
-def _control_root(config: OrchestrationConfig) -> tuple[Path, int]:
-    root = config.control.tasks_dir.parent
+def _control_root(config: ControlConfig) -> tuple[Path, int]:
+    root = config.tasks_dir.parent
     return root, _managed_start(root, ("state", "control"))
 
 
 @contextmanager
-def _exclusive_lock(config: OrchestrationConfig) -> Iterator[bool]:
+def _exclusive_lock(config: ControlConfig) -> Iterator[bool]:
     root, managed_start = _control_root(config)
     with _directory_fd(root, create=True, managed_start=managed_start) as directory_fd:
         if directory_fd is None:
@@ -471,7 +471,7 @@ def _exclusive_lock(config: OrchestrationConfig) -> Iterator[bool]:
             _close_quietly(fd)
 
 
-def _lock_held(config: OrchestrationConfig) -> bool:
+def _lock_held(config: ControlConfig) -> bool:
     if not getattr(os, "O_NOFOLLOW", 0):
         raise StoreError("safe no-follow lock observation is unsupported on this platform")
     root, managed_start = _control_root(config)
@@ -524,7 +524,7 @@ def _validate_status(value: Any) -> dict[str, Any]:
     return value
 
 
-def _read_status(config: OrchestrationConfig) -> dict[str, Any] | None:
+def _read_status(config: ControlConfig) -> dict[str, Any] | None:
     root, managed_start = _control_root(config)
     with _directory_fd(root, create=False, managed_start=managed_start) as directory_fd:
         if directory_fd is None:
@@ -556,7 +556,7 @@ def _read_status(config: OrchestrationConfig) -> dict[str, Any] | None:
         raise ValueError(f"cannot read supervisor status: {exc}") from exc
 
 
-def _write_status(config: OrchestrationConfig, value: Mapping[str, Any]) -> None:
+def _write_status(config: ControlConfig, value: Mapping[str, Any]) -> None:
     raw = json.dumps(
         _validate_status(dict(value)), ensure_ascii=False, sort_keys=True,
         separators=(",", ":"), allow_nan=False,
@@ -598,21 +598,42 @@ def _write_status(config: OrchestrationConfig, value: Mapping[str, Any]) -> None
                 pass
 
 
-def _default_dependencies(config: OrchestrationConfig):
-    catalog = InitiativeStore(config)
-    return SimpleNamespace(
-        store_factory=lambda _initiative_id: InitiativeStore(config),
-        control_store=TaskStore(config.control),
-        now=lambda: datetime.now(timezone.utc),
-        reconcile=reconcile_one_initiative,
-        ingest=ingest_pending_results,
-        list_initiatives=catalog.list_initiatives,
-    )
+def tick(dependencies):
+    """Run one legacy initiative sweep; L-b deletes it with the engine."""
+    from .orchestration.supervisor import tick as initiative_tick
+    return initiative_tick(dependencies)
 
 
-def _snapshot_marker(config: OrchestrationConfig) -> tuple[int, int] | None:
+def _initiative_sweep(config: ControlConfig):
+    """The legacy initiative tick's interval and dependency factory (L-b deletes it).
+
+    Its settings live in the engine's ``orchestration`` config block, so ``run``
+    parses that block here, before it takes the lock: a malformed block still
+    refuses ``run``. No other supervisor verb loads the engine.
+    """
+    from .orchestration.cli import reconcile_one_initiative
+    from .orchestration.config import from_control
+    from .orchestration.ingestion import ingest_pending_results
+    from .orchestration.store import InitiativeStore
+    settings = from_control(config)
+
+    def dependencies():
+        catalog = InitiativeStore(settings)
+        return SimpleNamespace(
+            store_factory=lambda _initiative_id: InitiativeStore(settings),
+            control_store=TaskStore(config),
+            now=lambda: datetime.now(timezone.utc),
+            reconcile=reconcile_one_initiative,
+            ingest=ingest_pending_results,
+            list_initiatives=catalog.list_initiatives,
+        )
+
+    return settings.supervisor_interval_seconds, dependencies
+
+
+def _snapshot_marker(config: ControlConfig) -> tuple[int, int] | None:
     try:
-        metadata = (config.control.runtime_dir / "events").stat()
+        metadata = (config.runtime_dir / "events").stat()
     except (FileNotFoundError, NotADirectoryError):
         return None
     return metadata.st_ino, metadata.st_mtime_ns
@@ -661,8 +682,9 @@ def _emit_tick_errors(
 
 
 def run_supervisor(
-    config: OrchestrationConfig, *, deps=None, json_output: bool = False,
+    config: ControlConfig, *, deps=None, json_output: bool = False,
 ) -> int:
+    interval_seconds, default_dependencies = _initiative_sweep(config)
     # A daemon must not pin its caller's cwd or mount.
     os.chdir(Path.home())
     with _exclusive_lock(config) as acquired:
@@ -690,7 +712,7 @@ def run_supervisor(
             signum: signal.signal(signum, request_stop)
             for signum in (signal.SIGTERM, signal.SIGINT)
         }
-        dependencies = deps or _default_dependencies(config)
+        dependencies = deps or default_dependencies()
         last_marker = _snapshot_marker(config)
         next_regular = 0.0
         first = True
@@ -704,9 +726,9 @@ def run_supervisor(
                     summary = tick(dependencies)
                     if deps is None:
                         # Additive managed-session domain; legacy scheduling stays authoritative.
-                        from ..sessions import ensure_owners
+                        from .sessions import ensure_owners
                         try:
-                            summary["counts"].update(ensure_owners(config.control))
+                            summary["counts"].update(ensure_owners(config))
                         except (StoreError, OSError, ValueError) as exc:
                             summary["counts"]["errors"] += 1
                             summary["counts"]["managed_error"] = _exception_message(exc)
@@ -723,7 +745,7 @@ def run_supervisor(
                     retained["last_tick_at"] = summary["finished_at"]
                     retained["last_tick_summary"] = summary["counts"]
                     _write_status(config, retained)
-                    next_regular = time.monotonic() + config.supervisor_interval_seconds
+                    next_regular = time.monotonic() + interval_seconds
                     first = False
                     if stopping:
                         break
@@ -736,7 +758,7 @@ def run_supervisor(
         return 0
 
 
-def supervisor_status(config: OrchestrationConfig) -> tuple[dict[str, Any], int]:
+def supervisor_status(config: ControlConfig) -> tuple[dict[str, Any], int]:
     retained = None
     held = None
     try:
@@ -771,7 +793,7 @@ def supervisor_status(config: OrchestrationConfig) -> tuple[dict[str, Any], int]
 
 
 def _run_argv() -> list[str]:
-    library_root = Path(__file__).resolve().parents[2]
+    library_root = Path(__file__).resolve().parents[1]
     program = (
         "import runpy,sys;sys.path.insert(0,sys.argv.pop(1));"
         "runpy.run_module('control.cli',run_name='__main__')"
@@ -783,7 +805,7 @@ def _run_argv() -> list[str]:
 
 
 def start_supervisor(
-    config: OrchestrationConfig, env: Mapping[str, str],
+    config: ControlConfig, env: Mapping[str, str],
 ) -> tuple[dict[str, Any], int]:
     current, code = supervisor_status(config)
     if code == 2:
@@ -819,7 +841,7 @@ def start_supervisor(
     }, 1
 
 
-def stop_supervisor(config: OrchestrationConfig) -> tuple[dict[str, Any], int]:
+def stop_supervisor(config: ControlConfig) -> tuple[dict[str, Any], int]:
     current, code = supervisor_status(config)
     if code == 2:
         return {**current, "signalled": False}, 2
@@ -904,12 +926,12 @@ def supervisor_main(
     try:
         config = load_config(values)
         if command != "status":
-            from ..sessions import refuse_managed_operator
-            refuse_managed_operator(config.control, values)
+            from .sessions import refuse_managed_operator
+            refuse_managed_operator(config, values)
         if command in {"pause", "drain", "resume"}:
-            from ..runtime import set_admission
+            from .runtime import set_admission
             mode = {"pause": "paused", "drain": "draining", "resume": "running"}[command]
-            payload = set_admission(config.control, mode)
+            payload = set_admission(config, mode)
             _emit(payload, json_output)
             return 0
         if command == "run":
@@ -917,8 +939,8 @@ def supervisor_main(
         if command == "start":
             payload, code = start_supervisor(config, values)
         elif command == "stop":
-            from ..runtime import set_admission
-            policy = set_admission(config.control, "stopped")
+            from .runtime import set_admission
+            policy = set_admission(config, "stopped")
             payload, code = stop_supervisor(config)
             payload["admission"] = policy
             payload["message"] += "; " + policy["message"]
@@ -930,8 +952,8 @@ def supervisor_main(
             payload, code = uninstall_supervisor_service(values, dry_run=dry_run)
         else:
             payload, code = supervisor_status(config)
-            from ..runtime import admission
-            payload["admission"] = admission(config.control)
+            from .runtime import admission
+            payload["admission"] = admission(config)
             service = supervisor_service_status(values)
             payload.update(service)
             if not json_output:
@@ -942,7 +964,7 @@ def supervisor_main(
             _emit(payload, json_output)
         return code
     except (
-        HarnessError, OrchestrationConfigError, StoreError, OSError, ValueError,
+        HarnessError, ConfigError, StoreError, OSError, ValueError,
     ) as exc:
         payload = {"status": "unavailable", "running": None, "message": _exception_message(exc)}
         if json_output:

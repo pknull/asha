@@ -97,7 +97,7 @@ class ManagedLaunchTests(ExecutionFixture, unittest.TestCase):
 
     def test_codex_launch_preserves_stopped_admission(self):
         set_admission(self.config.control, 'stopped')
-        with mock.patch('lib.control.orchestration.supervisor_daemon.start_supervisor') as start:
+        with mock.patch('lib.control.supervisor_service.start_supervisor') as start:
             launched = self.launch(harness='codex')
         self.assertEqual(launched['harness'], 'codex')
         self.assertEqual(launched['admission']['mode'], 'stopped')
@@ -115,7 +115,7 @@ class ManagedLaunchTests(ExecutionFixture, unittest.TestCase):
 
     def test_supervisor_failure_reports_committed_custody(self):
         set_admission(self.config.control, 'running')
-        with mock.patch('lib.control.orchestration.supervisor_daemon.start_supervisor', side_effect=OSError('launch unavailable')):
+        with mock.patch('lib.control.supervisor_service.start_supervisor', side_effect=OSError('launch unavailable')):
             launched = self.launch()
         self.assertEqual(launched['state'], 'queued')
         self.assertIn('launch unavailable', launched['supervisor']['message'])
@@ -174,7 +174,7 @@ class ManagedLaunchTests(ExecutionFixture, unittest.TestCase):
                                  'asha_project': True, 'project_id': 'one'}]}
         screen = FakeScreen([10, 10, *'Review the chapter', 10, FakeCurses.KEY_RESIZE, 10], width=42)
         with mock.patch('lib.control.managed_launch.launch_managed', side_effect=deliver), \
-             mock.patch('lib.control.orchestration.projects.list_projects_across', return_value=projects), \
+             mock.patch('lib.control.projects.list_projects_across', return_value=projects), \
              mock.patch('lib.control.tui._refresh_initiatives', side_effect=StoreError('refresh failed')):
             result = _launch_coordinator_session(screen, FakeCurses(), TuiModel([]), self.config.control, self.env)
         self.assertIn('queued', result)

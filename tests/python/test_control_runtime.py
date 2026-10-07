@@ -15,7 +15,7 @@ from lib.control.runtime import admission, require_admission, set_admission
 from lib.control.session_store import SessionStore
 from lib.control.sessions import ensure_owners, run_owner
 from lib.control.store import StoreError
-from lib.control.orchestration.supervisor_daemon import supervisor_main
+from lib.control.supervisor_service import supervisor_main
 
 
 class RuntimeAdmissionTests(unittest.TestCase):
@@ -136,7 +136,7 @@ class RuntimeAdmissionTests(unittest.TestCase):
                     # Exercise the old-version inspection gate with a process
                     # owned by the test; no old-schema writes are permitted.
                     c.execute("PRAGMA user_version=1")
-            with patch("lib.control.orchestration.supervisor_daemon.stop_supervisor", return_value=({"message": "not running"}, 1)):
+            with patch("lib.control.supervisor_service.stop_supervisor", return_value=({"message": "not running"}, 1)):
                 result = quiesce(self.config, self.env)
             self.assertEqual(result["signalled_sessions"], [sid])
             self.assertEqual(child.wait(timeout=3), -15)

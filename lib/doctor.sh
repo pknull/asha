@@ -116,7 +116,7 @@ _asha_doctor_experience_configuration() {
   python3 - "$MARKET_ROOT" <<'PYEOF'
 import sys
 sys.path.insert(0, sys.argv[1])
-from lib.control.orchestration.projects import experience_default
+from lib.control.projects import experience_default
 mode, source, error = experience_default()
 print(('FAIL  ' + error) if error else f'PASS  Session experience default: {mode} ({source}); native review gated')
 raise SystemExit(1 if error else 0)

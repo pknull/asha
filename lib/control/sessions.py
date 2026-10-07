@@ -79,9 +79,8 @@ def quiesce(config, env):
     """
     refuse_managed_operator(config, env, allow_legacy_reads=True)
     from .database import ControlDatabase
-    from .orchestration.config import load_config as load_orchestration
-    from .orchestration.supervisor_daemon import stop_supervisor
-    stopped, code = stop_supervisor(load_orchestration(env))
+    from .supervisor_service import stop_supervisor
+    stopped, code = stop_supervisor(config)
     if code == 2:
         raise StoreError(stopped["message"])
     with ControlDatabase(config, allow_legacy_reads=True) as db:
@@ -555,7 +554,7 @@ def main(argv=None, *, env=None):
         config = load_config(values)
         if args.command == "ask":
             from .session_ipc import request_question
-            from .orchestration.messages import terminal_safe
+            from .text import terminal_safe
             if values.get("ASHA_MANAGED_STATE_DIR") != str(config.tasks_dir.parent):
                 raise StoreError("managed actor selected a different state root")
             result = request_question(config, session_id=values.get("ASHA_MANAGED_SESSION_ID"),
@@ -675,7 +674,7 @@ def main(argv=None, *, env=None):
                     answers = json.loads(args.answers, object_pairs_hook=_unique_object)
                     result = NativeRequests(store).answer_native(args.request_id, answers,
                         expected_digest=args.digest)
-        from .orchestration.messages import terminal_safe
+        from .text import terminal_safe
         print(json.dumps(terminal_safe(result), ensure_ascii=True, indent=None if args.json else 2))
         return 0
     except (StoreError, OSError, ValueError) as exc:

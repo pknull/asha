@@ -1,4 +1,4 @@
-"""Project index for the coordinator: which repositories an intent may target.
+"""Project index: which projects sessions, Rooms and initiatives may target.
 
 A declared workspace manifest (`.asha/workspace.json` at or above the start
 directory) is the index when present. Otherwise the index is a bounded,
@@ -12,11 +12,19 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from collections import deque
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..context import detect_workspace, read_published_snapshot, validate_manifest
+_ROOT = Path(__file__).resolve().parents[2]
+_SESSION_TOOLS = _ROOT / "plugins" / "session" / "tools"
+if str(_SESSION_TOOLS) not in sys.path:
+    sys.path.insert(0, str(_SESSION_TOOLS))
+
+from memory_v2 import read_published_snapshot  # type: ignore  # noqa: E402
+from project_root import detect_workspace  # type: ignore  # noqa: E402
+from workspace_manifest import validate_manifest  # type: ignore  # noqa: E402
 
 PROJECT_LIST_CONTRACT = "asha.orchestration-project-list.v1"
 MAX_DISCOVERED_DIRECTORIES = 512

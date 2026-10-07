@@ -35,7 +35,7 @@ class SessionSelectorTests(unittest.TestCase):
         self.hub = Hub(self.config, env=self.env, tmux=self.tmux)
         self.enterContext(mock.patch('lib.control.session_hub.TmuxAdapter', return_value=self.tmux))
         self.enterContext(mock.patch(
-            'lib.control.orchestration.supervisor_daemon.start_supervisor',
+            'lib.control.supervisor_service.start_supervisor',
             return_value=({'message': 'started'}, 0)))
 
     def launch(self, sid=FIRST, **changes):

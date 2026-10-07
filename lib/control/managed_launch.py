@@ -112,9 +112,9 @@ def launch_managed(config, *, project, intent, env, harness='claude', launch_id=
     if policy['mode'] == 'unavailable':
         supervisor['message'] += ': ' + policy['message']
     if policy['mode'] == 'running':
-        from .orchestration.supervisor_daemon import start_supervisor
+        from .supervisor_service import start_supervisor
         try:
-            supervisor, code = start_supervisor(orchestration, env)
+            supervisor, code = start_supervisor(orchestration.control, env)
             supervisor = {**supervisor, 'exit_code': code}
         except (OSError, ValueError, StoreError) as exc:
             supervisor = {'running': False, 'message': str(exc)}

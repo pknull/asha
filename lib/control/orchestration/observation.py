@@ -10,7 +10,7 @@ from typing import Any
 from ..harness import verify_process
 from ..rooms import RoomStore, _owned_state
 from ..store import SnapshotBudget, TaskStore, StoreError
-from ..tmux import TmuxAdapter, TmuxError
+from ..tmux import BoundedTmux, TmuxAdapter
 from .model import (INITIATIVE_TERMINAL_STATES, validate_approval, validate_coordinator,
                     validate_message)
 from .messages import terminal_safe, _receipt, _same_address
@@ -21,27 +21,6 @@ MAX_ROWS = 50
 MAX_SCANNED = 256
 MAX_JSON_BYTES = 64 * 1024
 DEADLINE_SECONDS = 2.0
-
-
-class BoundedTmux(TmuxAdapter):
-    """Reuse the real adapter parser with a shared external-probe deadline."""
-    def __init__(self, source, deadline):
-        super().__init__(executable=source.executable, socket=source.socket,
-                         config_file=source.config_file, runner=source.runner)
-        self.deadline = deadline
-
-    def _capture_bytes(self, executable, args, **kwargs):
-        remaining = self.deadline - time.monotonic()
-        if remaining <= 0:
-            raise TmuxError("activity observation deadline reached")
-        kwargs["deadline_seconds"] = min(remaining, kwargs.get("deadline_seconds", remaining))
-        kwargs["limit"] = min(MAX_JSON_BYTES, kwargs.get("limit", MAX_JSON_BYTES))
-        result = super()._capture_bytes(executable, args, **kwargs)
-        # The normal inventory maps some connection failures to an empty
-        # server. Observation must not call inaccessible evidence 'no tasks'.
-        if result[0] != 0:
-            raise TmuxError("tmux activity evidence unavailable")
-        return result
 
 
 def current_activity(config, *, tmux=None, rows=MAX_ROWS, scanned=MAX_SCANNED,

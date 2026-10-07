@@ -22,7 +22,7 @@ class SessionHubTests(unittest.TestCase):
         from lib.control.session_hub import Hub
         self.hub = Hub(self.config, env=self.env, tmux=self.tmux)
         self.supervisor = self.enterContext(mock.patch(
-            'lib.control.orchestration.supervisor_daemon.start_supervisor',
+            'lib.control.supervisor_service.start_supervisor',
             return_value=({'message': 'started'}, 0)))
 
     def launch(self, **changes):

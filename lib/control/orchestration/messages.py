@@ -8,13 +8,13 @@ from __future__ import annotations
 import copy
 import os
 import time
-import unicodedata
 from pathlib import Path
 from typing import Any, Mapping
 
 from ..harness import (caller_descends_from, pane_ancestry_ok, verify_process, process_identity,
                        _process_stat_fields, _stat_integer)
 from ..store import SnapshotBudget, StoreError, TaskStore, _directory_fd, _managed_start
+from ..text import terminal_safe
 from . import coordinator
 from .actions import append_event
 from .model import (
@@ -27,20 +27,6 @@ PENDING_CONTRACT = "asha.orchestration-message-pending.v1"
 # Sending requires a complete global role proof, not the startup sample.
 ROLE_SCAN_LIMIT = 65536
 ROLE_SCAN_SECONDS = 10.0
-
-
-def terminal_safe(value: Any) -> Any:
-    """Escape C0/C1, bidi/format controls and surrogates even in text output."""
-    if isinstance(value, str):
-        return "".join(
-            f"\\u{ord(c):04x}" if unicodedata.category(c) in {"Cc", "Cf", "Cs"} else c
-            for c in value
-        )
-    if isinstance(value, dict):
-        return {terminal_safe(k): terminal_safe(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [terminal_safe(v) for v in value]
-    return value
 
 
 def _owned_anchor(anchor: Mapping[str, Any]) -> None:

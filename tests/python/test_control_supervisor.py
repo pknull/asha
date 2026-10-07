@@ -33,7 +33,7 @@ from lib.control.orchestration.ingestion import (
     stage_result,
 )
 from lib.control.orchestration.supervisor import tick
-from lib.control.orchestration.supervisor_daemon import (
+from lib.control.supervisor_service import (
     SUPERVISOR_SERVICE_MARKER,
     _emit_tick_errors,
     install_supervisor_service,
@@ -606,14 +606,14 @@ class SupervisorProcessTests(ExecutionFixture, unittest.TestCase):
 
         with contextlib.chdir(self.repo), \
                 mock.patch(
-                    "lib.control.orchestration.supervisor_daemon.Path.home",
+                    "lib.control.supervisor_service.Path.home",
                     return_value=Path(self.env["HOME"]),
                 ), \
                 mock.patch(
-                    "lib.control.orchestration.supervisor_daemon.tick",
+                    "lib.control.supervisor_service.tick",
                     side_effect=one_tick,
                 ), redirect_stdout(StringIO()):
-            result = run_supervisor(self.config, deps=SimpleNamespace())
+            result = run_supervisor(self.config.control, deps=SimpleNamespace())
 
         self.assertEqual(result, 0)
         self.assertEqual(observed, [Path(self.env["HOME"])])
@@ -631,21 +631,21 @@ class SupervisorProcessTests(ExecutionFixture, unittest.TestCase):
 
         with contextlib.chdir(self.repo), \
                 mock.patch(
-                    "lib.control.orchestration.supervisor_daemon.Path.home",
+                    "lib.control.supervisor_service.Path.home",
                     return_value=Path(self.env["HOME"]),
                 ), \
                 mock.patch(
-                    "lib.control.orchestration.supervisor_daemon.tick",
+                    "lib.control.supervisor_service.tick",
                     side_effect=one_tick,
                 ), \
                 mock.patch(
-                    "lib.control.orchestration.supervisor_daemon._snapshot_marker",
+                    "lib.control.supervisor_service._snapshot_marker",
                     side_effect=lambda _config: next(markers),
                 ), \
                 mock.patch(
-                    "lib.control.orchestration.supervisor_daemon._POLL_SECONDS", 0,
+                    "lib.control.supervisor_service._POLL_SECONDS", 0,
                 ), redirect_stdout(output):
-            result = run_supervisor(self.config, deps=SimpleNamespace())
+            result = run_supervisor(self.config.control, deps=SimpleNamespace())
 
         self.assertEqual(result, 0)
         self.assertEqual(pending, [])
@@ -710,15 +710,15 @@ class SupervisorProcessTests(ExecutionFixture, unittest.TestCase):
         output = StringIO()
 
         with mock.patch(
-            "lib.control.orchestration.supervisor_daemon._emit_tick_errors",
+            "lib.control.supervisor_service._emit_tick_errors",
             side_effect=RuntimeError("stdout is gone"),
         ):
             self.drive_ticks([self.errored_tick(initiative_id, "boom")], output)
 
-        self.assertIsNotNone(json.loads(status_path(self.config).read_text())["last_tick_at"])
+        self.assertIsNotNone(json.loads(status_path(self.config.control).read_text())["last_tick_at"])
 
     def test_second_run_refuses_while_another_process_holds_the_flock(self) -> None:
-        path = supervisor_lock_path(self.config)
+        path = supervisor_lock_path(self.config.control)
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         program = (
             "import fcntl,os,signal,sys\n"
@@ -766,7 +766,7 @@ class SupervisorProcessTests(ExecutionFixture, unittest.TestCase):
         self.assertIsNotNone(identity)
         child.terminate()
         child.wait(timeout=5)
-        path = status_path(self.config)
+        path = status_path(self.config.control)
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         path.write_text(json.dumps({
             "pid": child.pid,
@@ -779,7 +779,7 @@ class SupervisorProcessTests(ExecutionFixture, unittest.TestCase):
         output = StringIO()
 
         with mock.patch(
-            "lib.control.orchestration.supervisor_daemon.os.kill",
+            "lib.control.supervisor_service.os.kill",
         ) as kill, redirect_stdout(output):
             result = control_main(
                 ["control", "supervisor", "stop", "--json"], env=self.env,
@@ -1016,7 +1016,7 @@ class SupervisorServiceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "foreign unit"):
             install_supervisor_service(
-                self.config, self.env, asha_root=self.asha_root,
+                self.config.control, self.env, asha_root=self.asha_root,
                 runner=self.runner, which=self.which,
             )
         self.assertEqual(path.read_text(encoding="utf-8"), "[Unit]\nDescription=foreign\n")
@@ -1027,14 +1027,14 @@ class SupervisorServiceTests(unittest.TestCase):
             encoding="utf-8",
         )
         with mock.patch(
-            "lib.control.orchestration.supervisor_daemon.stop_supervisor",
+            "lib.control.supervisor_service.stop_supervisor",
             return_value=({"running": False}, 1),
         ), mock.patch(
-            "lib.control.orchestration.supervisor_daemon._lock_held",
+            "lib.control.supervisor_service._lock_held",
             return_value=False,
         ):
             payload, code = install_supervisor_service(
-                self.config, self.env, asha_root=self.asha_root,
+                self.config.control, self.env, asha_root=self.asha_root,
                 runner=self.runner, which=self.which,
             )
 
@@ -1056,14 +1056,14 @@ class SupervisorServiceTests(unittest.TestCase):
             return self.runner(argv, **kwargs)
 
         with mock.patch(
-            "lib.control.orchestration.supervisor_daemon.stop_supervisor",
+            "lib.control.supervisor_service.stop_supervisor",
             side_effect=stop,
         ), mock.patch(
-            "lib.control.orchestration.supervisor_daemon._lock_held",
+            "lib.control.supervisor_service._lock_held",
             return_value=False,
         ):
             install_supervisor_service(
-                self.config, self.env, asha_root=self.asha_root,
+                self.config.control, self.env, asha_root=self.asha_root,
                 runner=runner, which=self.which,
             )
 
@@ -1080,14 +1080,14 @@ class SupervisorServiceTests(unittest.TestCase):
     def test_install_refuses_while_the_single_instance_lock_remains_held(self) -> None:
         path = supervisor_service_path(self.env)
         with mock.patch(
-            "lib.control.orchestration.supervisor_daemon.stop_supervisor",
+            "lib.control.supervisor_service.stop_supervisor",
             return_value=({"running": False, "message": "not running"}, 1),
         ), mock.patch(
-            "lib.control.orchestration.supervisor_daemon._lock_held",
+            "lib.control.supervisor_service._lock_held",
             return_value=True,
         ):
             value, code = install_supervisor_service(
-                self.config, self.env, asha_root=self.asha_root,
+                self.config.control, self.env, asha_root=self.asha_root,
                 runner=self.runner, which=self.which,
             )
             self.assertEqual(code, 2)
@@ -1124,10 +1124,10 @@ class SupervisorServiceTests(unittest.TestCase):
     def test_install_dry_run_writes_nothing_and_prints_commands(self) -> None:
         path = supervisor_service_path(self.env)
         with mock.patch(
-            "lib.control.orchestration.supervisor_daemon.stop_supervisor",
+            "lib.control.supervisor_service.stop_supervisor",
         ) as stop:
             payload, code = install_supervisor_service(
-                self.config, self.env, asha_root=self.asha_root, dry_run=True,
+                self.config.control, self.env, asha_root=self.asha_root, dry_run=True,
                 runner=self.runner, which=self.which,
             )
 
@@ -1194,7 +1194,7 @@ class SupervisorServiceTests(unittest.TestCase):
 
         output = StringIO()
         with mock.patch(
-            "lib.control.orchestration.supervisor_daemon.shutil.which",
+            "lib.control.supervisor_service.shutil.which",
             return_value=None,
         ), redirect_stdout(output):
             code = control_main(
@@ -1208,7 +1208,7 @@ class SupervisorServiceTests(unittest.TestCase):
 
         output = StringIO()
         with mock.patch(
-            "lib.control.orchestration.supervisor_daemon.shutil.which",
+            "lib.control.supervisor_service.shutil.which",
             return_value=None,
         ), redirect_stdout(output):
             control_main(["control", "supervisor", "status"], env=self.env)
@@ -1276,15 +1276,15 @@ class ReadOnlyObservationTests(ExecutionFixture, unittest.TestCase):
     start_running = False
 
     def retained(self):
-        from lib.control.orchestration import supervisor_daemon as daemon
-        daemon._write_status(self.config, {
+        from lib.control import supervisor_service as daemon
+        daemon._write_status(self.config.control, {
             "pid": os.getpid(), "process_identity": process_identity(os.getpid()),
             "started_at": now_text(), "last_tick_at": None, "last_tick_summary": None,
         })
 
     def test_readonly_open_observes_the_same_owned_lock(self):
         import errno
-        from lib.control.orchestration import supervisor_daemon as daemon
+        from lib.control import supervisor_service as daemon
         self.retained()
         real_open = os.open
         attempted = []
@@ -1296,10 +1296,10 @@ class ReadOnlyObservationTests(ExecutionFixture, unittest.TestCase):
                     raise OSError(errno.EROFS, "Read-only file system")
             return real_open(path, flags, *args, **kwargs)
 
-        with daemon._exclusive_lock(self.config) as held:
+        with daemon._exclusive_lock(self.config.control) as held:
             self.assertTrue(held)
             with mock.patch.object(daemon.os, "open", side_effect=readonly):
-                value, code = daemon.supervisor_status(self.config)
+                value, code = daemon.supervisor_status(self.config.control)
         self.assertEqual(code, 0)
         self.assertEqual(value["status"], "running")
         self.assertTrue(value["lock_held"])
@@ -1309,7 +1309,7 @@ class ReadOnlyObservationTests(ExecutionFixture, unittest.TestCase):
     def test_faults_are_unavailable_and_never_launch_signal_or_install(self):
         import errno
         from lib.control.harness import HarnessError
-        from lib.control.orchestration import supervisor_daemon as daemon
+        from lib.control import supervisor_service as daemon
         self.retained()
         faults = [OSError(errno.EROFS, "readonly"), PermissionError("denied"),
                   OSError(errno.EOPNOTSUPP, "unsupported flock"),
@@ -1319,48 +1319,48 @@ class ReadOnlyObservationTests(ExecutionFixture, unittest.TestCase):
                     mock.patch.object(daemon.subprocess, "Popen") as spawn, \
                     mock.patch.object(daemon.os, "kill") as kill, \
                     mock.patch.object(daemon, "_write_service") as install:
-                value, code = daemon.supervisor_status(self.config)
+                value, code = daemon.supervisor_status(self.config.control)
                 self.assertEqual((value["status"], value["running"], code), ("unavailable", None, 2))
-                self.assertEqual(daemon.start_supervisor(self.config, self.env)[1], 2)
-                self.assertEqual(daemon.stop_supervisor(self.config)[1], 2)
-                self.assertEqual(daemon.install_supervisor_service(self.config, self.env)[1], 2)
+                self.assertEqual(daemon.start_supervisor(self.config.control, self.env)[1], 2)
+                self.assertEqual(daemon.stop_supervisor(self.config.control)[1], 2)
+                self.assertEqual(daemon.install_supervisor_service(self.config.control, self.env)[1], 2)
                 spawn.assert_not_called(); kill.assert_not_called(); install.assert_not_called()
         with mock.patch.object(daemon, "verify_process", side_effect=HarnessError("proc denied")):
-            self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
+            self.assertEqual(daemon.supervisor_status(self.config.control)[1], 2)
 
     def test_missing_status_or_invisible_pid_with_held_lock_is_not_stopped(self):
-        from lib.control.orchestration import supervisor_daemon as daemon
-        with daemon._exclusive_lock(self.config):
-            self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
+        from lib.control import supervisor_service as daemon
+        with daemon._exclusive_lock(self.config.control):
+            self.assertEqual(daemon.supervisor_status(self.config.control)[1], 2)
             self.retained()
             with mock.patch.object(daemon, "verify_process", return_value=False):
-                self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
-        self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
+                self.assertEqual(daemon.supervisor_status(self.config.control)[1], 2)
+        self.assertEqual(daemon.supervisor_status(self.config.control)[1], 2)
         with mock.patch.object(daemon, "verify_process", return_value=False):
-            self.assertEqual(daemon.supervisor_status(self.config)[1], 1)
+            self.assertEqual(daemon.supervisor_status(self.config.control)[1], 1)
 
     def test_live_process_without_lock_never_authorizes_duplicate_start(self):
-        from lib.control.orchestration import supervisor_daemon as daemon
+        from lib.control import supervisor_service as daemon
         self.retained()
         with mock.patch.object(daemon.subprocess, "Popen") as spawn:
-            value, code = daemon.start_supervisor(self.config, self.env)
+            value, code = daemon.start_supervisor(self.config.control, self.env)
         self.assertEqual((value["status"], code), ("unavailable", 2))
         spawn.assert_not_called()
 
     def test_symlink_and_inode_replacement_refuse(self):
-        from lib.control.orchestration import supervisor_daemon as daemon
+        from lib.control import supervisor_service as daemon
         self.retained()
-        lock = daemon.supervisor_lock_path(self.config)
+        lock = daemon.supervisor_lock_path(self.config.control)
         foreign = self.root / "foreign-lock"
         foreign.write_text(""); foreign.chmod(0o600)
         lock.symlink_to(foreign)
-        self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
+        self.assertEqual(daemon.supervisor_status(self.config.control)[1], 2)
         lock.unlink()
-        with daemon._exclusive_lock(self.config):
+        with daemon._exclusive_lock(self.config.control):
             real_stat = os.stat
             def replaced(path, *args, **kwargs):
                 if path == "supervisor.lock":
                     return foreign.stat()
                 return real_stat(path, *args, **kwargs)
             with mock.patch.object(daemon.os, "stat", side_effect=replaced):
-                self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
+                self.assertEqual(daemon.supervisor_status(self.config.control)[1], 2)

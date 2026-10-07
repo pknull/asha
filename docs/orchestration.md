@@ -779,40 +779,9 @@ One initiative's exception is retained in that tick's report without stopping
 the remaining sweep. The supervisor never dispatches, submits operator
 actions, records integration, or approves plans or salvage.
 
-`asha control supervisor run` holds the foreground loop. `start` launches that
-same run route detached with argv-only exec, `stop` verifies the retained Linux
-boot/start-ticks process identity before SIGTERM, and `status` exits zero only
-when both the flock and exact process are live. The exclusive 0600 lock and
-atomic presentation status are `supervisor.lock` and `supervisor.json` beneath
-the Control state root. A one-second directory-mtime poll of Control event
-snapshots provides the worker-exit fast path between regular ticks. Starting is
-idempotent; no session hook starts the supervisor automatically.
-
-### Supervisor user service
-
-Install the operator-managed systemd user service with:
-
-```bash
-asha control supervisor install
-```
-
-The command writes the marked `asha-supervisor.service` unit beneath
-`${XDG_CONFIG_HOME:-~/.config}/systemd/user/`, stops a manually started
-supervisor, reloads the user manager, and enables and starts the service.
-`status` reports whether the unit is present, enabled, and active. Use
-`uninstall` to disable and remove only Asha's marked unit; both lifecycle
-commands accept `--dry-run` and `--json`.
-
-The unit's `PATH` is fixed to `~/.local/bin` and the system directories, so
-`install` resolves `jj`, `claude` and `codex` in the installing shell and pins
-them as `ASHA_JJ`, `ASHA_CLAUDE_CMD` and `ASHA_CODEX_CMD`. Structured session
-owners run under this service and use those pins; a harness installed through
-asdf or npm is otherwise not found. Harness pins keep the path as found on
-`PATH` (an asdf shim, Claude's launcher link) rather than its target, and an
-existing `ASHA_*_CMD` override wins. Rerun `install` after moving a harness.
-
-User lingering is advisory and is never changed: without lingering the service
-starts at login, while with lingering it starts at boot.
+The supervisor process, its `asha control supervisor` verbs and its systemd
+user service are live Control infrastructure, documented in
+[Managed sessions](managed-sessions.md#supervisor-process-and-user-service).
 
 Orchestration configuration adds:
 

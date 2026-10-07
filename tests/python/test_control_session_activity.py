@@ -133,7 +133,7 @@ class SessionActivityTests(unittest.TestCase):
         with redirect_stdout(output):
             self.assertEqual(main(["current", "--json"], env=self.env), 0)
         self.assertEqual(json.loads(output.getvalue())["rows"][0]["session_id"], self.sid)
-        with mock.patch("lib.control.orchestration.observation.BoundedTmux.inventory", side_effect=OSError("offline")):
+        with mock.patch("lib.control.tmux.BoundedTmux.inventory", side_effect=OSError("offline")):
             activity = current_activity(load_config(self.env))
         self.assertEqual(activity["sources"]["managed-sessions"]["observed_count"], 1)
         self.assertTrue(activity["sources"]["managed-sessions"]["complete"])

@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import sys
+import time
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -19,6 +20,8 @@ from .text import terminal_text_is_complete
 
 MAX_OUTPUT_BYTES = 64 * 1024
 INVENTORY_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
+# The per-call output budget of a deadline-bounded observation probe.
+BOUNDED_PROBE_BYTES = 64 * 1024
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", re.ASCII)
 _PANE_ID = re.compile(r"%[0-9]+", re.ASCII)
 _SESSION_ID = re.compile(r"\$[0-9]+", re.ASCII)
@@ -1207,3 +1210,24 @@ class TmuxAdapter:
             "'detach-client' "
             "'display-message \"Current session is not Asha-managed\"'\n"
         )
+
+
+class BoundedTmux(TmuxAdapter):
+    """Reuse the real adapter parser with a shared external-probe deadline."""
+    def __init__(self, source, deadline):
+        super().__init__(executable=source.executable, socket=source.socket,
+                         config_file=source.config_file, runner=source.runner)
+        self.deadline = deadline
+
+    def _capture_bytes(self, executable, args, **kwargs):
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TmuxError("activity observation deadline reached")
+        kwargs["deadline_seconds"] = min(remaining, kwargs.get("deadline_seconds", remaining))
+        kwargs["limit"] = min(BOUNDED_PROBE_BYTES, kwargs.get("limit", BOUNDED_PROBE_BYTES))
+        result = super()._capture_bytes(executable, args, **kwargs)
+        # The normal inventory maps some connection failures to an empty
+        # server. Observation must not call inaccessible evidence 'no tasks'.
+        if result[0] != 0:
+            raise TmuxError("tmux activity evidence unavailable")
+        return result
