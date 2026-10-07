@@ -55,8 +55,8 @@ forms are positional for Claude/Codex, `--interactive PROMPT` for Copilot, and
 both CLI and dashboard preflight and launch. `open` is detached and returns
 immediately with the UUID, tmux identity, and exact attach command.
 
-Room records live under `${ASHA_HOME:-~/.asha}/state/control/rooms/` and retain
-only a digest of the opening prompt. Attach and close revalidate the recorded
+Room records are `rooms` rows in the Control database, created on the first
+Room of a fresh home, and retain only a digest of the opening prompt. Attach and close revalidate the recorded
 immutable tmux session/pane IDs and UUID/project markers in the same tmux
 server action; a readable tmux name is never ownership evidence. Missing or
 ended owned Rooms remain safely closable, while a foreign collision is reported
@@ -170,7 +170,7 @@ Everything durable lives under a single root — `$ASHA_HOME`, default
 ```text
 ${ASHA_HOME:-~/.asha}/config.json
 ${ASHA_HOME:-~/.asha}/state/control/control.sqlite3    (sessions, Rooms, retired records)
-${ASHA_HOME:-~/.asha}/state/control/rooms/              (file-backend Room records)
+${ASHA_HOME:-~/.asha}/state/control/rooms/              (frozen pre-SQLite Room files, unread)
 ${ASHA_HOME:-~/.asha}/state/control/initiatives/ ...    (frozen retired evidence)
 ${ASHA_HOME:-~/.asha}/workspaces/                       (retired task workspaces)
 ${ASHA_HOME:-~/.asha}/cache/                            (rendered persona files)

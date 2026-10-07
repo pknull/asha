@@ -5,7 +5,6 @@ import time
 import uuid
 from .session_experience import canonical, sha, safe_content, string, silenced
 from .store import StoreError
-from .registry_guards import mutation_guard
 from .session_selection import evidence as selection_evidence
 
 
@@ -109,7 +108,7 @@ def retain(hub, row, key, manifest, *, status='queued'):
     if silenced(row['project']):
         return None
     hub.initialize()
-    with mutation_guard(hub.config), hub.database() as db, db.transaction(write=True) as c:
+    with hub.database() as db, db.transaction(write=True) as c:
         return retain_in(c, row, key, manifest, status=status)
 
 
@@ -161,7 +160,7 @@ def offered(hub, row, key, manifest):
     if silenced(row['project']):
         return False
     from .session_experience import Experiences
-    with mutation_guard(hub.config), hub.database() as db, db.transaction(write=True) as c:
+    with hub.database() as db, db.transaction(write=True) as c:
         Experiences.current(c, row)
         found = c.execute("SELECT * FROM hub_guidance_exposures WHERE session_id=? AND generation=? AND delivery_key=? AND status='queued'",
                           (row['session_id'], row['generation'], key)).fetchone()
@@ -208,7 +207,7 @@ def supplied(hub, row, key, manifest=None):
     from .session_experience import Experiences
     if not Experiences(hub).available() or silenced(row['project']):
         return False
-    with mutation_guard(hub.config), hub.database() as db, db.transaction(write=True) as c:
+    with hub.database() as db, db.transaction(write=True) as c:
         if not c.execute("SELECT 1 FROM sqlite_master WHERE name='hub_guidance_exposures'").fetchone():
             return False
         fresh = Experiences.current(c, row)

@@ -16,7 +16,6 @@ from pathlib import Path
 from .session_closure import memory_v2, secure_path, secure_project_root
 from .session_store import identifier
 from .store import StoreError
-from .registry_guards import mutation_guard
 
 CONTRACT = 'asha.session-experience.v1'
 REPORT_LIMIT = 16 * 1024
@@ -406,7 +405,7 @@ class Experiences:
         from .rooms import resolve_project
         selected = resolve_project(project, env=self.hub.env)
         self.hub.initialize()
-        with mutation_guard(self.hub.config), self.hub.database() as db, db.transaction(write=True) as c:
+        with self.hub.database() as db, db.transaction(write=True) as c:
             old = self.policy_in(c, selected['project_id'])
             if expected_revision is not None and old['revision'] != expected_revision:
                 raise StoreError('policy revision changed; inspect before retrying')
@@ -460,7 +459,7 @@ class Experiences:
             room = RoomStore(self.hub.config).read(row['room_id'])
             if _owned_state(room, self.hub.tmux)[0] not in {'ended', 'missing'}:
                 return row
-        with mutation_guard(self.hub.config), self.hub.database() as db, db.transaction(write=True) as c:
+        with self.hub.database() as db, db.transaction(write=True) as c:
             current = self.current(c, row)
             fresh = current.get('experience_request') or {}
             if fresh.get('key') != request['key'] or fresh.get('status') != 'pending':
@@ -542,7 +541,7 @@ class Experiences:
                     identifier(experience_ref)
         except (ValueError, OSError):
             receipt.update(status='invalid', reason='optional report refused: invalid, unsafe, oversized or known secret-bearing input omitted')
-        with mutation_guard(self.hub.config), self.hub.database() as db, db.transaction(write=True) as c:
+        with self.hub.database() as db, db.transaction(write=True) as c:
             current = self.current(c, row)
             if source == 'close':
                 record = current.get('closure')

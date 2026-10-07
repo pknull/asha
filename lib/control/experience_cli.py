@@ -126,7 +126,6 @@ def manual_review(hub, project_id, report_id, raw, *, publication=None, skip_own
     """Advisory review under saving authority; native custody always takes precedence."""
     from .experience_review import packet_for_report, packet_digest, decode_result
     from .experience_adoption import validate_publication
-    from .registry_guards import mutation_guard
     import uuid
     experiences = Experiences(hub)
     saver = experiences.saving_actor(project_id)
@@ -156,7 +155,7 @@ def manual_review(hub, project_id, report_id, raw, *, publication=None, skip_own
         wrapped.update(publication_id=publication['publication_id'], save_session_id=saver['session_id'])
     encoded = canonical(wrapped)
     hub.initialize()  # Additive save ledger migration only after authority/scope checks.
-    with mutation_guard(hub.config), hub.database() as db, db.transaction(write=True) as c:
+    with hub.database() as db, db.transaction(write=True) as c:
         if saver['hub_actor']:
             experiences.current(c, saver['hub_actor'])
         policy = experiences.policy_in(c, project_id)

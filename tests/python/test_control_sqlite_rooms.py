@@ -1,4 +1,6 @@
+import contextlib
 import hashlib
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -10,7 +12,6 @@ from lib.control.config import load_config
 from lib.control.database import ControlDatabase
 from lib.control.record_registry import RecordRegistry
 from lib.control.rooms import RoomError, RoomStore
-from lib.control.sqlite_rooms import SQLiteRoomStore
 from lib.control.store import SnapshotBudget, StoreError
 
 
@@ -22,7 +23,8 @@ class SQLiteRoomTests(unittest.TestCase):
         self.config = load_config({"HOME": str(self.root), "ASHA_HOME": str(self.root / "asha")})
         with ControlDatabase(self.config, create=True):
             pass
-        self.store = SQLiteRoomStore(self.config)
+        self.store = RoomStore(self.config)
+        self.json_registry = self.config.asha_home / "state/control/rooms"
         self.record = {"contract": "asha.room.v1", "room_id": "11111111-1111-4111-8111-111111111111",
             "name": "Draft Room", "slug": "draft-room", "project_id": "novel",
             "project_name": "A Novel", "project_root": str(self.root), "harness": "claude",
@@ -32,7 +34,7 @@ class SQLiteRoomTests(unittest.TestCase):
 
     def test_record_lifecycle_uses_sqlite_without_a_json_registry(self):
         self.assertEqual(self.store.create(self.record), self.record)
-        self.assertFalse(self.store.root.exists())
+        self.assertFalse(self.json_registry.exists())
         updated = {**self.record, "lifecycle": "ended", "updated_at": "2026-09-08T12:01:00Z"}
         with self.store.transaction(create=False):
             self.store.save(updated, expected_digest=RoomStore.digest(self.record))
@@ -40,7 +42,7 @@ class SQLiteRoomTests(unittest.TestCase):
         self.assertEqual(self.store.resolve("Draft Room"), updated)
         with self.assertRaisesRegex(RoomError, "stale"):
             self.store.save(self.record, expected_digest=RoomStore.digest(self.record))
-        self.assertFalse(self.store.root.exists())
+        self.assertFalse(self.json_registry.exists())
 
     def test_names_and_identity_remain_unique(self):
         self.store.create(self.record)
@@ -130,3 +132,53 @@ class SQLiteRoomTests(unittest.TestCase):
                 registry.put(c, "first", b'{"a":2}\n', expected_digest="wrong")
             with db.transaction() as c:
                 self.assertEqual(registry.read(c, "first")["value"], {"a": 1})
+
+
+class FreshHomeRoomTests(unittest.TestCase):
+    """SQLite is the only Room registry: a fresh home never writes JSON records (B7)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name).resolve()
+        (self.root / "home").mkdir()
+        self.env = {"HOME": str(self.root / "home"), "ASHA_HOME": str(self.root / "asha"),
+                    "ASHA_CONFIG": str(self.root / "missing.json"),
+                    "XDG_RUNTIME_DIR": str(self.root / "runtime")}
+        self.config = load_config(self.env)
+        self.record = {"contract": "asha.room.v1", "room_id": "11111111-1111-4111-8111-111111111111",
+            "name": "Draft Room", "slug": "draft-room", "project_id": "novel",
+            "project_name": "A Novel", "project_root": str(self.root), "harness": "claude",
+            "tmux": {"session": "asha-draft", "session_id": None, "window": "room", "pane_id": None},
+            "created_at": "2026-09-08T12:00:00Z", "updated_at": "2026-09-08T12:00:00Z",
+            "lifecycle": "creating", "prompt_digest": "a" * 64}
+        self.json_registry = self.config.asha_home / "state/control/rooms"
+
+    def sqlite_room_keys(self):
+        with ControlDatabase(self.config) as db, db.transaction() as c:
+            return [row[0] for row in c.execute(
+                "SELECT record_key FROM records WHERE domain='rooms' AND scope='registry'")]
+
+    def test_session_init_starts_a_fresh_home_on_the_sqlite_room_registry(self):
+        from lib.control.sessions import main
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["init"], env=self.env), 0)
+        store = RoomStore(self.config)
+        with store.transaction(create=True):
+            store.create(self.record)
+        self.assertEqual(self.sqlite_room_keys(), [self.record["room_id"]])
+        self.assertEqual(RoomStore(self.config).read(self.record["room_id"]), self.record)
+        self.assertFalse(self.json_registry.exists())
+
+    def test_a_home_without_a_database_lists_nothing_then_creates_it_on_first_room(self):
+        store = RoomStore(self.config)
+        self.assertEqual(store.list(), [])
+        budget = SnapshotBudget(deadline=time.monotonic() + 2, limit=10)
+        self.assertEqual(store.bounded_active_snapshots(budget), [])
+        self.assertEqual(budget.unavailable, 0)
+        with self.assertRaisesRegex(RoomError, "not found"):
+            store.read(self.record["room_id"])
+        with store.transaction(create=True):
+            store.create(self.record)
+        self.assertEqual(self.sqlite_room_keys(), [self.record["room_id"]])
+        self.assertFalse(self.json_registry.exists())

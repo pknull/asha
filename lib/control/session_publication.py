@@ -13,7 +13,6 @@ import uuid
 from pathlib import Path
 
 from .store import StoreError
-from .registry_guards import mutation_guard
 
 SCHEMA = (
     '''CREATE TABLE IF NOT EXISTS hub_memory_publications (
@@ -63,7 +62,7 @@ def record(hub, row, source, receipt):
     """Insert a handoff's publication or attestation row for the acting incarnation."""
     from .session_experience import Experiences
     hub.initialize()
-    with mutation_guard(hub.config), hub.database() as db, db.transaction(write=True) as c:
+    with hub.database() as db, db.transaction(write=True) as c:
         Experiences.current(c, row)
         return insert(c, row, source, receipt)
 
@@ -77,7 +76,7 @@ def record_publication(hub, actor, receipt):
             or receipt.get('hub_generation') != actor['generation']):
         raise StoreError('publication linkage scope differs')
     hub.initialize()
-    with mutation_guard(hub.config), hub.database() as db, db.transaction(write=True) as c:
+    with hub.database() as db, db.transaction(write=True) as c:
         Experiences.current(c, actor)
         c.execute('INSERT INTO hub_memory_publications VALUES(?,?,?,?,?,?,?)',
                   (receipt['publication_id'], actor['session_id'], actor['generation'], actor['project_id'],

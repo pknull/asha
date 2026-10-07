@@ -15,7 +15,6 @@ from pathlib import Path
 from . import session_closure as closure
 from . import session_usage
 from .database import ControlDatabase, DATABASE_NAME
-from .registry_guards import mutation_guard
 from .rooms import (RoomStore, _owned_state, open_room, close_room, attach_room,
                     resolve_project)
 from .session_selection import evidence as selection_evidence, requested
@@ -346,7 +345,7 @@ class Hub:
         """
         from .store import _directory_fd, _managed_start, _registry_lock
         root = self.config.tasks_dir.parent / 'hub-locks' / identifier(sid)
-        with mutation_guard(self.config), _directory_fd(root, create=True,
+        with _directory_fd(root, create=True,
                 managed_start=_managed_start(root, ('control', 'hub-locks', sid))) as fd:
             if timeout is not None:
                 _bounded_flock(fd, timeout)
@@ -358,7 +357,7 @@ class Hub:
         """Serialize observed activity with the brief automatic-stop boundary."""
         from .store import _directory_fd, _managed_start, _registry_lock
         root = self.config.tasks_dir.parent / 'hub-observation-locks' / identifier(sid)
-        with mutation_guard(self.config), _directory_fd(root, create=True,
+        with _directory_fd(root, create=True,
                 managed_start=_managed_start(root, ('control', 'hub-observation-locks', sid))) as fd:
             with _registry_lock(fd):
                 yield
@@ -370,7 +369,7 @@ class Hub:
             return c.execute("SELECT 1 FROM sqlite_master WHERE name='hub_sessions'").fetchone() is not None
 
     def initialize(self):
-        with mutation_guard(self.config), self.database(create=True) as db, db.transaction(write=True) as c:
+        with self.database(create=True) as db, db.transaction(write=True) as c:
             from .session_experience import SCHEMA as EXPERIENCE_SCHEMA
             from .session_publication import SCHEMA as PUBLICATION_SCHEMA
             for statement in (*SCHEMA, *EXPERIENCE_SCHEMA, *PUBLICATION_SCHEMA):
@@ -437,7 +436,7 @@ class Hub:
         if learning_ids is not None:
             spec['learning_ids'] = learning_ids
         self.initialize()
-        with mutation_guard(self.config), self.database() as db, db.transaction(write=True) as c:
+        with self.database() as db, db.transaction(write=True) as c:
             existing = c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (sid,)).fetchone()
             if existing:
                 row = json.loads(existing[0])
@@ -497,7 +496,7 @@ class Hub:
     def _start_structured(self, row, prompt):
         from .session_store import SessionStore
         try:
-            with mutation_guard(self.config), SessionStore(self.config, create=True) as sessions:
+            with SessionStore(self.config, create=True) as sessions:
                 with sessions.db.transaction(write=True) as c:
                     sessions._create_in_transaction(c, cwd=row['project'], prompt=prompt,
                         harness=row['harness'], initiative_id=None, session_id=row['session_id'])
@@ -538,7 +537,7 @@ class Hub:
         record as it is at write time, so a writer that read its row earlier
         can never overwrite a change recorded in between.
         """
-        with mutation_guard(self.config), self.database() as db, db.transaction(write=True) as c:
+        with self.database() as db, db.transaction(write=True) as c:
             found = c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (sid,)).fetchone()
             if not found:
                 raise StoreError('session not found')
@@ -1085,7 +1084,7 @@ class Hub:
             detail = wake['dispatch_warning'] or 'queued as the next structured turn'
             return dict(record, delivery=dict(record['delivery'], channel='structured-turn', detail=detail,
                                               message_id=message['message_id']))
-        with mutation_guard(self.config), self.database() as db, db.transaction(write=True) as c:
+        with self.database() as db, db.transaction(write=True) as c:
             # One outstanding close request: an earlier request's unread copy is superseded.
             c.execute("UPDATE hub_messages SET state='superseded' WHERE session_id=? AND state='queued' AND delivery_key LIKE ? AND delivery_key!=?",
                       (row['session_id'], closure.MESSAGE_KEY_PREFIX + '%', key))
@@ -1239,7 +1238,7 @@ class Hub:
                 with SessionStore(self.config) as sessions:
                     message = sessions.enqueue(sid, text(body + block, 'guided input'), key=key, on_retained=retained)
                 return {**message, **self._wake_structured(sid)}
-            with mutation_guard(self.config), self.database() as db, db.transaction(write=True) as c:
+            with self.database() as db, db.transaction(write=True) as c:
                 old = c.execute('SELECT * FROM hub_messages WHERE session_id=? AND delivery_key=?', (sid, key)).fetchone()
                 exposure = c.execute('SELECT manifest FROM hub_guidance_exposures WHERE session_id=? AND generation=? AND delivery_key=?',
                                      (sid, row['generation'], key)).fetchone()
@@ -1434,7 +1433,7 @@ class Hub:
             message = c.execute('SELECT * FROM hub_messages WHERE message_id=? AND session_id=?', (mid, row['session_id'])).fetchone()
         if not message:
             raise StoreError('message does not belong to this session')
-        with mutation_guard(self.config), self.database() as db, db.transaction(write=True) as c:
+        with self.database() as db, db.transaction(write=True) as c:
             current = json.loads(c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (row['session_id'],)).fetchone()[0])
             if current['generation'] != row['generation'] or current['lifecycle'] not in ACTIVE_LIFECYCLES:
                 raise StoreError('stale or inactive session reporter')

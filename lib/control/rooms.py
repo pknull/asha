@@ -9,11 +9,11 @@ evidence.
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import json
 import os
 import re
-import secrets
 import shlex
 import shutil
 import sys
@@ -22,15 +22,15 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Iterator, Mapping
 
 from .config import is_canonical_absolute_path
+from .database import ControlDatabase, DATABASE_NAME
 from .harness import HarnessError, validate_harness
 from .model import ModelError, canonical_uuid
-from .store import (
-    StoreError, _CLOEXEC, _NOFOLLOW, _directory_fd, _managed_start,
-    _open_existing_file, _registry_lock,
-)
+from .record_registry import RecordRegistry
+from .store import StoreError, _directory_fd, _managed_start, _registry_lock
 from .tmux import TmuxAdapter, TmuxError, validate_command_argv
 from .projects import display_name, list_projects_across, resolve_roots
 
@@ -309,93 +309,40 @@ def resolve_project(
     return selected
 
 
-class RoomStore:
-    """Small atomic JSON registry beneath the single Asha state root."""
+def control_config(config):
+    """The Control configuration a Room needs: its database and lock roots.
 
-    def __new__(cls, config):
-        from .registry_backend import construct_store
-        return construct_store(cls, RoomStore, config, "rooms")
+    Rooms historically accept the small shell configuration, which carries
+    only the canonical Asha root.
+    """
+    config = getattr(config, "control", config)
+    if hasattr(config, "tasks_dir"):
+        return config
+    root = Path(config.asha_home)
+    return SimpleNamespace(asha_home=root, tasks_dir=root / "state/control/tasks")
+
+
+class RoomStore:
+    """The Room registry: `rooms` records in the Control database."""
 
     def __init__(self, config: Any):
-        self.root = Path(config.asha_home) / "state/control/rooms"
-        self._managed_start = _managed_start(self.root, ("control", "rooms"))
+        config = control_config(config)
+        self.config = config
+        self.records = RecordRegistry("rooms")
+        self.lock_root = config.tasks_dir.parent / "registry-locks" / "rooms"
 
-    def _path(self, room_id: str) -> Path:
+    @staticmethod
+    def _key(room_id: str) -> str:
         try:
-            canonical = canonical_uuid(room_id)
+            return canonical_uuid(room_id)
         except ModelError as exc:
             raise RoomError("room id must be a canonical UUID") from exc
-        return self.root / f"{canonical}.json"
 
     @staticmethod
     def _raw(value: Mapping[str, Any]) -> bytes:
         return (json.dumps(
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         ) + "\n").encode("utf-8")
-
-    @staticmethod
-    def _write_all(fd: int, raw: bytes) -> None:
-        written = 0
-        while written < len(raw):
-            count = os.write(fd, raw[written:])
-            if count <= 0:
-                raise RoomError("short write while saving room record")
-            written += count
-
-    @staticmethod
-    def _write_record(
-        directory_fd: int, name: str, raw: bytes, *, create_only: bool,
-    ) -> None:
-        temporary = f".{name}.tmp.{secrets.token_hex(8)}"
-        fd = -1
-        committed = False
-        try:
-            fd = os.open(
-                temporary,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC,
-                0o600, dir_fd=directory_fd,
-            )
-            os.fchmod(fd, 0o600)
-            RoomStore._write_all(fd, raw)
-            os.fsync(fd)
-            os.close(fd)
-            fd = -1
-            if create_only:
-                try:
-                    os.link(
-                        temporary, name, src_dir_fd=directory_fd,
-                        dst_dir_fd=directory_fd, follow_symlinks=False,
-                    )
-                except FileExistsError as exc:
-                    raise RoomError("room id already exists") from exc
-                os.unlink(temporary, dir_fd=directory_fd)
-            else:
-                os.replace(
-                    temporary, name, src_dir_fd=directory_fd,
-                    dst_dir_fd=directory_fd,
-                )
-            committed = True
-            os.fsync(directory_fd)
-        except RoomError:
-            raise
-        except OSError as exc:
-            phase = "after commit" if committed else "before commit"
-            raise RoomError(f"room record save failed {phase}: {exc}") from exc
-        finally:
-            if fd >= 0:
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
-            try:
-                os.unlink(temporary, dir_fd=directory_fd)
-            except OSError:
-                pass
-
-    def _open_directory(self, *, create: bool):
-        return _directory_fd(
-            self.root, create=create, managed_start=self._managed_start,
-        )
 
     @staticmethod
     def _validate(record: Any) -> dict[str, Any]:
@@ -444,162 +391,134 @@ class RoomStore:
             raise RoomError("room prompt digest is invalid")
         return dict(record)
 
-    def create(self, record: Mapping[str, Any]) -> dict[str, Any]:
-        value = self._validate(dict(record))
-        try:
-            with self._open_directory(create=True) as directory_fd:
-                if directory_fd is None:
-                    raise RoomError("room registry could not be created")
-                with _registry_lock(directory_fd):
-                    if any(
-                        current["name"].casefold() == value["name"].casefold()
-                        for current in self.list()
-                    ):
-                        raise RoomError(f"room name {value['name']!r} already exists")
-                    self._write_record(
-                        directory_fd, f"{value['room_id']}.json", self._raw(value),
-                        create_only=True,
-                    )
-        except StoreError as exc:
-            raise RoomError(str(exc)) from exc
-        return value
-
     @staticmethod
     def digest(record: Mapping[str, Any]) -> str:
         value = RoomStore._validate(dict(record))
         return hashlib.sha256(RoomStore._raw(value)).hexdigest()
 
+    def _database_exists(self) -> bool:
+        return os.path.lexists(self.config.tasks_dir.parent / DATABASE_NAME)
+
     @contextmanager
     def transaction(self, *, create: bool) -> Iterator[None]:
-        """Serialize each complete Room lifecycle mutation on the registry."""
+        """Serialize each complete Room lifecycle mutation on the registry.
+
+        Lifecycle methods may call tmux between saves, so a domain lock spans
+        the method; each SQLite write remains a separate short commit.
+        """
         try:
-            with self._open_directory(create=create) as directory_fd:
-                if directory_fd is None:
-                    raise RoomError("room registry does not exist")
-                with _registry_lock(directory_fd):
+            with _directory_fd(self.lock_root, create=True, managed_start=_managed_start(
+                    self.lock_root, ("control", "registry-locks", "rooms"))) as fd:
+                with _registry_lock(fd):
                     yield
         except StoreError as exc:
             raise RoomError(str(exc)) from exc
 
+    def _record(self, c, room_id: str) -> dict[str, Any]:
+        self._key(room_id)
+        row = self.records.read(c, room_id)
+        if row is None:
+            raise RoomError("room was not found")
+        if len(row["raw"]) > 64 * 1024:
+            raise RoomError("room record exceeds the bounded size")
+        value = self._validate(row["value"])
+        if value["room_id"] != room_id:
+            raise RoomError("room key and record identity differ")
+        return row
+
+    def create(self, record: Mapping[str, Any]) -> dict[str, Any]:
+        value = self._validate(copy.deepcopy(dict(record)))
+        raw = self._raw(value)
+        if len(raw) > 64 * 1024:
+            raise RoomError("room record exceeds the bounded size")
+        with self.transaction(create=True), ControlDatabase(self.config, create=True) as db:
+            with db.transaction(write=True) as c:
+                # Unicode casefold matches the established Room name contract.
+                # The lifecycle lock and write transaction cover uniqueness and
+                # publication together, including competing controller processes.
+                for row in c.execute("SELECT record_key FROM records WHERE domain='rooms' AND scope='registry'"):
+                    if self._record(c, row[0])["value"]["name"].casefold() == value["name"].casefold():
+                        raise RoomError(f"room name {value['name']!r} already exists")
+                self.records.put(c, value["room_id"], raw,
+                                 state=value["lifecycle"], updated_at=value["updated_at"])
+        return value
+
     def save(
         self, record: Mapping[str, Any], *, expected_digest: str | None = None,
     ) -> dict[str, Any]:
-        value = self._validate(dict(record))
-        try:
-            with self._open_directory(create=False) as directory_fd:
-                if directory_fd is None:
-                    raise RoomError("room record does not exist")
-                with _registry_lock(directory_fd):
-                    existing = -1
-                    try:
-                        existing = _open_existing_file(
-                            directory_fd, f"{value['room_id']}.json", "room record",
-                        )
-                        if os.fstat(existing).st_size > 64 * 1024:
-                            raise RoomError("room record exceeds the bounded size")
-                        chunks = []
-                        while True:
-                            chunk = os.read(existing, 65536)
-                            if not chunk:
-                                break
-                            chunks.append(chunk)
-                        if expected_digest is not None and hashlib.sha256(
-                            b"".join(chunks)
-                        ).hexdigest() != expected_digest:
-                            raise RoomError("room record changed concurrently; stale save refused")
-                    except FileNotFoundError as exc:
-                        raise RoomError("room record does not exist") from exc
-                    finally:
-                        if existing >= 0:
-                            os.close(existing)
-                    self._write_record(
-                        directory_fd, f"{value['room_id']}.json", self._raw(value),
-                        create_only=False,
-                    )
-        except StoreError as exc:
-            raise RoomError(str(exc)) from exc
+        value = self._validate(copy.deepcopy(dict(record)))
+        raw = self._raw(value)
+        if len(raw) > 64 * 1024:
+            raise RoomError("room record exceeds the bounded size")
+        if not self._database_exists():
+            raise RoomError("room record does not exist")
+        with self.transaction(create=False), ControlDatabase(self.config) as db:
+            with db.transaction(write=True) as c:
+                previous = self._record(c, value["room_id"])
+                if expected_digest is not None and expected_digest != previous["digest"]:
+                    raise RoomError("room record changed concurrently; stale save refused")
+                self.records.put(c, value["room_id"], raw, expected_digest=previous["digest"],
+                                 state=value["lifecycle"], updated_at=value["updated_at"])
         return value
 
     def read(self, room_id: str) -> dict[str, Any]:
-        path = self._path(room_id)
+        self._key(room_id)
+        if not self._database_exists():
+            raise RoomError("room was not found")
         try:
-            with self._open_directory(create=False) as directory_fd:
-                if directory_fd is None:
-                    raise RoomError("room was not found")
-                try:
-                    fd = _open_existing_file(directory_fd, path.name, "room record")
-                except FileNotFoundError as exc:
-                    raise RoomError("room was not found") from exc
-                try:
-                    metadata = os.fstat(fd)
-                    if metadata.st_size > 64 * 1024:
-                        raise RoomError("room record exceeds the bounded size")
-                    chunks = []
-                    remaining = 64 * 1024 + 1
-                    while remaining:
-                        chunk = os.read(fd, min(65536, remaining))
-                        if not chunk:
-                            break
-                        chunks.append(chunk)
-                        remaining -= len(chunk)
-                    raw = b"".join(chunks)
-                finally:
-                    os.close(fd)
-            if len(raw) > 64 * 1024:
-                raise RoomError("room record exceeds the bounded size")
-            value = json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_object)
-        except RoomError:
-            raise
-        except (StoreError, OSError, UnicodeError, ValueError, _DuplicateJsonKey) as exc:
-            raise RoomError(f"room record is unreadable: {exc}") from exc
-        record = self._validate(value)
-        if record["room_id"] != path.stem:
-            raise RoomError("room filename and record identity differ")
-        return record
-
-    def bounded_active_snapshots(self, budget) -> list[dict[str, Any]]:
-        return [row for row in self.bounded_snapshots(budget)
-                if row["lifecycle"] in {"creating", "open"}]
-
-    def bounded_snapshots(self, budget) -> list[dict[str, Any]]:
-        """Bounded names and existing no-follow snapshot reader; never reconcile."""
-        records = []
-        try:
-            with self._open_directory(create=False) as fd:
-                if fd is not None:
-                    for name in budget.names(fd):
-                        if name.startswith("."):
-                            continue
-                        try:
-                            if not name.endswith(".json"):
-                                raise RoomError("unexpected room entry")
-                            records.append(self.read(canonical_uuid(name[:-5])))
-                        except (OSError, ValueError, StoreError):
-                            budget.unavailable += 1
-        except (OSError, ValueError, StoreError):
-            budget.unavailable += 1
-        return records
+            with ControlDatabase(self.config) as db, db.transaction() as c:
+                return self._record(c, room_id)["value"]
+        except StoreError as exc:
+            raise RoomError(str(exc)) from exc
 
     def list(self) -> list[dict[str, Any]]:
+        if not self._database_exists():
+            return []
+        result, after = [], ""
         try:
-            with self._open_directory(create=False) as directory_fd:
-                if directory_fd is None:
-                    return []
-                entries = os.listdir(directory_fd)
-                json_names = [name for name in entries if name.endswith(".json")]
-                invalid = [
-                    name for name in json_names
-                    if re.fullmatch(
-                        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json",
-                        name,
-                    ) is None
-                ]
-                if invalid:
-                    raise RoomError(f"room registry contains an invalid record name: {invalid[0]}")
-                names = sorted(json_names)
-        except (StoreError, OSError) as exc:
-            raise RoomError(f"room registry is unreadable: {exc}") from exc
-        return [self.read(Path(name).stem) for name in names]
+            with ControlDatabase(self.config) as db:
+                while True:
+                    with db.transaction() as c:
+                        keys = self.records.keys(c, after=after)
+                        result.extend(self._record(c, key)["value"] for key in keys)
+                    if len(keys) < 100:
+                        return result
+                    after = keys[-1]
+        except StoreError as exc:
+            raise RoomError(str(exc)) from exc
+
+    def bounded_snapshots(self, budget) -> list[dict[str, Any]]:
+        return self._bounded_snapshots(budget)
+
+    def bounded_active_snapshots(self, budget) -> list[dict[str, Any]]:
+        return self._bounded_snapshots(budget, states=("open", "creating"))
+
+    def _bounded_snapshots(self, budget, *, states=None) -> list[dict[str, Any]]:
+        """Bounded read of retained records; never reconcile."""
+        result = []
+        if not self._database_exists():
+            return result
+        try:
+            with ControlDatabase(self.config) as db, db.transaction() as c:
+                cap = min(1000, max(1, budget.limit - budget.scanned))
+                keys = (self.records.keys(c, limit=cap) if states is None
+                        else self.records.active_root_keys(c, states, limit=cap))
+                for key in keys:
+                    if not budget.ready():
+                        break
+                    budget.scanned += 1
+                    try:
+                        value = self._record(c, canonical_uuid(key))["value"]
+                        if states is not None and value["lifecycle"] not in states:
+                            raise StoreError("Room lifecycle disagrees with its activity index")
+                        result.append(value)
+                    except (ValueError, StoreError):
+                        budget.unavailable += 1
+                if len(keys) == cap:
+                    budget.truncated = True
+        except (OSError, StoreError):
+            budget.unavailable += 1
+        return result
 
     def resolve(self, selector: str) -> dict[str, Any]:
         try:
