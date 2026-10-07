@@ -2054,6 +2054,9 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             return _task_command(tail, values)
         if domain == "room":
             return _room_command(tail, values)
+        if domain == "initiative" and tail[:1] == ["export"]:
+            from .initiative_evidence import main as evidence_main
+            return evidence_main(tail, env=values)
         if domain == "initiative":
             # Lazy by contract: malformed orchestration configuration must not
             # change any ordinary Control command.
