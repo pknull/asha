@@ -45,6 +45,16 @@ class RetiredSurfaceTests(unittest.TestCase):
             self.assertEqual((code, out), (2, ""), args)
             self.assertIn("retired", err, args)
 
+    def test_asha_migrate_is_refused_as_retired(self):
+        legacy = self.home / ".local/state/asha/control/tasks"
+        legacy.mkdir(parents=True)
+        for args in (["migrate"], ["migrate", "--dry-run"], ["migrate", "--yes"], ["migrate", "--json"]):
+            code, out, err = self._run(*args)
+            self.assertEqual((code, out), (2, ""), args)
+            self.assertIn("retired", err, args)
+        self.assertTrue(legacy.is_dir())
+        self.assertFalse((self.root / "asha").exists())
+
     def test_legacy_control_routes_are_refused(self):
         for args in (["control", "event", "--event", "turn-stopped"], ["control", "--initiatives"],
                      ["control", "registry", "status"]):
@@ -68,7 +78,7 @@ class RetiredSurfaceTests(unittest.TestCase):
     def test_control_doctor_runs_the_surviving_probes_only(self):
         from lib.control.doctor import DEFAULT_PROBES
         self.assertEqual(set(DEFAULT_PROBES), {
-            "python", "configuration", "session-experience", "migration", "supervisor-service",
+            "python", "configuration", "session-experience", "supervisor-service",
             "tmux", "harness", "gh", "rooms-registry", "managed-sessions", "hooks", "tui",
         })
         payload = {"contract": "asha.control-doctor.v1", "ok": True, "limitations": [],

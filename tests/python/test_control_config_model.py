@@ -437,39 +437,21 @@ class ControlConfigTests(unittest.TestCase):
             self.assertEqual(config.tasks_dir, home / ".asha/state/control/tasks")
             self.assertEqual(config.workspace_root, home / ".asha/workspaces")
 
-    def test_legacy_layout_refuses_until_migrated_and_the_bypass_works(self) -> None:
-        """Un-migrated data must fail loudly, never silently re-home."""
+    def test_a_pre_consolidation_layout_no_longer_gates_configuration(self) -> None:
+        """The one-shot `asha migrate` and its gate are retired (B7, K5)."""
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            home = root / "home"
+            home = Path(td) / "home"
             home.mkdir(mode=0o700)
-            legacy_control = home / ".local/state/asha/control"
-            legacy_control.mkdir(parents=True, mode=0o700)
-            (legacy_control / "tasks").mkdir(mode=0o700)
-            with self.assertRaisesRegex(ConfigError, "legacy Asha state.*asha migrate"):
-                load_config({"HOME": str(home)})
-            config = load_config({"HOME": str(home)}, check_legacy=False)
-            self.assertEqual(config.tasks_dir, home / ".asha/state/control/tasks")
-            # A redirection to somewhere ELSE bypasses the gate; ASHA_HOME set
-            # to the default location does not — bin/asha exports it
-            # unconditionally, and set-ness alone would neuter the gate on the
-            # normal CLI path.
-            elsewhere = home / "elsewhere"
-            elsewhere.mkdir(mode=0o700)
-            load_config({"HOME": str(home), "ASHA_HOME": str(elsewhere)})
-            with self.assertRaisesRegex(ConfigError, "asha migrate"):
-                load_config({"HOME": str(home), "ASHA_HOME": str(home / ".asha")})
-            # A banner-only legacy directory is a completed migration, not data.
-            for item in ("tasks",):
-                (legacy_control / item).rmdir()
-            (legacy_control / "ASHA-MOVED.md").write_text("moved\n")
-            load_config({"HOME": str(home)})
-            # New root present alongside real legacy data: no refusal either —
-            # migration is complete or in hand; the doctor reports the leftover.
-            (legacy_control / "tasks").mkdir(mode=0o700)
-            for depth in (".asha", ".asha/state", ".asha/state/control"):
-                (home / depth).mkdir(mode=0o700)
-            load_config({"HOME": str(home)})
+            legacy = (home / ".local/state/asha/control/tasks", home / ".local/share/asha/workspaces/repo")
+            for path in legacy:
+                path.mkdir(parents=True, mode=0o700)
+            for env in ({"HOME": str(home)}, {"HOME": str(home), "ASHA_HOME": str(home / ".asha")}):
+                config = load_config(env)
+                self.assertEqual(config.tasks_dir, home / ".asha/state/control/tasks")
+                self.assertEqual(config.workspace_root, home / ".asha/workspaces")
+            for path in legacy:
+                self.assertEqual(list(path.iterdir()), [])
+            self.assertFalse((home / ".asha").exists())
 
     def test_unsafe_runtime_fallback_names_the_xdg_runtime_dir_remedy(self) -> None:
         with tempfile.TemporaryDirectory() as td:

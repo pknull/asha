@@ -20,6 +20,10 @@ _TASK_RETIRED = (
     "asha task: the task substrate was retired on 2026-10-05; launch work with "
     "`asha control session launch` and read retired records with `asha initiative export`"
 )
+_MIGRATE_RETIRED = (
+    "asha migrate: the one-shot move to the single ~/.asha root was retired on "
+    "2026-10-07; no supported home still uses the pre-consolidation layout"
+)
 
 
 def _json(value: Any) -> None:
@@ -310,11 +314,8 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             return 2
         domain, tail = args[0], args[1:]
         if domain == "migrate":
-            # Dispatched before any load_config: the migrator derives its own
-            # paths, so the legacy-layout gate cannot brick the tool that
-            # clears it.
-            from .migrate import main as migrate_main
-            return migrate_main(tail, values)
+            print(_MIGRATE_RETIRED, file=sys.stderr)
+            return 2
         if domain == "task":
             print(_TASK_RETIRED, file=sys.stderr)
             return 2

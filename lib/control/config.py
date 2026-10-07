@@ -195,101 +195,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
-LEGACY_BANNER_NAME = "ASHA-MOVED.md"
-LEGACY_REMEDIATION = "run 'asha migrate' to relocate it; nothing was created"
-
-
-def legacy_roots(values: Mapping[str, str], home: Path) -> dict[str, Path]:
-    """Where a pre-consolidation install kept its trees.
-
-    Detection still honors the old XDG variables: a user who ran with
-    XDG_STATE_HOME set has their legacy data there, and the whole point of
-    this enumeration is to find what actually exists. It is shared by the
-    load_config gate, the doctor probe, drift-check, and `asha migrate`, so
-    no two of them can disagree about what "legacy" means.
-    """
-    state_home = Path(values.get("XDG_STATE_HOME") or (home / ".local/state"))
-    data_home = Path(values.get("XDG_DATA_HOME") or (home / ".local/share"))
-    return {
-        "state": state_home / "asha",
-        "control": state_home / "asha" / "control",
-        "workspaces": data_home / "asha" / "workspaces",
-        "cache": home / ".cache" / "asha",
-    }
-
-
-def migration_layout(values: Mapping[str, str] | None = None) -> dict[str, Path]:
-    """Every path `asha migrate` and its probes reason about, in one place.
-
-    Pure derivation — no validation, no filesystem writes — so the migrator
-    can run while load_config's own gate is refusing. Legacy locations honor
-    the retired XDG variables (that is where a pre-consolidation install kept
-    data); new locations derive from ASHA_HOME exactly as load_config does.
-    """
-    env = os.environ if values is None else values
-    raw_home = env.get("HOME", "")
-    if not raw_home:
-        raise ConfigError("HOME is required")
-    home = Path(raw_home)
-    asha_home = Path(env.get("ASHA_HOME") or (home / ".asha"))
-    legacy = legacy_roots(env, home)
-    return {
-        "home": home,
-        "asha_home": asha_home,
-        "legacy_state": legacy["state"],
-        "legacy_control": legacy["control"],
-        "legacy_workspaces": legacy["workspaces"],
-        "legacy_cache": legacy["cache"],
-        "new_state": asha_home / "state",
-        "new_control": asha_home / "state/control",
-        "new_workspaces": asha_home / "workspaces",
-        "new_cache": asha_home / "cache",
-        "marker": asha_home / "state/.migration-v1.json",
-        "journal": asha_home / ".migrate-journal.json",
-        "staging_manifest": asha_home / ".migrate-manifest.json",
-    }
-
-
-def legacy_populated(path: Path) -> bool:
-    """True when a legacy directory holds anything besides the moved banner.
-
-    `asha migrate` recreates each old root containing exactly one
-    ASHA-MOVED.md, so a banner-only directory is evidence of a completed
-    migration, never a reason to refuse.
-    """
-    try:
-        entries = [item.name for item in path.iterdir()]
-    except (FileNotFoundError, NotADirectoryError):
-        return False
-    except OSError:
-        return True  # unreadable legacy data is still legacy data: fail closed
-    return any(name != LEGACY_BANNER_NAME for name in entries)
-
-
-def _refuse_legacy_layout(
-    values: Mapping[str, str], home: Path, asha_home: Path, workspace_root: Path,
-) -> None:
-    """Refuse to run past un-migrated data rather than silently re-home onto
-    an empty tree — the CHANGELOG's own post-mortem class of failure."""
-    legacy = legacy_roots(values, home)
-    if legacy_populated(legacy["control"]) and not (asha_home / "state/control").exists():
-        raise ConfigError(
-            f"legacy Asha state detected at {legacy['control']}; the root moved to "
-            f"{asha_home}/state/control — {LEGACY_REMEDIATION}"
-        )
-    default_workspaces = asha_home / "workspaces"
-    if (workspace_root == default_workspaces
-            and legacy_populated(legacy["workspaces"])
-            and not default_workspaces.exists()):
-        raise ConfigError(
-            f"legacy Asha workspaces detected at {legacy['workspaces']}; the root "
-            f"moved to {default_workspaces} — {LEGACY_REMEDIATION}"
-        )
-
-
-def load_config(
-    env: Mapping[str, str] | None = None, *, check_legacy: bool = True,
-) -> ControlConfig:
+def load_config(env: Mapping[str, str] | None = None) -> ControlConfig:
     """Parse Control configuration using only the supplied environment."""
     values = os.environ if env is None else env
     raw_home = values.get("HOME", "")
@@ -352,7 +258,7 @@ def load_config(
             raise
 
     # Task workspaces were retired (L-b); the key still parses so existing
-    # configuration loads, and only the legacy-layout gate reads it.
+    # configuration loads.
     raw_workspace = control.get("workspace_root", str(asha_home / "workspaces"))
     if not isinstance(raw_workspace, str) or not raw_workspace:
         raise ConfigError("control.workspace_root must be a non-empty string")
@@ -405,16 +311,6 @@ def load_config(
         raise ConfigError(
             "control.workspace_trust must be one of " + ", ".join(TRUST_MODES)
         )
-
-    # The gate protects the DEFAULT LOCATION, judged by value, not by whether
-    # the variable is set: bin/asha exports ASHA_HOME unconditionally so that
-    # children agree, which would otherwise make every CLI invocation look
-    # "explicit" and neuter the gate on exactly the path real operators use
-    # (verified live: task list sailed onto an empty tree past 65 un-migrated
-    # records). A redirection to somewhere else — tests, sandboxes, expert
-    # layouts — still bypasses, because it touches nothing the gate protects.
-    if check_legacy and asha_home == home / ".asha":
-        _refuse_legacy_layout(values, home, asha_home, workspace_root)
 
     return ControlConfig(
         config_path=config_path,
