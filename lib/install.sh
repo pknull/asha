@@ -626,7 +626,6 @@ asha_install_main() {
   local t
   local -a results=()
   local -a failed=()
-  local _asha_failed_targets="" _asha_requested_targets="${targets[*]}"
   local launcher_failed=0
   # Remember the caller's errexit state so we can toggle around each harness.
   local had_e=0
@@ -666,7 +665,6 @@ asha_install_main() {
     else
       results+=("FAILED")
       failed+=("$t")
-      _asha_failed_targets+=" $t"
       info "WARN: [$t] install failed (exit $rc); continuing with remaining targets"
     fi
   done
@@ -675,9 +673,9 @@ asha_install_main() {
   bootstrap_identity
 
   # Record the repo root for wrapper-less launches (commands fall back to it).
-  # Routing has its own failure boundary. An attempted adapter failure must
-  # not be confused with an independently requested, unattempted --bin target.
-  if _launcher_preflight "$BIN" && _write_asha_root; then
+  # Routing has its own failure boundary and does not depend on which adapters
+  # succeeded: a reinstall reverses it.
+  if _write_asha_root; then
     if [[ -n "$BIN" ]]; then
       # Keep mklink/die and unguarded I/O failures in a child, not a condition
       # that suppresses Bash errexit throughout the launcher implementation.
