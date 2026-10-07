@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased — subtraction B6a: plugin tools trust the local user (session 2.9.1, asha 3.1.2, admin 0.3.2)
+
+- Plugin tools no longer defend Asha's files against same-user tampering
+  (Keeper threat model, 2026-10-05). A project reached through a symlinked
+  directory (for example `~/Code` on another disk) now publishes Memory,
+  saves and recovers in its real tree instead of refusing every write.
+  Memory and draft reads ignore link counts and the file owner.
+- Opt-in broker telemetry appends through a symlinked events file.
+- The find-skills store and the installer follow links you made for the
+  imported lockfile, a skill directory, the backup root and the `.mounts`
+  adapters. A symlink inside an imported skill's own tree still blocks its
+  mount, and upstream symlinks still block an import.
+- The Proton Mail replay ledger is created private (0700 directory, 0600
+  files) and an existing ledger with broader modes no longer blocks a send,
+  move or delete.
+- `verify-pass-complete.sh` honours a symlinked pass declaration; an empty
+  proof removes the link and never its target.
+- Kept: `secure_path`'s refusal of symlinks below a project root, home as a
+  refused project root, and the FIFO and size guards on every read.
+
 ## Unreleased — subtraction B5: the managed-session runtime trusts the local user
 
 - The actor-to-owner request socket no longer reads peer credentials, a peer
