@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased — subtraction B7: one Room backend, one-shot migrations retire (session 2.7.0)
+
+- SQLite is the only Room registry. A fresh home no longer starts on JSON Room
+  files: `asha control session init` or the first `asha room open` creates the
+  Control database, and a home without one lists no Rooms. Backend selection
+  (`registry_backend.py`), the registry writer guards (`registry_guards.py`:
+  `mutation_guard`, `legacy_mutation_guard` and the migration flock taken on
+  every hub write) and the separate SQLite Room subclass are deleted. A
+  database activated by the retired staging keeps its guard triggers, inert
+  while its active marker row stays; nothing deletes that row.
+- `asha migrate`, the one-shot move to the single `~/.asha` root, is retired
+  and refuses by name with exit 2. Its load_config gate (the refusal of a
+  pre-consolidation `~/.local/state/asha` layout) and the doctor's `migration`
+  probe go with it. `asha control session migrate`, the SQLite schema upgrade,
+  is unchanged.
+- The reviewed v1-to-v2 Memory migration is retired: `/session:consolidate`
+  and the learning manager's `migrate-plan`, `migrate-amend` and
+  `migrate-apply` verbs, journals, receipts and marker. Initialization still
+  refuses a published file that is not valid v2; rewrite it in the v2 format
+  first. Legacy files and `Work/memory-migration/` reviews and backups stay in
+  place, and that directory stays ignored. The installer no longer inventories
+  v1 learning stores, and the doctor's oversized-decisions warning now says to
+  trim the file before `/session:save`.
+- The learning manager follows links inside the learnings bundle and no longer
+  checks a symlinked bundle target's owner (threat model, 2026-10-05); a
+  symlinked bundle root such as a dotfiles link keeps working.
+- After landing: run `asha install <target>` for each installed harness to
+  prune the retired command, and restart the supervisor once
+  (`systemctl --user restart asha-supervisor`), which has `registry_guards`
+  loaded.
+
 ## Unreleased — subtraction B3 and N9: the session preview goes, the socket reaper moves to the tests
 
 - The dashboard's live session preview is deleted (Keeper ruling N9,
