@@ -267,8 +267,8 @@ else
   fail "an unmapped hook name calls nothing and stays harmless ($OUT)"
 fi
 
-# The hub identity is checked before the legacy managed-task marker, and the
-# worker early exits in Asha's other hooks must not reach this bridge.
+# A hub session reports even with a stale managed-task marker, and the worker
+# early exits in Asha's other hooks must not reach this bridge.
 run_control Stop '{}' ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_CONTROL_MANAGED=1 \
   ASHA_SESSION_PROFILE=worker >/dev/null
 if [[ "$(captured)" == "control session event --event turn-stopped" ]]; then
@@ -553,25 +553,24 @@ else
   fail "without stdbuf the fallback read still keeps a held-open Stop payload ($(captured) -> ${OUT:0:40})"
 fi
 
-echo "--- legacy managed-task behaviour is preserved ---"
+echo "--- the retired managed-task consumer reaches nothing ---"
 
+# `asha control event` left with the task substrate (L-b): a managed-task
+# environment without a hub session is answered locally and calls nothing.
 OUT="$(run_control PermissionRequest '{"session_id":"permission-live-gate"}' \
   ASHA_CONTROL_MANAGED=1 ASHA_HARNESS=codex TMUX_PANE=%42)"
-CAP="$(captured)"
-if [[ "$CAP" == *"control event --event permission-requested"* \
-   && "$CAP" == *"--harness codex"* && "$CAP" == *"--session-id permission-live-gate"* \
-   && "$CAP" == *"--pane-id %42"* ]]; then
-  ok "a managed task still reaches the legacy Control event with its facts"
+if [[ "$OUT" == '{}' && ! -e "$CAPTURE" ]]; then
+  ok "a managed task without a hub session calls no controller"
 else
-  fail "a managed task still reaches the legacy Control event with its facts ($CAP)"
+  fail "a managed task without a hub session calls no controller ($OUT, $(captured))"
 fi
 
 BLOCK='{"decision":"block","reason":"Control wake test"}'
 OUT="$(run_control Stop '' ASHA_CONTROL_MANAGED=1 CONTROL_STUB_OUTPUT="$BLOCK")"
-if [[ "$OUT" == "$BLOCK" ]]; then
-  ok "a managed task still passes through a valid single-line block decision"
+if [[ "$OUT" == '{}' && ! -e "$CAPTURE" ]]; then
+  ok "a managed task without a hub session never relays a block decision"
 else
-  fail "a managed task still passes through a valid single-line block decision ($OUT)"
+  fail "a managed task without a hub session never relays a block decision ($OUT)"
 fi
 
 OUT="$(run_control Stop '' ASHA_SESSION_PROFILE=worker)"

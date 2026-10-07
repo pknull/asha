@@ -98,13 +98,14 @@ assert_argv "managed argv trusts and TOML-escapes the plain cwd" \
   -c "projects={\"$escaped_plain\"={trust_level=\"trusted\"}}" PAYLOAD
 
 echo "--- coordinator launch ---"
+# The unattended danger-full-access posture left with the initiative engine
+# (L-b): a coordinator marker keeps only the per-launch trust override.
 COORDINATOR_ROOT="$WORK/coordinator-root"
 mkdir -p "$COORDINATOR_ROOT"
 run_codex "$COORDINATOR_ROOT" 0 tok123
-assert_argv "coordinator argv trusts the cwd and sets unattended posture" \
+assert_argv "coordinator argv trusts the cwd without any unattended posture" \
   -c "model_instructions_file=\"$COORDINATOR_MODEL_FILE\"" \
-  -c "projects={\"$COORDINATOR_ROOT\"={trust_level=\"trusted\"}}" \
-  -a never --sandbox danger-full-access PAYLOAD
+  -c "projects={\"$COORDINATOR_ROOT\"={trust_level=\"trusted\"}}" PAYLOAD
 
 echo "--- default launch has no unattended posture ---"
 run_codex "$GIT_ROOT/nested/workspace" 0
@@ -181,7 +182,7 @@ run_daemon_codex "$DAEMON_CODEX" tok123 PAYLOAD
 assert_argv "coordinator TUI launch runs without the shared daemon" \
   -c "model_instructions_file=\"$COORDINATOR_MODEL_FILE\"" \
   -c "projects={\"$GIT_ROOT\"={trust_level=\"trusted\"}}" \
-  -a never --sandbox danger-full-access --no-daemon PAYLOAD
+  --no-daemon PAYLOAD
 
 run_daemon_codex "$DAEMON_CODEX" "" exec PAYLOAD
 assert_argv "non-interactive subcommands are left alone" \

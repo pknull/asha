@@ -416,34 +416,27 @@ policy_case rp-canon-layout-edit '{"tool_name":"Edit","tool_input":{"file_path":
 [[ $POLICY_OK -eq 1 ]] && ok "policy matrix preserves destructive guards and v2 Memory boundary"
 
 # require_env rules are inert outside the session that carries the variable.
-coordinator_decision() {
+# The shipped coordinator rules left with the initiative engine (L-b); a user
+# rule keeps the mechanism covered.
+cat > "$HOME_DIR/.asha/policies.json" <<'JSON'
+{"rules":[{"id":"scoped-deny","tool":"Bash","command_regex":"\\bscoped-verb\\b","action":"deny","require_env":"ASHA_TEST_POLICY_SCOPE","reason":"scoped"}]}
+JSON
+scoped_decision() {
   local rc=0
   printf '%s' "$2" | HOME="$HOME_DIR" CLAUDE_PROJECT_DIR="$PROJECT" \
     CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" ASHA_HARNESS=claude \
-    ASHA_ORCHESTRATION_COORDINATOR_ID="$1" \
+    ASHA_TEST_POLICY_SCOPE="$1" \
     "$HANDLERS/policy-guard.sh" >/dev/null 2>&1 || rc=$?
   [[ $rc -eq 2 ]] && printf deny || printf allow
 }
-COORD_OK=1
+SCOPED_OK=1
+SCOPED='{"tool_name":"Bash","tool_input":{"command":"scoped-verb now"}}'
 APPROVE='{"tool_name":"Bash","tool_input":{"command":"asha initiative approve 1b853ddc-38bf-4cb8-aff3-816e550684dc --digest abc"}}'
-CLAIM='{"tool_name":"Bash","tool_input":{"command":"asha initiative coordinator claim 1b853ddc-38bf-4cb8-aff3-816e550684dc --json"}}'
-[[ "$(coordinator_decision "" "$APPROVE")" == allow ]] || { COORD_OK=0; fail "approve outside a coordinator session is allowed by policy"; }
-[[ "$(coordinator_decision "dddddddd-dddd-4ddd-8ddd-dddddddddddd" "$APPROVE")" == deny ]] || { COORD_OK=0; fail "approve inside a coordinator session is denied by policy"; }
-[[ "$(coordinator_decision "dddddddd-dddd-4ddd-8ddd-dddddddddddd" "$CLAIM")" == allow ]] || { COORD_OK=0; fail "coordinator verbs stay allowed inside a coordinator session"; }
-[[ $COORD_OK -eq 1 ]] && ok "require_env scopes the coordinator approval rule to coordinator sessions"
-
-# A standing authority is the operator's pre-signed approval: a coordinator that
-# could mint or revoke one would be approving its own plans. The read stays open.
-AUTH_OK=1
-AUTH_ADD='{"tool_name":"Bash","tool_input":{"command":"asha initiative authority add small-fixes --repo /p --scope lib"}}'
-AUTH_REVOKE='{"tool_name":"Bash","tool_input":{"command":"asha initiative authority revoke 1b853ddc-38bf-4cb8-aff3-816e550684dc"}}'
-AUTH_LIST='{"tool_name":"Bash","tool_input":{"command":"asha initiative authority list --json"}}'
-COORD_ID="dddddddd-dddd-4ddd-8ddd-dddddddddddd"
-[[ "$(coordinator_decision "$COORD_ID" "$AUTH_ADD")" == deny ]] || { AUTH_OK=0; fail "authority add inside a coordinator session is denied by policy"; }
-[[ "$(coordinator_decision "$COORD_ID" "$AUTH_REVOKE")" == deny ]] || { AUTH_OK=0; fail "authority revoke inside a coordinator session is denied by policy"; }
-[[ "$(coordinator_decision "$COORD_ID" "$AUTH_LIST")" == allow ]] || { AUTH_OK=0; fail "authority list stays readable inside a coordinator session"; }
-[[ "$(coordinator_decision "" "$AUTH_ADD")" == allow ]] || { AUTH_OK=0; fail "authority add outside a coordinator session is allowed by policy"; }
-[[ $AUTH_OK -eq 1 ]] && ok "standing-authority grants are refused inside coordinator sessions while the read stays open"
+[[ "$(scoped_decision "" "$SCOPED")" == allow ]] || { SCOPED_OK=0; fail "a require_env rule is inert outside its session"; }
+[[ "$(scoped_decision "set" "$SCOPED")" == deny ]] || { SCOPED_OK=0; fail "a require_env rule applies inside its session"; }
+[[ "$(scoped_decision "set" "$APPROVE")" == allow ]] || { SCOPED_OK=0; fail "a require_env rule matches only its own pattern"; }
+rm -f "$HOME_DIR/.asha/policies.json"
+[[ $SCOPED_OK -eq 1 ]] && ok "require_env scopes a rule to sessions that carry the variable"
 
 WARN_OUT="$WORK/policy-warn.out"
 WARN_ERR="$WORK/policy-warn.err"
@@ -571,12 +564,6 @@ jq -e '.hooks.PostToolUseFailure[] | select(._asha_harnesses == ["claude"])
   || fail "Control event handler is reachable from every registered native event"
 
 CONTROL_HANDLER="$HANDLERS/control-event.sh"
-if grep -Fq '[[ -t 0 ]] || IFS= read -r -N 4096 INPUT || true' "$CONTROL_HANDLER" \
-  && grep -Fq 'timeout --signal=TERM 15 "$ASHA_CMD" "${ARGS[@]}"' "$CONTROL_HANDLER"; then
-  ok "Control event bridge guards tty input and bounds controller time"
-else
-  fail "Control event bridge guards tty input and bounds controller time"
-fi
 CONTROL_OUTPUT="$(timeout 2 env ASHA_CONTROL_MANAGED=1 ASHA_ROOT="$REPO_ROOT" \
   "$CONTROL_HANDLER" PostToolUse </dev/null)"
 CONTROL_STATUS=$?
@@ -584,8 +571,11 @@ CONTROL_STATUS=$?
   && ok "Control event bridge remains fail-open with empty stdin" \
   || fail "Control event bridge remains fail-open with empty stdin"
 
+# The legacy task consumer (`asha control event`) left with the task substrate
+# (L-b): outside a hub session the bridge answers the harmless object and calls
+# nothing, even for a Control-managed environment and a block-shaped answer.
 FAKE_CONTROL_ROOT="$WORK/fake-control-root"
-CONTROL_CAPTURE="$WORK/permission-requested.args"
+CONTROL_CAPTURE="$WORK/legacy-control.args"
 mkdir -p "$FAKE_CONTROL_ROOT/bin"
 cat > "$FAKE_CONTROL_ROOT/bin/asha" <<'EOF'
 #!/usr/bin/env bash
@@ -593,30 +583,18 @@ printf '%s\n' "$*" > "$CONTROL_CAPTURE"
 [[ -z "${CONTROL_STUB_OUTPUT:-}" ]] || printf '%s\n' "$CONTROL_STUB_OUTPUT"
 EOF
 chmod +x "$FAKE_CONTROL_ROOT/bin/asha"
-printf '%s' '{"session_id":"permission-live-gate"}' \
-  | timeout 2 env ASHA_CONTROL_MANAGED=1 ASHA_ROOT="$FAKE_CONTROL_ROOT" \
-      ASHA_HARNESS=codex CONTROL_CAPTURE="$CONTROL_CAPTURE" \
-      "$CONTROL_HANDLER" PermissionRequest >/dev/null
-[[ -f "$CONTROL_CAPTURE" \
-   && "$(cat "$CONTROL_CAPTURE")" == *"control event --event permission-requested"* \
-   && "$(cat "$CONTROL_CAPTURE")" == *"--harness codex"* \
-   && "$(cat "$CONTROL_CAPTURE")" == *"--session-id permission-live-gate"* ]] \
-  && ok "Codex PermissionRequest maps to the bounded Control event" \
-  || fail "Codex PermissionRequest maps to the bounded Control event"
-
-CONTROL_BLOCK='{"decision":"block","reason":"Control wake test"}'
-CONTROL_OUTPUT="$(timeout 2 env ASHA_CONTROL_MANAGED=1 ASHA_ROOT="$FAKE_CONTROL_ROOT" \
-  CONTROL_CAPTURE="$CONTROL_CAPTURE" CONTROL_STUB_OUTPUT="$CONTROL_BLOCK" \
-  "$CONTROL_HANDLER" Stop </dev/null)"
-[[ "$CONTROL_OUTPUT" == "$CONTROL_BLOCK" ]] \
-  && ok "Control Stop bridge passes through a valid single-line block decision" \
-  || fail "Control Stop bridge passes through a valid single-line block decision"
-CONTROL_OUTPUT="$(timeout 2 env ASHA_CONTROL_MANAGED=1 ASHA_ROOT="$FAKE_CONTROL_ROOT" \
-  CONTROL_CAPTURE="$CONTROL_CAPTURE" CONTROL_STUB_OUTPUT='not json' \
-  "$CONTROL_HANDLER" Stop </dev/null)"
-[[ "$CONTROL_OUTPUT" == '{}' ]] \
-  && ok "Control Stop bridge degrades invalid controller output to an empty object" \
-  || fail "Control Stop bridge degrades invalid controller output to an empty object"
+LEGACY_OK=1
+for native in PermissionRequest Stop SessionEnd; do
+  CONTROL_OUTPUT="$(printf '%s' '{"session_id":"legacy-gate"}' \
+    | timeout 2 env -u ASHA_HUB_SESSION_ID ASHA_CONTROL_MANAGED=1 ASHA_ROOT="$FAKE_CONTROL_ROOT" \
+        ASHA_HARNESS=codex CONTROL_CAPTURE="$CONTROL_CAPTURE" \
+        CONTROL_STUB_OUTPUT='{"decision":"block","reason":"Control wake test"}' \
+        "$CONTROL_HANDLER" "$native")"
+  [[ "$CONTROL_OUTPUT" == '{}' && ! -e "$CONTROL_CAPTURE" ]] || LEGACY_OK=0
+done
+[[ $LEGACY_OK -eq 1 ]] \
+  && ok "Control event bridge calls nothing outside a hub session" \
+  || fail "Control event bridge calls nothing outside a hub session"
 
 if jq -e '[.hooks.SessionStart[], .hooks.UserPromptSubmit[], .hooks.PostToolUse[]]
     | all(.[] | select(any(.hooks[]?; (.command // "") | contains("control-event.sh")));

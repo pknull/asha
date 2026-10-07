@@ -1,35 +1,40 @@
-"""Hosted actor calls retain identity and use existing coordinator authority."""
+"""Hosted actor calls retain identity; the only operation is ask (L-b)."""
 import json
-import unittest
+import tempfile
 import threading
+import unittest
+from pathlib import Path
 from unittest import mock
 
+from lib.control.config import load_config
 from lib.control.session_store import SessionStore
 from lib.control.store import StoreError
-from lib.control.orchestration import coordinator
-from tests.python.orchestration_execution_fixtures import ExecutionFixture
-from tests.python.test_control_managed_coordinator import NoTmux
 
 
-class CodexActorTests(ExecutionFixture, unittest.TestCase):
+class CodexActorTests(unittest.TestCase):
     def setUp(self):
-        super().setUp()
         from lib.control.codex_actor import CodexActor
-        self.sessions = SessionStore(self.config.control, create=True)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name).resolve()
+        (root / 'home').mkdir()
+        self.repo = root / 'repo'
+        self.repo.mkdir()
+        self.env = {'HOME': str(root / 'home'), 'ASHA_CONFIG': str(root / 'missing.json'),
+                    'ASHA_HOME': str(root / 'asha'), 'XDG_RUNTIME_DIR': str(root / 'runtime')}
+        self.config = load_config(self.env)
+        self.sessions = SessionStore(self.config, create=True)
         self.addCleanup(self.sessions.close)
         with mock.patch.dict('lib.control.session_harness.CAPABILITIES', {'codex': {'managed': True}}):
-            session = self.sessions.create(cwd=str(self.repo), prompt='Coordinate', harness='codex',
-                                           initiative_id=self.initiative_id)
+            session = self.sessions.create(cwd=str(self.repo), prompt='Answer a question', harness='codex')
         self.sid = session['session_id']
         session = self.sessions.claim_owner(self.sid)
         self.generation = session['generation']
         self.actor_env = {**self.env, 'ASHA_MANAGED_SESSION_ID': self.sid,
             'ASHA_MANAGED_GENERATION': str(self.generation),
-            'ASHA_MANAGED_STATE_DIR': str(self.config.control.tasks_dir.parent)}
-        self.coordinator = coordinator.claim(self.store, self.initiative(), env=self.actor_env,
-                                            tmux=NoTmux(), harness='codex')
+            'ASHA_MANAGED_STATE_DIR': str(self.config.tasks_dir.parent)}
         self.turn = self.sessions.claim_turn(self.sid, self.generation)['turn_id']
-        self.actor = CodexActor(self.config.control, self.sid, self.generation, self.turn, env=self.actor_env)
+        self.actor = CodexActor(self.config, self.sid, self.generation, self.turn, env=self.actor_env)
         self.addCleanup(self.actor.close)
 
     def test_question_receipt_survives_lost_reply_without_duplicate(self):
@@ -42,14 +47,19 @@ class CodexActorTests(ExecutionFixture, unittest.TestCase):
         with self.assertRaisesRegex(StoreError, 'changed'):
             self.actor.execute('call-1', {**args, 'question': 'Different?'})
 
-    def test_foreign_selectors_and_operator_actions_are_refused(self):
+    def test_foreign_selectors_and_every_operation_but_ask_are_refused(self):
         for args in ({'operation': 'ask', 'question': 'Q', 'session_id': 'foreign'},
-                     {'operation': 'inspect', 'initiative_id': 'foreign'},
-                     {'operation': 'action', 'action_class': 'activate-initiative', 'payload': {}},
+                     {'operation': 'inspect', 'kind': 'head'},
+                     {'operation': 'propose_plan', 'plan': {}},
+                     {'operation': 'action', 'action_class': 'dispatch-node', 'payload': {}},
+                     {'operation': 'receive_message', 'message_id': 'm'},
                      {'operation': 'approve'}):
             with self.subTest(args=args):
-                self.assertFalse(self.actor.execute(json.dumps(args), args)['success'])
-        self.assertEqual(self.store.list_actions_snapshot(self.initiative_id), [])
+                result = self.actor.execute(json.dumps(args), args)
+                self.assertFalse(result['success'])
+                self.assertIn('unsupported actor operation', result['contentItems'][0]['text'])
+        with self.sessions.db.transaction() as c:
+            self.assertEqual(c.execute('SELECT count(*) FROM session_requests').fetchone()[0], 0)
 
     def test_stopped_and_stale_owner_cannot_execute(self):
         self.actor.generation += 1
@@ -59,21 +69,6 @@ class CodexActorTests(ExecutionFixture, unittest.TestCase):
         self.sessions.stop(self.sid)
         with self.assertRaisesRegex(StoreError, 'stopping'):
             self.actor.execute('stopped', {'operation': 'ask', 'question': 'Q'})
-
-    def test_action_uses_bound_coordinator_and_stable_id(self):
-        args = {'operation': 'action', 'action_class': 'dispatch-node',
-                'payload': {'node_id': 'implementation-a'}}
-        def capture(argv, **kwargs):
-            return 0, json.dumps(self.control_payload(argv)).encode(), b''
-        with mock.patch('lib.control.orchestration.scheduler.storage_report', return_value={'pause_recommended': False}), \
-             mock.patch('lib.control.orchestration.scheduler.capture_bytes', side_effect=capture) as dispatch:
-            first = self.actor.execute('dispatch', args)
-            self.assertEqual(first, self.actor.execute('dispatch', args))
-        self.assertTrue(first['success'], first)
-        self.assertEqual(dispatch.call_count, 1)
-        actions = self.store.list_actions_snapshot(self.initiative_id)
-        self.assertEqual(actions[0]['actor_kind'], 'coordinator')
-        self.assertEqual(actions[0]['coordinator_id'], self.coordinator['coordinator_id'])
 
     def test_uncertain_receipt_is_never_reexecuted(self):
         args = {'operation': 'ask', 'question': 'Q'}
@@ -86,14 +81,6 @@ class CodexActorTests(ExecutionFixture, unittest.TestCase):
         self.assertIn('uncertain', result['contentItems'][0]['text'])
         perform.assert_not_called()
 
-    def test_inspection_pages_include_revision_and_continuation(self):
-        result = self.actor.execute('inspect', {'operation': 'inspect', 'kind': 'nodes', 'limit': 1})
-        self.assertTrue(result['success'], result)
-        data = json.loads(result['contentItems'][0]['text'])['result']
-        self.assertEqual(len(data['records']), 1)
-        self.assertEqual(data['next_offset'], 1)
-        self.assertEqual(data['state_revision'], self.initiative()['state_revision'])
-
     def test_async_dispatch_leaves_transport_poll_free_and_close_drains(self):
         entered, release = threading.Event(), threading.Event()
         self.addCleanup(release.set)
@@ -102,7 +89,7 @@ class CodexActorTests(ExecutionFixture, unittest.TestCase):
             self.assertTrue(release.wait(5))
             return {'retained': True}
         with mock.patch.object(self.actor, '_perform', side_effect=slow):
-            self.actor.submit('rpc-1', 'slow', {'operation': 'inspect'})
+            self.actor.submit('rpc-1', 'slow', {'operation': 'ask', 'question': 'Q'})
             self.assertTrue(entered.wait(3))
             self.assertEqual(self.actor.poll(), [])
             # Another owner connection is usable while the effect is running.
@@ -113,15 +100,8 @@ class CodexActorTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(len(replies), 1)
         self.assertTrue(replies[0][1]['success'])
 
-    def test_foreign_coordinator_anchor_is_refused(self):
-        foreign = {**self.coordinator, 'anchor': {**self.coordinator['anchor'], 'session_id': 'foreign'}}
-        with mock.patch('lib.control.orchestration.coordinator.require_live_coordinator', return_value=foreign):
-            result = self.actor.execute('foreign', {'operation': 'inspect'})
-        self.assertFalse(result['success'])
-        self.assertIn('does not own', result['contentItems'][0]['text'])
-
     def test_bounded_arguments_and_result_fit_combined_durable_receipt(self):
-        args = {'operation': 'propose_plan', 'plan': {'description': '\\' * 120000}}
+        args = {'operation': 'ask', 'question': '\\' * 120000}
         with mock.patch.object(self.actor, '_perform', return_value={'body': '\\' * 120000}):
             first = self.actor.execute('large', args)
         self.assertTrue(first['success'])

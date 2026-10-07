@@ -122,24 +122,15 @@ class SessionActivityTests(unittest.TestCase):
         with mock.patch.object(type(self.store), "snapshot", side_effect=AssertionError("history read")):
             self.assertEqual(overview(self.config)["queued"], 1)
 
-    def test_cli_current_and_chair_render_use_current_projection(self):
+    def test_cli_current_uses_current_projection(self):
         import io
         import json
         from contextlib import redirect_stdout
         from lib.control.sessions import main
-        from lib.control.orchestration.config import load_config
-        from lib.control.orchestration.observation import current_activity, render_startup_observation
         output = io.StringIO()
         with redirect_stdout(output):
             self.assertEqual(main(["current", "--json"], env=self.env), 0)
         self.assertEqual(json.loads(output.getvalue())["rows"][0]["session_id"], self.sid)
-        with mock.patch("lib.control.tmux.BoundedTmux.inventory", side_effect=OSError("offline")):
-            activity = current_activity(load_config(self.env))
-        self.assertEqual(activity["sources"]["managed-sessions"]["observed_count"], 1)
-        self.assertTrue(activity["sources"]["managed-sessions"]["complete"])
-        rendered = render_startup_observation(activity, observed_at="now")
-        self.assertIn("Current managed sessions: >= 1", rendered)
-        self.assertNotIn("Do the work", rendered)
 
     def test_current_queries_use_state_indexes(self):
         turn = self.store.claim_turn(self.sid, self.generation)

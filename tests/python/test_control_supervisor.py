@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 import contextlib
 import json
 import os
@@ -10,32 +9,18 @@ import sys
 import tempfile
 import time
 import unittest
-import uuid
 from contextlib import redirect_stdout
-from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
-from types import SimpleNamespace
 from unittest import mock
 
 from lib.control.cli import main as control_main
+from lib.control.config import load_config
 from lib.control.harness import process_identity
-from lib.control.jj import ImmutableTree, JjAdapter, JjError, WorkspaceIdentity
-from lib.control.reconcile import Evidence, LiveAdapters
-from lib.control.store import TaskStore
-from lib.control.orchestration.actions import build_action_document, submit_action
-from lib.control.orchestration.cli import reconcile_one_initiative
-from lib.control.orchestration.ingestion import (
-    _save_verification_evidence,
-    ingest_pending_results,
-    result_ingestion_id,
-    stage_result,
-)
-from lib.control.orchestration.supervisor import tick
+from lib.control.store import StoreError
 from lib.control.supervisor_service import (
     SUPERVISOR_SERVICE_MARKER,
-    _emit_tick_errors,
     install_supervisor_service,
     render_supervisor_service,
     run_supervisor,
@@ -43,566 +28,41 @@ from lib.control.supervisor_service import (
     supervisor_service_path,
     supervisor_service_status,
     supervisor_lock_path,
+    sweep,
     uninstall_supervisor_service,
 )
-from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
 
 
-class SnapshotJj:
-    def __init__(self, task: dict):
-        self.task = task
-        self.snapshotted = False
-        self.base = task["jj"]["base_commit_id"]
-        self.before = task["jj"]["working_commit_id"]
-        self.after = "d" * 40
-        self.base_tree = ImmutableTree(
-            commit_id=self.base, digest="c" * 64, entries=(),
-        )
-        self.before_tree = ImmutableTree(
-            commit_id=self.before, digest="d" * 64,
-            entries=(("lib/control/orchestration/result.py", "100644", "f" * 40),),
-        )
-        self.final_tree = ImmutableTree(
-            commit_id=self.after, digest="e" * 64,
-            entries=(("lib/control/orchestration/result.py", "100644", "f" * 40),),
-        )
-
-    def inspect_workspace(
-        self, path, name, *, snapshot=False, require_empty=True,
-        exclude_control_transport=False,
-    ) -> WorkspaceIdentity:
-        del path, require_empty
-        if snapshot:
-            if not exclude_control_transport:
-                raise AssertionError("controller snapshot did not exclude its transport")
-            self.snapshotted = True
-        commit = self.after if self.snapshotted else self.before
-        return WorkspaceIdentity(
-            name=name,
-            change_id=self.task["jj"]["change_id"],
-            commit_id=commit,
-            parent_commit_ids=(self.base,),
-            description="test",
-        )
-
-    def immutable_tree(self, _repository, commit_id):
-        if commit_id == self.after:
-            return self.final_tree
-        if commit_id == self.base:
-            return self.base_tree
-        if commit_id == self.before:
-            return self.before_tree
-        raise AssertionError(f"unexpected commit {commit_id}")
+def now_text() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-class TerminalAdapters(LiveAdapters):
-    def __init__(self, jj, state="exited"):
-        super().__init__(config=None, tmux=mock.Mock(), jj=jj)
-        self.state = state
-
-    def tmux(self, task, run):
-        del task, run
-        return Evidence("tmux", "missing", "owned pane exited")
-
-    def process(self, task, run):
-        del task, run
-        return Evidence(
-            "process", "missing", "owned process ended", state=self.state,
-        )
-
-    def jj(self, task):
-        del task
-        return Evidence("jj", "match", "workspace identity matched")
-
-    def event(self, task, run):
-        del task, run
-        return Evidence("event", "missing", "no semantic event")
-
-
-class TeardownRaceAdapters(TerminalAdapters):
-    def tmux(self, task, run):
-        if self.state in {"conflict", "working"}:
-            return Evidence("tmux", "match", "owned pane matched")
-        return super().tmux(task, run)
-
-    def process(self, task, run):
-        if self.state in {"conflict", "working"}:
-            return Evidence("process", "match", "owned process matched")
-        return super().process(task, run)
-
-    def event(self, task, run):
-        if self.state == "conflict":
-            return Evidence(
-                "event", "match", "stale terminal snapshot", state="exited",
-            )
-        if self.state == "working":
-            return Evidence("event", "match", "worker active", state="working")
-        return super().event(task, run)
-
-
-class SupervisorTickTests(ExecutionFixture, unittest.TestCase):
-    task: dict
+class ControlFixture:
+    """A private Control home with a project directory to run from."""
 
     def setUp(self) -> None:
         super().setUp()
-
-        def capture(argv, **_kwargs):
-            payload = self.control_payload(argv)
-            workspace = self.config.control.workspace_root / payload["task"]["task_id"]
-            payload["task"]["jj"]["workspace_path"] = str(workspace)
-            payload["task"]["jj"]["base_commit_id"] = "b" * 40
-            payload["workspace"]["path"] = str(workspace)
-            self.task = payload["task"]
-            return 0, json.dumps(payload).encode(), b""
-
-        action = build_action_document(
-            self.initiative(), "dispatch-node", {"node_id": "implementation-a"},
-        )
-        with mock.patch(
-            "lib.control.orchestration.scheduler.storage_report",
-            return_value={"pause_recommended": False},
-        ), mock.patch(
-            "lib.control.orchestration.scheduler.capture_bytes", side_effect=capture,
-        ):
-            submitted = submit_action(self.store, self.initiative_id, action)
-        self.assertEqual(submitted["state"], "completed")
-        self.attempt = self.store.list_attempts_snapshot(self.initiative_id)[0]
-        self.workspace = Path(self.task["jj"]["workspace_path"])
-        (self.workspace / "lib/control/orchestration").mkdir(parents=True)
-        (self.workspace / "lib/control/orchestration/result.py").write_text("changed\n")
-        self.repo.chmod(0o700)
-        current = self.workspace
-        home = Path(self.env["ASHA_HOME"])
-        while current != home:
-            current.chmod(0o700)
-            current = current.parent
-        TaskStore(self.config.control).save(self.task)
-        self.jj = SnapshotJj(self.task)
-        self.ingestion = self.store.read_result_ingestion(
-            self.initiative_id, result_ingestion_id(self.attempt["attempt_id"]),
-        )
-        self.managed = {
-            **self.env,
-            "ASHA_CONTROL_MANAGED": "1",
-            "ASHA_CONTROL_TASK_ID": self.task["task_id"],
-            "ASHA_CONTROL_RUN_ID": self.task["runs"][0]["run_id"],
-            "ASHA_CONTROL_RESULT_INGESTION_ID": self.ingestion["ingestion_id"],
-            "ASHA_CONTROL_RESULT_OUTBOX": str(
-                self.workspace.joinpath(*self.ingestion["outbox_path"].split("/"))
-            ),
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        (self.root / "home").mkdir()
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.env = {
+            "HOME": str(self.root / "home"), "ASHA_CONFIG": str(self.root / "missing.json"),
+            "ASHA_HOME": str(self.root / "asha"), "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
-
-    def body(self) -> dict:
-        return {
-            "contract": "asha.orchestration-result.v1",
-            "publication_id": str(uuid.uuid4()),
-            "supersedes_result_id": None,
-            "initiative_id": self.initiative_id,
-            "node_id": self.attempt["node_id"],
-            "attempt_id": self.attempt["attempt_id"],
-            "task_id": self.task["task_id"],
-            "run_id": self.task["runs"][0]["run_id"],
-            "claim_status": "completed",
-            "summary": "staged safely",
-            "files_changed": ["lib/control/orchestration/result.py"],
-            "verification_attestations": [],
-            "concerns": [],
-            "follow_up": [],
-            "published_at": now_text(),
-        }
-
-    def verifier(self, store, ingestion, _task, _body, commit, tree, **_kwargs):
-        return [_save_verification_evidence(
-            store, self.initiative_id, ingestion["ingestion_id"], {
-                "kind": "snapshot-integrity",
-                "claimed_commit_id": commit,
-                "claimed_tree_digest": tree,
-                "status": "verified",
-            },
-        )]
-
-    def deps(self, at: datetime, adapters=None):
-        control = TaskStore(self.config.control)
-        adapters = adapters or TerminalAdapters(self.jj)
-
-        def ingest(store, initiative_id, *, control_store):
-            with mock.patch(
-                "lib.control.orchestration.ingestion.verify_controller_snapshot",
-                side_effect=self.verifier,
-            ):
-                return ingest_pending_results(
-                    store, initiative_id, control_store=control_store,
-                    adapters_factory=lambda _task: adapters,
-                )
-
-        def reconcile(store, initiative_id, *, control_store, now):
-            with mock.patch(
-                "lib.control.orchestration.scheduler.storage_report",
-                return_value={"pause_recommended": False},
-            ), mock.patch(
-                "lib.control.orchestration.ingestion.verify_controller_snapshot",
-                side_effect=self.verifier,
-            ):
-                return reconcile_one_initiative(
-                    store, initiative_id, control_store=control_store,
-                    adapters_factory=lambda _task: adapters, now=now,
-                )
-
-        return SimpleNamespace(
-            store_factory=lambda _initiative_id: self.store,
-            control_store=control,
-            now=lambda: at,
-            reconcile=reconcile,
-            ingest=ingest,
-            list_initiatives=self.store.list_initiatives,
-        )
-
-    def test_tick_ingests_terminal_staged_candidate_and_reaches_ordinary_seal(self) -> None:
-        stage_result(self.config, self.body(), self.managed)
-
-        report = tick(self.deps(datetime.now(timezone.utc) + timedelta(seconds=1)))
-
-        retained = self.store.read_result_ingestion(
-            self.initiative_id, self.ingestion["ingestion_id"],
-        )
-        attempts = self.store.list_attempts_snapshot(self.initiative_id)
-        seals = self.store.list_seals_snapshot(self.initiative_id)
-        self.assertEqual(retained["state"], "completed")
-        self.assertEqual(attempts[0]["state"], "sealed-success")
-        self.assertEqual([item["outcome"] for item in seals], ["success"])
-        self.assertEqual(report["counts"]["errors"], 0)
-        self.assertGreater(report["counts"]["transitions"], 0)
-
-    def test_staged_candidate_survives_stale_teardown_evidence_until_terminal(self) -> None:
-        stage_result(self.config, self.body(), self.managed)
-        adapters = TeardownRaceAdapters(self.jj, state="conflict")
-        first = datetime.now(timezone.utc) + timedelta(seconds=1)
-
-        tick(self.deps(first, adapters))
-        tick(self.deps(first + timedelta(seconds=1), adapters))
-
-        attempt = self.store.read_attempt(
-            self.initiative_id, self.attempt["attempt_id"],
-        )
-        node = self.store.read_node(self.initiative_id, attempt["node_id"])
-        conflicts = [
-            event for event in self.store.list_events_snapshot(self.initiative_id)
-            if event["type"] == "reconciliation-conflict"
-            and attempt["attempt_id"] in event["subject_ids"]
-        ]
-        self.assertEqual(attempt["state"], "running")
-        self.assertEqual(node["state"], "running")
-        self.assertEqual(len(conflicts), 1)
-        self.assertEqual(
-            conflicts[0]["payload"]["reason"],
-            "event: terminal state contradicts matched live process",
-        )
-
-        adapters.state = "exited"
-        report = tick(self.deps(first + timedelta(seconds=2), adapters))
-
-        retained = self.store.read_result_ingestion(
-            self.initiative_id, self.ingestion["ingestion_id"],
-        )
-        attempt = self.store.read_attempt(
-            self.initiative_id, self.attempt["attempt_id"],
-        )
-        self.assertEqual(retained["state"], "completed")
-        self.assertEqual(attempt["state"], "sealed-success")
-        self.assertEqual(
-            [item["outcome"] for item in self.store.list_seals_snapshot(self.initiative_id)],
-            ["success"],
-        )
-        self.assertEqual(report["counts"]["errors"], 0)
-
-    def test_tick_expires_missing_result_grace_seals_failure_and_allocates_retry(self) -> None:
-        self.store.config = replace(self.store.config, result_grace_seconds=1)
-        first = datetime.now(timezone.utc) + timedelta(seconds=1)
-        tick(self.deps(first))
-
-        report = tick(self.deps(first + timedelta(seconds=2)))
-
-        attempts = sorted(
-            self.store.list_attempts_snapshot(self.initiative_id),
-            key=lambda item: item["ordinal"],
-        )
-        self.assertEqual([item["state"] for item in attempts], ["sealed-failure", "allocated"])
-        self.assertEqual(
-            [item["outcome"] for item in self.store.list_seals_snapshot(self.initiative_id)],
-            ["failure"],
-        )
-        self.assertIn(
-            "result-missing",
-            [item["type"] for item in self.store.list_events_snapshot(self.initiative_id)],
-        )
-        self.assertEqual(report["counts"]["errors"], 0)
-
-    def test_result_staged_during_grace_wins_without_false_missing_failure(self) -> None:
-        self.store.config = replace(self.store.config, result_grace_seconds=10)
-        first = datetime.now(timezone.utc) + timedelta(seconds=1)
-        tick(self.deps(first))
-        stage_result(self.config, self.body(), self.managed)
-
-        tick(self.deps(first + timedelta(seconds=1)))
-
-        self.assertEqual(
-            self.store.list_attempts_snapshot(self.initiative_id)[0]["state"],
-            "sealed-success",
-        )
-        self.assertNotIn(
-            "result-missing",
-            [item["type"] for item in self.store.list_events_snapshot(self.initiative_id)],
-        )
-        self.assertEqual(
-            [item["outcome"] for item in self.store.list_seals_snapshot(self.initiative_id)],
-            ["success"],
-        )
-
-    def env_failing_deps(self, at: datetime):
-        """Tick deps whose every ingest pass aborts environment-class."""
-        control = TaskStore(self.config.control)
-        adapters = TerminalAdapters(self.jj)
-        boom = JjError(
-            "command invocation failed: [Errno 2] No such file or directory: 'jj'"
-        )
-
-        def ingest(store, initiative_id, *, control_store):
-            with mock.patch(
-                "lib.control.orchestration.ingestion.verify_controller_snapshot",
-                side_effect=boom,
-            ):
-                return ingest_pending_results(
-                    store, initiative_id, control_store=control_store,
-                    adapters_factory=lambda _task: adapters,
-                )
-
-        def reconcile(store, initiative_id, *, control_store, now):
-            with mock.patch(
-                "lib.control.orchestration.scheduler.storage_report",
-                return_value={"pause_recommended": False},
-            ), mock.patch(
-                "lib.control.orchestration.ingestion.verify_controller_snapshot",
-                side_effect=boom,
-            ):
-                return reconcile_one_initiative(
-                    store, initiative_id, control_store=control_store,
-                    adapters_factory=lambda _task: adapters, now=now,
-                )
-
-        return SimpleNamespace(
-            store_factory=lambda _initiative_id: self.store,
-            control_store=control,
-            now=lambda: at,
-            reconcile=reconcile,
-            ingest=ingest,
-            list_initiatives=self.store.list_initiatives,
-        )
-
-    def test_expired_grace_holds_open_while_staged_ingestion_retries(self) -> None:
-        self.store.config = replace(self.store.config, result_grace_seconds=1)
-        first = datetime.now(timezone.utc) + timedelta(seconds=1)
-        tick(self.deps(first))
-        stage_result(self.config, self.body(), self.managed)
-
-        tick(self.env_failing_deps(first + timedelta(seconds=2)))
-        tick(self.env_failing_deps(first + timedelta(seconds=3)))
-
-        events = self.store.list_events_snapshot(self.initiative_id)
-        self.assertNotIn("result-missing", [item["type"] for item in events])
-        deferred = [
-            item for item in events if item["type"] == "result-ingestion-deferred"
-        ]
-        self.assertEqual(len(deferred), 1)
-        self.assertIn("command invocation failed", deferred[0]["payload"]["reason"])
-        self.assertEqual(self.store.list_seals_snapshot(self.initiative_id), [])
-
-        tick(self.deps(first + timedelta(seconds=4)))
-
-        self.assertEqual(
-            self.store.list_attempts_snapshot(self.initiative_id)[0]["state"],
-            "sealed-success",
-        )
-        self.assertEqual(
-            [item["outcome"] for item in self.store.list_seals_snapshot(self.initiative_id)],
-            ["success"],
-        )
-        self.assertNotIn(
-            "result-missing",
-            [item["type"] for item in self.store.list_events_snapshot(self.initiative_id)],
-        )
-
-    def test_live_worker_with_staged_publication_reads_as_reported(self) -> None:
-        adapters = TeardownRaceAdapters(self.jj, state="working")
-        at = datetime.now(timezone.utc) + timedelta(seconds=1)
-        tick(self.deps(at, adapters))
-        self.assertEqual(
-            self.store.list_attempts_snapshot(self.initiative_id)[0]["state"],
-            "running",
-        )
-
-        stage_result(self.config, self.body(), self.managed)
-        tick(self.deps(at + timedelta(seconds=1), adapters))
-
-        self.assertEqual(
-            self.store.list_attempts_snapshot(self.initiative_id)[0]["state"],
-            "reported",
-        )
-
-    def test_reported_attempt_whose_candidate_vanished_still_expires(self) -> None:
-        self.store.config = replace(self.store.config, result_grace_seconds=1)
-        adapters = TeardownRaceAdapters(self.jj, state="working")
-        at = datetime.now(timezone.utc) + timedelta(seconds=1)
-        tick(self.deps(at, adapters))
-        stage_result(self.config, self.body(), self.managed)
-        tick(self.deps(at + timedelta(seconds=1), adapters))
-        self.assertEqual(
-            self.store.list_attempts_snapshot(self.initiative_id)[0]["state"],
-            "reported",
-        )
-
-        # The worker exits and its candidate is gone: the grace path must be
-        # able to expire a `reported` attempt rather than raise on an illegal
-        # transition.
-        self.workspace.joinpath(
-            *self.ingestion["outbox_path"].split("/")
-        ).unlink()
-        tick(self.deps(at + timedelta(seconds=2)))
-        report = tick(self.deps(at + timedelta(seconds=5)))
-
-        self.assertEqual(report["counts"]["errors"], 0)
-        self.assertEqual(
-            [item["outcome"] for item in self.store.list_seals_snapshot(self.initiative_id)],
-            ["failure"],
-        )
-
-    def test_tick_restart_is_idempotent(self) -> None:
-        stage_result(self.config, self.body(), self.managed)
-        deps = self.deps(datetime.now(timezone.utc) + timedelta(seconds=1))
-        tick(deps)
-        before = {
-            "events": len(self.store.list_events_snapshot(self.initiative_id)),
-            "seals": len(self.store.list_seals_snapshot(self.initiative_id)),
-            "attempts": len(self.store.list_attempts_snapshot(self.initiative_id)),
-        }
-
-        second = tick(deps)
-
-        after = {
-            "events": len(self.store.list_events_snapshot(self.initiative_id)),
-            "seals": len(self.store.list_seals_snapshot(self.initiative_id)),
-            "attempts": len(self.store.list_attempts_snapshot(self.initiative_id)),
-        }
-        self.assertEqual(after, before)
-        self.assertEqual(second["counts"]["transitions"], 0)
-
-    def test_tick_over_unchanged_running_initiative_appends_no_events(self) -> None:
-        adapters = TeardownRaceAdapters(self.jj, state="working")
-        deps = self.deps(datetime.now(timezone.utc) + timedelta(seconds=1), adapters)
-        tick(deps)
-        before = len(self.store.list_events_snapshot(self.initiative_id))
-
-        second = tick(deps)
-
-        self.assertEqual(
-            len(self.store.list_events_snapshot(self.initiative_id)), before,
-        )
-        self.assertEqual(second["counts"]["transitions"], 0)
+        self.config = load_config(self.env)
 
 
-class SupervisorIsolationTests(unittest.TestCase):
-    def test_one_initiative_exception_does_not_stop_the_sweep(self) -> None:
-        ids = [
-            "11111111-1111-4111-8111-111111111111",
-            "22222222-2222-4222-8222-222222222222",
-        ]
-        initiatives = [
-            {"initiative_id": item, "state": "running", "active_plan": {"revision": 1}}
-            for item in ids
-        ]
-        stores = {}
-        for initiative in initiatives:
-            store = mock.Mock()
-            store.peek.return_value = initiative
-            store.list_attempts_snapshot.return_value = []
-            store.list_nodes_snapshot.return_value = []
-            store.list_events_snapshot.return_value = []
-            store.config.supervisor_interval_seconds = 15
-            store.config.result_grace_seconds = 120
-            stores[initiative["initiative_id"]] = store
-        swept = []
-
-        def reconcile(_store, initiative_id, **_kwargs):
-            swept.append(initiative_id)
-            if initiative_id == ids[0]:
-                raise RuntimeError("injected store failure for A")
-            return {}
-
-        report = tick(SimpleNamespace(
-            store_factory=lambda initiative_id: stores[initiative_id],
-            control_store=mock.Mock(),
-            now=lambda: datetime.now(timezone.utc),
-            reconcile=reconcile,
-            ingest=lambda *_args, **_kwargs: [],
-            list_initiatives=lambda: initiatives,
-        ))
-
-        self.assertEqual(swept, ids)
-        self.assertEqual(report["counts"]["errors"], 1)
-        self.assertIn("injected store failure for A", report["initiatives"][0]["error"])
-        self.assertIsNone(report["initiatives"][1]["error"])
-
-
-class SupervisorVisibilityTests(unittest.TestCase):
-    def emit(self, summary: dict, reported: dict) -> tuple[list[str], dict]:
-        output = StringIO()
-        with redirect_stdout(output):
-            current = _emit_tick_errors(summary, reported, False)
-        return output.getvalue().splitlines(), current
-
-    def test_error_text_is_bounded_and_flattened_to_one_journal_line(self) -> None:
-        initiative_id = "44444444-4444-4444-8444-444444444444"
-        error = "line one\nline two " + "x" * 400
-
-        lines, current = self.emit({
-            "counts": {"errors": 1},
-            "initiatives": [{"initiative_id": initiative_id, "error": error}],
-        }, {})
-
-        self.assertEqual(len(lines), 1)
-        self.assertLessEqual(len(current[initiative_id]), 200)
-        self.assertNotIn("\n", current[initiative_id])
-        self.assertIn("line one?line two", lines[0])
-
-    def test_whole_sweep_failure_prints_even_without_a_named_initiative(self) -> None:
-        summary = {"counts": {"errors": 1}, "sweep_error": "StoreError: catalog is unreadable"}
-
-        lines, current = self.emit(summary, {})
-        repeated, _current = self.emit(summary, current)
-
-        self.assertEqual(len(lines), 1)
-        self.assertIn("catalog is unreadable", lines[0])
-        self.assertEqual(repeated, [])
-
-    def test_clean_tick_prints_nothing_and_clears_the_dedupe_set(self) -> None:
-        lines, current = self.emit(
-            {"counts": {"errors": 0}, "initiatives": [
-                {"initiative_id": "55555555-5555-4555-8555-555555555555", "error": None},
-            ]},
-            {"55555555-5555-4555-8555-555555555555": "stale"},
-        )
-
-        self.assertEqual(lines, [])
-        self.assertEqual(current, {})
-
-
-class SupervisorProcessTests(ExecutionFixture, unittest.TestCase):
-    def test_run_changes_cwd_to_home_before_the_first_tick(self) -> None:
+class SupervisorProcessTests(ControlFixture, unittest.TestCase):
+    def test_run_changes_cwd_to_home_before_the_first_sweep(self) -> None:
         observed = []
 
-        def one_tick(_deps):
+        def one_sweep(_config):
             observed.append(Path.cwd())
             os.kill(os.getpid(), signal.SIGTERM)
-            return {"finished_at": now_text(), "counts": {"transitions": 0}}
+            return {"finished_at": now_text(), "counts": {"errors": 0}}
 
         with contextlib.chdir(self.repo), \
                 mock.patch(
@@ -610,115 +70,47 @@ class SupervisorProcessTests(ExecutionFixture, unittest.TestCase):
                     return_value=Path(self.env["HOME"]),
                 ), \
                 mock.patch(
-                    "lib.control.supervisor_service.tick",
-                    side_effect=one_tick,
+                    "lib.control.supervisor_service.sweep",
+                    side_effect=one_sweep,
                 ), redirect_stdout(StringIO()):
-            result = run_supervisor(self.config.control, deps=SimpleNamespace())
+            result = run_supervisor(self.config)
 
         self.assertEqual(result, 0)
         self.assertEqual(observed, [Path(self.env["HOME"])])
+        retained = json.loads(status_path(self.config).read_text())
+        self.assertEqual(retained["last_tick_summary"], {"errors": 0})
 
-    def drive_ticks(self, reports: list[dict], output: StringIO):
-        """Run the loop over one report per tick, stopping after the last."""
-        pending = list(reports)
-        markers = iter(range(len(pending) + 2))
+    def test_sweeps_repeat_on_the_interval(self) -> None:
+        calls = []
 
-        def one_tick(_deps):
-            report = pending.pop(0)
-            if not pending:
+        def counted(_config):
+            calls.append(time.monotonic())
+            if len(calls) == 3:
                 os.kill(os.getpid(), signal.SIGTERM)
-            return report
+            return {"finished_at": now_text(), "counts": {"errors": 0}}
 
         with contextlib.chdir(self.repo), \
-                mock.patch(
-                    "lib.control.supervisor_service.Path.home",
-                    return_value=Path(self.env["HOME"]),
-                ), \
-                mock.patch(
-                    "lib.control.supervisor_service.tick",
-                    side_effect=one_tick,
-                ), \
-                mock.patch(
-                    "lib.control.supervisor_service._snapshot_marker",
-                    side_effect=lambda _config: next(markers),
-                ), \
-                mock.patch(
-                    "lib.control.supervisor_service._POLL_SECONDS", 0,
-                ), redirect_stdout(output):
-            result = run_supervisor(self.config.control, deps=SimpleNamespace())
+                mock.patch("lib.control.supervisor_service.Path.home",
+                           return_value=Path(self.env["HOME"])), \
+                mock.patch("lib.control.supervisor_service.sweep", side_effect=counted), \
+                mock.patch("lib.control.supervisor_service._SWEEP_SECONDS", 0.01), \
+                mock.patch("lib.control.supervisor_service._POLL_SECONDS", 0.005), \
+                redirect_stdout(StringIO()):
+            self.assertEqual(run_supervisor(self.config), 0)
+        self.assertEqual(len(calls), 3)
 
-        self.assertEqual(result, 0)
-        self.assertEqual(pending, [])
-        return result
-
-    def errored_tick(self, initiative_id: str, error: str) -> dict:
-        return {
-            "finished_at": now_text(),
-            "counts": {
-                "eligible": 1, "succeeded": 0, "errors": 1,
-                "ingested": 0, "transitions": 0,
-            },
-            "initiatives": [{"initiative_id": initiative_id, "error": error}],
-        }
-
-    def test_tick_error_prints_once_and_reprints_only_when_the_text_changes(self) -> None:
-        initiative_id = "11111111-1111-4111-8111-111111111111"
-        first = "StoreError: result ingestion listing is unreadable"
-        changed = "StoreError: outbox path vanished"
-        output = StringIO()
-
-        self.drive_ticks([
-            self.errored_tick(initiative_id, first),
-            self.errored_tick(initiative_id, first),
-            self.errored_tick(initiative_id, changed),
-        ], output)
-
-        lines = [
-            line for line in output.getvalue().splitlines() if initiative_id in line
-        ]
-        self.assertEqual(len(lines), 2)
-        self.assertIn(first, lines[0])
-        self.assertIn(changed, lines[1])
-
-    def test_recovered_initiative_reprints_a_recurrence_of_the_same_error(self) -> None:
-        initiative_id = "22222222-2222-4222-8222-222222222222"
-        error = "StoreError: result ingestion listing is unreadable"
-        clean = {
-            "finished_at": now_text(),
-            "counts": {
-                "eligible": 1, "succeeded": 1, "errors": 0,
-                "ingested": 0, "transitions": 0,
-            },
-            "initiatives": [{"initiative_id": initiative_id, "error": None}],
-        }
-        output = StringIO()
-
-        self.drive_ticks([
-            self.errored_tick(initiative_id, error), clean,
-            self.errored_tick(initiative_id, error),
-        ], output)
-
-        lines = [
-            line for line in output.getvalue().splitlines() if initiative_id in line
-        ]
-        self.assertEqual(len(lines), 2)
-
-    def test_failing_error_print_does_not_end_the_sweep_or_skip_the_status_write(
-        self,
-    ) -> None:
-        initiative_id = "33333333-3333-4333-8333-333333333333"
-        output = StringIO()
-
-        with mock.patch(
-            "lib.control.supervisor_service._emit_tick_errors",
-            side_effect=RuntimeError("stdout is gone"),
-        ):
-            self.drive_ticks([self.errored_tick(initiative_id, "boom")], output)
-
-        self.assertIsNotNone(json.loads(status_path(self.config.control).read_text())["last_tick_at"])
+    def test_a_failed_owner_start_is_counted_and_reported_without_ending_the_sweep(self) -> None:
+        stderr = StringIO()
+        with mock.patch("lib.control.sessions.ensure_owners",
+                        side_effect=StoreError("managed state unreadable")), \
+                contextlib.redirect_stderr(stderr):
+            summary = sweep(self.config)
+        self.assertEqual(summary["counts"]["errors"], 1)
+        self.assertIn("managed state unreadable", summary["counts"]["managed_error"])
+        self.assertIn("managed session delivery unavailable", stderr.getvalue())
 
     def test_second_run_refuses_while_another_process_holds_the_flock(self) -> None:
-        path = supervisor_lock_path(self.config.control)
+        path = supervisor_lock_path(self.config)
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         program = (
             "import fcntl,os,signal,sys\n"
@@ -766,7 +158,7 @@ class SupervisorProcessTests(ExecutionFixture, unittest.TestCase):
         self.assertIsNotNone(identity)
         child.terminate()
         child.wait(timeout=5)
-        path = status_path(self.config.control)
+        path = status_path(self.config)
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         path.write_text(json.dumps({
             "pid": child.pid,
@@ -847,7 +239,6 @@ class SupervisorServiceTests(unittest.TestCase):
         Path(self.env["XDG_RUNTIME_DIR"]).mkdir(mode=0o700)
         Path(self.env["XDG_RUNTIME_DIR"]).chmod(0o700)
         self.asha_root = Path("/opt/asha")
-        from lib.control.orchestration.config import load_config
         self.config = load_config(self.env)
         self.calls: list[list[str]] = []
 
@@ -1016,7 +407,7 @@ class SupervisorServiceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "foreign unit"):
             install_supervisor_service(
-                self.config.control, self.env, asha_root=self.asha_root,
+                self.config, self.env, asha_root=self.asha_root,
                 runner=self.runner, which=self.which,
             )
         self.assertEqual(path.read_text(encoding="utf-8"), "[Unit]\nDescription=foreign\n")
@@ -1034,7 +425,7 @@ class SupervisorServiceTests(unittest.TestCase):
             return_value=False,
         ):
             payload, code = install_supervisor_service(
-                self.config.control, self.env, asha_root=self.asha_root,
+                self.config, self.env, asha_root=self.asha_root,
                 runner=self.runner, which=self.which,
             )
 
@@ -1063,7 +454,7 @@ class SupervisorServiceTests(unittest.TestCase):
             return_value=False,
         ):
             install_supervisor_service(
-                self.config.control, self.env, asha_root=self.asha_root,
+                self.config, self.env, asha_root=self.asha_root,
                 runner=runner, which=self.which,
             )
 
@@ -1087,7 +478,7 @@ class SupervisorServiceTests(unittest.TestCase):
             return_value=True,
         ):
             value, code = install_supervisor_service(
-                self.config.control, self.env, asha_root=self.asha_root,
+                self.config, self.env, asha_root=self.asha_root,
                 runner=self.runner, which=self.which,
             )
             self.assertEqual(code, 2)
@@ -1127,7 +518,7 @@ class SupervisorServiceTests(unittest.TestCase):
             "lib.control.supervisor_service.stop_supervisor",
         ) as stop:
             payload, code = install_supervisor_service(
-                self.config.control, self.env, asha_root=self.asha_root, dry_run=True,
+                self.config, self.env, asha_root=self.asha_root, dry_run=True,
                 runner=self.runner, which=self.which,
             )
 
@@ -1218,66 +609,15 @@ class SupervisorServiceTests(unittest.TestCase):
         )
 
 
-class JjExecutablePinTests(unittest.TestCase):
-    def test_adapter_prefers_explicit_executable_then_asha_jj_then_bare_name(self) -> None:
-        with mock.patch.dict(os.environ, {"ASHA_JJ": "/pinned/bin/jj"}):
-            self.assertEqual(JjAdapter().executable, "/pinned/bin/jj")
-            self.assertEqual(
-                JjAdapter(executable="/explicit/jj").executable, "/explicit/jj",
-            )
-        environment = {
-            key: value for key, value in os.environ.items() if key != "ASHA_JJ"
-        }
-        with mock.patch.dict(os.environ, environment, clear=True):
-            self.assertEqual(JjAdapter().executable, "jj")
-
-
-class SupervisorBoundaryTests(unittest.TestCase):
-    def test_supervisor_has_no_hitl_authority_surface(self) -> None:
-        import lib.control.orchestration.supervisor as supervisor
-
-        forbidden = {
-            "submit_action", "approve_plan", "approve_salvage",
-            "record_integration", "archive", "finalize",
-        }
-        self.assertTrue(forbidden.isdisjoint(supervisor.__dict__))
-        source = Path(supervisor.__file__).read_text()
-        tree = ast.parse(source)
-        imported = {
-            alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.ImportFrom)
-            for alias in node.names
-        }
-        self.assertTrue(forbidden.isdisjoint(imported))
-        tick_node = next(
-            node for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "tick"
-        )
-        dependency_calls = {
-            node.func.attr
-            for node in ast.walk(tick_node)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "deps"
-        }
-        self.assertEqual(
-            dependency_calls,
-            {"store_factory", "now", "reconcile", "ingest", "list_initiatives"},
-        )
-
-
 if __name__ == "__main__":
     unittest.main()
 
 
-class ReadOnlyObservationTests(ExecutionFixture, unittest.TestCase):
-    start_running = False
+class ReadOnlyObservationTests(ControlFixture, unittest.TestCase):
 
     def retained(self):
         from lib.control import supervisor_service as daemon
-        daemon._write_status(self.config.control, {
+        daemon._write_status(self.config, {
             "pid": os.getpid(), "process_identity": process_identity(os.getpid()),
             "started_at": now_text(), "last_tick_at": None, "last_tick_summary": None,
         })
@@ -1296,10 +636,10 @@ class ReadOnlyObservationTests(ExecutionFixture, unittest.TestCase):
                     raise OSError(errno.EROFS, "Read-only file system")
             return real_open(path, flags, *args, **kwargs)
 
-        with daemon._exclusive_lock(self.config.control) as held:
+        with daemon._exclusive_lock(self.config) as held:
             self.assertTrue(held)
             with mock.patch.object(daemon.os, "open", side_effect=readonly):
-                value, code = daemon.supervisor_status(self.config.control)
+                value, code = daemon.supervisor_status(self.config)
         self.assertEqual(code, 0)
         self.assertEqual(value["status"], "running")
         self.assertTrue(value["lock_held"])
@@ -1319,31 +659,31 @@ class ReadOnlyObservationTests(ExecutionFixture, unittest.TestCase):
                     mock.patch.object(daemon.subprocess, "Popen") as spawn, \
                     mock.patch.object(daemon.os, "kill") as kill, \
                     mock.patch.object(daemon, "_write_service") as install:
-                value, code = daemon.supervisor_status(self.config.control)
+                value, code = daemon.supervisor_status(self.config)
                 self.assertEqual((value["status"], value["running"], code), ("unavailable", None, 2))
-                self.assertEqual(daemon.start_supervisor(self.config.control, self.env)[1], 2)
-                self.assertEqual(daemon.stop_supervisor(self.config.control)[1], 2)
-                self.assertEqual(daemon.install_supervisor_service(self.config.control, self.env)[1], 2)
+                self.assertEqual(daemon.start_supervisor(self.config, self.env)[1], 2)
+                self.assertEqual(daemon.stop_supervisor(self.config)[1], 2)
+                self.assertEqual(daemon.install_supervisor_service(self.config, self.env)[1], 2)
                 spawn.assert_not_called(); kill.assert_not_called(); install.assert_not_called()
         with mock.patch.object(daemon, "verify_process", side_effect=HarnessError("proc denied")):
-            self.assertEqual(daemon.supervisor_status(self.config.control)[1], 2)
+            self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
 
     def test_missing_status_or_invisible_pid_with_held_lock_is_not_stopped(self):
         from lib.control import supervisor_service as daemon
-        with daemon._exclusive_lock(self.config.control):
-            self.assertEqual(daemon.supervisor_status(self.config.control)[1], 2)
+        with daemon._exclusive_lock(self.config):
+            self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
             self.retained()
             with mock.patch.object(daemon, "verify_process", return_value=False):
-                self.assertEqual(daemon.supervisor_status(self.config.control)[1], 2)
-        self.assertEqual(daemon.supervisor_status(self.config.control)[1], 2)
+                self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
+        self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
         with mock.patch.object(daemon, "verify_process", return_value=False):
-            self.assertEqual(daemon.supervisor_status(self.config.control)[1], 1)
+            self.assertEqual(daemon.supervisor_status(self.config)[1], 1)
 
     def test_live_process_without_lock_never_authorizes_duplicate_start(self):
         from lib.control import supervisor_service as daemon
         self.retained()
         with mock.patch.object(daemon.subprocess, "Popen") as spawn:
-            value, code = daemon.start_supervisor(self.config.control, self.env)
+            value, code = daemon.start_supervisor(self.config, self.env)
         self.assertEqual((value["status"], code), ("unavailable", 2))
         spawn.assert_not_called()
 
@@ -1352,7 +692,7 @@ class ReadOnlyObservationTests(ExecutionFixture, unittest.TestCase):
         # private state against the trusted local user (threat model,
         # 2026-10-05); the flock and the process identity still decide.
         from lib.control import supervisor_service as daemon
-        config = self.config.control
+        config = self.config
         lock = daemon.supervisor_lock_path(config)
         lock.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         target = self.root / "elsewhere-lock"

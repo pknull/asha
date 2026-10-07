@@ -89,31 +89,17 @@ class RecordRegistry:
     def active_root_keys(self, c, states, *, limit=100):
         """Select root registry candidates through the state index before capping.
 
-        This is for single-scope root domains, not per-initiative child records.
+        This is for single-scope root domains, not per-scope child records.
         The caller still validates each selected record and its lifecycle.
         """
         ControlDatabase._limit(limit)
         known = {"tasks": ("creating", "running", "ended", "failed", "archived"),
                  "rooms": ("creating", "open", "ended")}.get(self.domain)
-        if self.domain == "initiatives":
-            from .orchestration.model import INITIATIVE_STATES
-            known = INITIATIVE_STATES
         if (self.scope != "registry" or not isinstance(states, (tuple, list))
                 or not 1 <= len(states) <= 32
                 or any(not isinstance(state, str) or not state or len(state) > 128 for state in states)
                 or len(set(states)) != len(states) or known is None or not set(states) <= set(known)):
             raise DatabaseError("invalid root activity states")
-        return self._state_keys(c, states, known, limit)
-
-    def activity_keys(self, c, states, *, limit=100):
-        """Per-initiative action records selected by scoped lifecycle index."""
-        from .orchestration.model import APPROVAL_STATES, ACTION_STATES
-        known = {"initiative.approvals": APPROVAL_STATES, "initiative.actions": ACTION_STATES}.get(self.domain)
-        ControlDatabase._limit(limit)
-        if (known is None or self.scope == "registry" or not isinstance(states, (tuple, list))
-                or not states or any(not isinstance(state, str) for state in states)
-                or len(states) != len(set(states)) or not set(states) <= set(known)):
-            raise DatabaseError("invalid initiative activity states")
         return self._state_keys(c, states, known, limit)
 
     def _state_keys(self, c, states, known, limit):

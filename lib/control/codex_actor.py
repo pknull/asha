@@ -1,6 +1,6 @@
 """Codex dynamic tools hosted by the fenced session owner, outside its sandbox.
 
-Only existing session/coordinator operations are exposed. Durable call receipts
+Only ``ask`` is exposed: it retains a question for the operator. Durable call receipts
 separate execution from reply transmission; an interrupted execution is inspected,
 never automatically repeated. One worker keeps provider I/O responsive.
 """
@@ -19,18 +19,11 @@ MAX_BYTES = 256 * 1024
 MAX_RECEIPT_BYTES = 1024 * 1024
 TOOL = {
     'type': 'function', 'name': 'asha_control',
-    'description': ('Operate this Asha session and its assigned initiative. ask retains a human question; '
-        'inspect reads head or paged records; propose_plan takes a plan object; action takes '
-        'action_class and payload. receive_message and ack_message take message_id; ack also '
-        'requires the exact digest from receive. Operator approvals and integration are unavailable.'),
+    'description': 'Ask the operator a question about this Asha session; ask retains it for a human answer.',
     'inputSchema': {'type': 'object', 'required': ['operation'], 'additionalProperties': False,
         'properties': {
-            'operation': {'type': 'string', 'enum': ['ask', 'inspect', 'propose_plan', 'action',
-                                                   'receive_message', 'ack_message']},
-            'question': {'type': 'string'}, 'kind': {'type': 'string'},
-            'offset': {'type': 'integer', 'minimum': 0}, 'limit': {'type': 'integer', 'minimum': 1, 'maximum': 100},
-            'plan': {'type': 'object'}, 'action_class': {'type': 'string'}, 'payload': {'type': 'object'},
-            'message_id': {'type': 'string'}, 'digest': {'type': 'string'}}},
+            'operation': {'type': 'string', 'enum': ['ask']},
+            'question': {'type': 'string'}}},
 }
 
 
@@ -157,74 +150,11 @@ class CodexActor:
             return result
 
     def _perform(self, sessions, session, key, args):
-        fields = {'ask': {'question'}, 'inspect': {'kind', 'offset', 'limit'}, 'propose_plan': {'plan'},
-                  'action': {'action_class', 'payload'}, 'receive_message': {'message_id'},
-                  'ack_message': {'message_id', 'digest'}}
         if not isinstance(args, dict) or not isinstance(args.get('operation'), str):
             raise StoreError('actor operation must be an object with an operation name')
-        operation = args['operation']
-        if operation not in fields or set(args) - fields[operation] - {'operation'}:
+        if args['operation'] != 'ask' or set(args) - {'operation', 'question'}:
             raise StoreError('unsupported actor operation or fields')
         with sessions.db.transaction() as c:
             self._active(sessions, c)
-        if operation == 'ask':
-            return sessions.request(self.sid, self.turn, args.get('question'), request_id=key,
-                                    generation=self.generation)
-        iid = session['initiative_id']
-        if iid is None:
-            raise StoreError('session has no assigned initiative')
-        from .orchestration.config import from_control
-        from .orchestration.store import InitiativeStore
-        from .orchestration import coordinator, messages
-        from .tmux import TmuxAdapter
-        store = InitiativeStore(from_control(self.config))
-        current = coordinator.require_live_coordinator(store, iid)
-        anchor = current['anchor']
-        if (anchor.get('kind') != 'managed-session-v1' or anchor.get('session_id') != self.sid
-                or anchor.get('generation') != self.generation):
-            raise StoreError('actor does not own this coordinator generation')
-        coordinator.require_anchored_caller(current, self.env, TmuxAdapter())
-        if operation == 'inspect':
-            return self._inspect(store, iid, current, args)
-        if operation in {'receive_message', 'ack_message'}:
-            fn = messages.receive if operation == 'receive_message' else messages.ack
-            extra = {'digest': args.get('digest')} if operation == 'ack_message' else {}
-            return fn(store, iid, args.get('message_id'), env=self.env, tmux=TmuxAdapter(),
-                      coordinator_id=current['coordinator_id'], generation=current['generation'], **extra)
-        if operation == 'propose_plan':
-            from .orchestration.cli import propose_plan
-            from .jj import JjAdapter
-            if not isinstance(args.get('plan'), dict):
-                raise StoreError('plan must be an object')
-            return propose_plan(store, store.peek(iid), args['plan'], config=store.config, jj=JjAdapter(),
-                                actor_kind='coordinator', actor_id=coordinator.actor_id(current))
-        from .orchestration.actions import COORDINATOR_ACTION_KINDS, build_action_document, submit_action
-        kind = args.get('action_class')
-        if not isinstance(kind, str) or kind not in COORDINATOR_ACTION_KINDS or not isinstance(args.get('payload'), dict):
-            raise StoreError('only coordinator action classes with object payloads are allowed')
-        document = build_action_document(store.peek(iid), kind, args['payload'], action_id=key,
-            actor_id=coordinator.actor_id(current), coordinator=current)
-        return submit_action(store, iid, document)
-
-    @staticmethod
-    def _inspect(store, iid, current, args):
-        from .orchestration import messages
-        kind = args.get('kind', 'head')
-        head = store.peek(iid)
-        if kind == 'head':
-            return {'initiative': head, 'coordinator': current,
-                    'active_plan': store.read_plan(iid, head['active_plan']['revision']) if head['active_plan'] else None}
-        readers = {'plans': store.list_plans_snapshot, 'nodes': store.list_nodes_snapshot,
-            'attempts': store.list_attempts_snapshot, 'actions': store.list_actions_snapshot,
-            'seals': store.list_seals_snapshot, 'reviews': store.list_reviews_snapshot,
-            'verifications': store.list_verifications_snapshot, 'events': store.list_events_snapshot,
-            'approvals': store.list_approvals_snapshot, 'evidence': store.list_evidence_snapshot,
-            'bundles': store.list_bundles_snapshot, 'results': store.list_results_snapshot}
-        if not isinstance(kind, str) or kind not in {*readers, 'messages'}:
-            raise StoreError('unsupported inspection kind')
-        offset, limit = args.get('offset', 0), args.get('limit', 20)
-        if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 100:
-            raise StoreError('invalid inspection page')
-        rows = messages.pending(store, iid, current=current)['messages'] if kind == 'messages' else readers[kind](iid)
-        return {'state_revision': head['state_revision'], 'records': rows[offset:offset + limit],
-                'next_offset': offset + limit if offset + limit < len(rows) else None}
+        return sessions.request(self.sid, self.turn, args.get('question'), request_id=key,
+                                generation=self.generation)

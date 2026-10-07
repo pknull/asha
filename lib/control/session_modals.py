@@ -24,7 +24,6 @@ from .text import (
     prompt_character_allowed as _shared_prompt_character_allowed,
     terminal_text_is_complete,
 )
-from .tmux import TmuxError
 from .tui_style import (
     BAD, DECORATION_PAIR, DECORATION_XTERM, GOOD, INERT, MACHINE, TIER_PAIR, TIER_XTERM, WAITING,
 )
@@ -997,20 +996,16 @@ def _popup_room_command(
 @_cursor_editor
 def _project_launch_form(
     stdscr, curses_module, model: ModalHost, config: ControlConfig,
-    env: Mapping[str, str], *, managed: bool = False, session: Mapping[str, Any] | None = None,
+    env: Mapping[str, str], *, session: Mapping[str, Any],
 ) -> str:
-    """Share project selection and keyboard ownership across the launch forms.
+    """The session dashboard's launch form (#102).
 
-    ``session`` selects the session dashboard's form (#102): Project, Harness,
-    Assignment (or Topic), then optional Model and Effort. Its ``launch``
-    callable receives the accepted values and returns the status message; a
-    refusal it raises stays on the form beside the field.
+    Project, Harness, Assignment (or Topic), then optional Model and Effort.
+    ``session['launch']`` receives the accepted values and returns the status
+    message; a refusal it raises stays on the form beside the field.
     """
     from .projects import list_projects_across, resolve_roots
-    from .rooms import (
-        RoomError, _room_name, open_room, resolve_project,
-        room_harness_available,
-    )
+    from .rooms import RoomError, resolve_project, room_harness_available
 
     roots, source = resolve_roots(env=env)
     payload = list_projects_across(roots, depth=3, source_of_roots=source)
@@ -1022,43 +1017,22 @@ def _project_launch_form(
         for item in payload["projects"]
         if item.get("asha_project") and item.get("project_id")
     )
-    from .session_harness import CAPABILITIES
-    from .managed_launch import launch_managed, harness_available
-    import uuid
-
-    launch_id = str(uuid.uuid4())
-    title = 'New initiative' if managed else 'Open Room'
-    subject = 'initiative' if managed else 'room'
-    if session:
-        title, subject = session['title'], 'session'
+    title, subject = session['title'], 'session'
     harness_candidates = _bounded_modal_candidates(
         ModalCandidate(name, "installed")
         for name in sorted(HARNESSES)
-        if (CAPABILITIES.get(name, {}).get("managed") and harness_available(name, env)
-            if managed else room_harness_available(name, env))
+        if room_harness_available(name, env)
     )
     if not harness_candidates:
         return f"{subject} launch refused: no supported harness is available"
 
-    fields = ("Project", "Room name", "Harness", "Opening prompt")
-    maximums = (4096, 120, 16, 4000)
-    values = [
-        project_candidates[0].value if project_candidates else "",
-        "", harness_candidates[0].value, "",
-    ]
-    if managed:
-        fields = ("Project", "Harness", "Assignment")
-        maximums = (4096, 16, 2000)
-        default_harness = next((item.value for item in harness_candidates if item.value == 'claude'), harness_candidates[0].value)
-        values = [values[0], default_harness, '']
-    if session:
-        fields = ("Project", "Harness", session['prompt_label'], "Model", "Effort")
-        maximums = (4096, 16, 4000, 256, 64)
-        default_harness = next((item.value for item in harness_candidates if item.value == 'claude'),
-                               harness_candidates[0].value)
-        values = [values[0], default_harness, '', '', '']
-    harness_field = 1 if managed or session else 2
-    prompt_field = 2 if session else len(fields) - 1
+    fields = ("Project", "Harness", session['prompt_label'], "Model", "Effort")
+    maximums = (4096, 16, 4000, 256, 64)
+    default_harness = next((item.value for item in harness_candidates if item.value == 'claude'),
+                           harness_candidates[0].value)
+    values = [project_candidates[0].value if project_candidates else "", default_harness, '', '', '']
+    harness_field = 1
+    prompt_field = 2
     field = 0
     selected: int | None = 0 if project_candidates else None
     form_notice = ""
@@ -1087,11 +1061,7 @@ def _project_launch_form(
                 context_lines.append(completed)
             if form_notice:
                 context_lines.append(f"Error beside {fields[field]}: {form_notice}")
-            context_lines.append(
-                session['hint'] if session else
-                "Assignments queue one managed session in the selected project." if managed else
-                "Rooms work directly in one initialized project's canonical checkout."
-            )
+            context_lines.append(session['hint'])
             frame = modal_frame(
                 title=title, context="\n".join(context_lines),
                 label=fields[field], hint="", value=values[field],
@@ -1108,7 +1078,7 @@ def _project_launch_form(
             continue
         form_notice = ""
         if key == 27:
-            return f"{subject} launch cancelled" if managed or session else "room open cancelled"
+            return f"{subject} launch cancelled"
         if key == getattr(curses_module, "KEY_BTAB", -994):
             if field:
                 field -= 1
@@ -1151,16 +1121,6 @@ def _project_launch_form(
                 except RoomError as exc:
                     canonical = None
                     form_notice = _safe_error(exc)
-            elif not managed and not session and field == 1:
-                if not accepted.strip():
-                    canonical = None
-                    form_notice = "Room name is required."
-                else:
-                    try:
-                        canonical, _slug = _room_name(accepted)
-                    except RoomError as exc:
-                        canonical = None
-                        form_notice = _safe_error(exc)
             elif field == harness_field:
                 canonical = _canonical_field_value(2, accepted, candidates)
                 if canonical is None:
@@ -1173,7 +1133,7 @@ def _project_launch_form(
                     f"{fields[prompt_field]} is required and must end with a complete "
                     "supported Unicode cluster."
                 )
-            elif session and field > prompt_field:
+            elif field > prompt_field:
                 # Model and effort are optional; blank keeps the harness default (#95).
                 canonical = accepted.strip()
             if canonical is None:
@@ -1181,7 +1141,7 @@ def _project_launch_form(
                 selected = None
                 continue
             values[field] = canonical
-            if session and field == len(fields) - 1:
+            if field == len(fields) - 1:
                 try:
                     return session['launch'](project=values[0], harness=values[1], prompt=values[2],
                                              model=values[3] or None, effort=values[4] or None)
@@ -1190,24 +1150,6 @@ def _project_launch_form(
                     model.message = form_notice
                     selected = None
                     continue
-            if managed and field == prompt_field:
-                try:
-                    launched = launch_managed(config, project=values[0], harness=values[1],
-                                              intent=canonical, env=env, launch_id=launch_id)
-                except (ValueError, OSError, StoreError) as exc:
-                    form_notice = _safe_error(exc)
-                    model.message = form_notice
-                    selected = None
-                    continue
-                from . import tui  # A legacy initiative launch; the dashboard never takes this branch.
-                refresh_notice = ''
-                try:
-                    tui._refresh_initiatives(model, env)
-                except Exception as exc:  # The assignment is already retained.
-                    refresh_notice = f'; display refresh unavailable: {_safe_error(exc)}'
-                return (f"Initiative {launched['initiative_id']} retained; session {launched['session_id']} "
-                        f"{launched['state']}; runtime {launched['admission']['mode']}. "
-                        f"{launched['supervisor']['message']}{refresh_notice}")
             field += 1
             selected = None
             continue
@@ -1223,27 +1165,10 @@ def _project_launch_form(
             character = key if isinstance(key, str) else chr(key)
             logical = list(values[field])
             if _prompt_character_allowed(logical, character):
-                if managed and field == prompt_field and len((values[field] + character).encode('utf-8')) > maximums[field]:
-                    form_notice = 'Assignment limit is 2000 UTF-8 bytes.'
-                    continue
                 values[field] += character
                 selected = None
 
-    from . import tui  # The legacy Room form; the dashboard's session form returns above.
-    project, name, harness, prompt = values
-    try:
-        launched = open_room(
-            name=name, project=project, harness=harness, prompt=prompt,
-            config=config, env=env, tmux=tui._coordinator_tmux(),
-            asha_root=tui._tui_asha_root(env),
-        )
-    except (RoomError, TmuxError, OSError, ValueError) as exc:
-        return f"room open refused: {_safe_error(exc)}"
-    tui._refresh_initiatives(model, env)
-    return (
-        f"Room {launched['name']} started detached in {launched['project_name']}; "
-        "select it and press Enter to attach"
-    )
+    return f"{subject} launch cancelled"
 
 
 def _select_managed_request(stdscr, curses_module, model, config):

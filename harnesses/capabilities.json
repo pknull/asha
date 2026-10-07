@@ -70,7 +70,7 @@
         "control-status": {
           "support": "partial",
           "surface": "SessionStart -> session-start; UserPromptSubmit -> prompt-submitted; PostToolUse -> tool-completed; PostToolUseFailure -> tool-completed; Stop -> turn-stopped; SessionEnd -> session-ended",
-          "verifier": "task doctor:harness-events + task doctor:hooks",
+          "verifier": "control doctor:hooks + tests:test-session-hub-hooks",
           "limitations": [
             "permission-requested is not claimed; Notification is multi-purpose and its payload is unverified"
           ]
@@ -216,7 +216,7 @@
         "control-status": {
           "support": "partial",
           "surface": "SessionStart -> session-start; UserPromptSubmit -> prompt-submitted; PostToolUse -> tool-completed; PermissionRequest -> permission-requested; Stop -> turn-stopped",
-          "verifier": "task doctor:harness-events + task doctor:hooks",
+          "verifier": "control doctor:hooks + tests:test-session-hub-hooks",
           "limitations": [
             "Some unified_exec shell calls are not intercepted",
             "PermissionRequest -> permission-requested and Stop -> turn-stopped are live-proven on Codex 0.147.0, but each newly rendered command remains subject to Codex's hash-bound interactive hook trust",
@@ -372,11 +372,11 @@
         },
         "control-status": {
           "support": "partial",
-          "surface": "hub sessions: hooks/asha-recovery.json sessionStart -> session-start; userPromptSubmitted -> prompt-submitted; postToolUse -> tool-completed; sessionEnd -> session-ended (via control-event.sh); Control tasks: process liveness only",
-          "verifier": "tests:test-install/test-doctor + python test_control_increment3.HarnessAdapterTests/LiveAdapterEvidenceTests",
+          "surface": "hub sessions: hooks/asha-recovery.json sessionStart -> session-start; userPromptSubmitted -> prompt-submitted; postToolUse -> tool-completed; sessionEnd -> session-ended (via control-event.sh)",
+          "verifier": "tests:test-install/test-doctor",
           "limitations": [
             "Rendered and tested against a fake asha only; not live-proven against a running Copilot",
-            "Only an ASHA_HUB_SESSION_ID environment reports; ASHA_CONTROL_MANAGED is cleared so Control tasks stay liveness-only",
+            "Only an ASHA_HUB_SESSION_ID environment reports",
             "Copilot has no turn-end hook: a finished turn stays working until the next event or the staleness rules; tool-started and permission-requested are not claimed; a finished report therefore never settles: it reads finished once the observation is stale, and a close asks and waits instead of closing at once",
             "Copilot has no Stop block seam, so hub close requests are queued-only"
           ]
@@ -520,11 +520,11 @@
         },
         "control-status": {
           "support": "partial",
-          "surface": "hub sessions: plugins/asha.js session.created -> session-start; tool.execute.before -> tool-started; tool.execute.after -> tool-completed; session.idle -> turn-stopped (via control-event.sh, asynchronous); Control tasks: process liveness only",
-          "verifier": "tests:test-opencode + python test_control_increment3.HarnessAdapterTests/LiveAdapterEvidenceTests",
+          "surface": "hub sessions: plugins/asha.js session.created -> session-start; tool.execute.before -> tool-started; tool.execute.after -> tool-completed; session.idle -> turn-stopped (via control-event.sh, asynchronous)",
+          "verifier": "tests:test-opencode",
           "limitations": [
             "Rendered and unit-tested against a mocked bridge only; not live-proven against a running OpenCode",
-            "Only root sessions inside an ASHA_HUB_SESSION_ID environment report; child sessions and Control tasks do not",
+            "Only root sessions inside an ASHA_HUB_SESSION_ID environment report; child sessions do not",
             "prompt-submitted, permission-requested and session-ended are not claimed",
             "session.idle reports a Stop with its guard set: OpenCode has no Stop block seam, so hub close requests are queued-only"
           ]

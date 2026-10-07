@@ -65,16 +65,6 @@ class RuntimeAdmissionTests(unittest.TestCase):
             self.assertEqual(store.get(sid)["state"], "stopped")
             self.assertEqual(store.snapshot(sid)["messages"][0]["state"], "cancelled")
 
-    def test_paused_runtime_refuses_worker_and_scheduler_launch_seams(self):
-        from lib.control.launch import launch_task
-        from lib.control.orchestration.scheduler import dispatch
-        from lib.control.orchestration.config import load_config as orchestration_config
-        set_admission(self.config, "paused")
-        with self.assertRaisesRegex(StoreError, "admission is paused"):
-            launch_task(self.config, {}, harness="claude")
-        with self.assertRaisesRegex(StoreError, "admission is paused"):
-            dispatch(Mock(), orchestration_config(self.env), "id", "node", action={})
-
     def test_cli_mutations_refuse_managed_actor_and_status_is_read_only(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
