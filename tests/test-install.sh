@@ -1161,6 +1161,31 @@ else
   fail "--force replaces a manifest-recorded generated skill directory (output: $(tail -5 <<<"${managed_out:-}"))"
 fi
 
+# ---------------------------------------------------------------------------
+# Test 12: the artifact stage file is created fresh, never at a guessable name
+# ---------------------------------------------------------------------------
+echo "--- test 12: artifact staging uses mktemp ---"
+stage_tmp="$SANDBOX/stage-tmp"
+mkdir -m 700 "$stage_tmp"
+stage_victim="$SANDBOX/stage-victim"
+printf 'must survive\n' > "$stage_victim"
+# A file planted at the old ${TMPDIR}/asha-artifacts-<h>-<pid>.jsonl name must
+# be neither followed nor truncated, and the stage must be a private new file.
+stage_out="$(TMPDIR="$stage_tmp" bash -c '
+  source "$1/lib/install.sh"
+  planted="$TMPDIR/asha-artifacts-codex-$$.jsonl"
+  ln -s "$2" "$planted"
+  asha_artifact_begin codex || exit $?
+  [[ "$ASHA_ARTIFACT_STAGE" != "$planted" && -f "$ASHA_ARTIFACT_STAGE" && ! -L "$ASHA_ARTIFACT_STAGE" ]] || exit 3
+  [[ "$(dirname "$ASHA_ARTIFACT_STAGE")" == "$TMPDIR" ]] || exit 4
+  python3 -c "import os,sys; sys.exit(os.stat(sys.argv[1]).st_mode & 0o077 != 0)" "$ASHA_ARTIFACT_STAGE" || exit 5
+' stage-test "$REPO_ROOT" "$stage_victim" 2>&1)" && stage_rc=0 || stage_rc=$?
+if [[ $stage_rc -eq 0 && "$(cat "$stage_victim")" == "must survive" ]]; then
+  ok "asha_artifact_begin stages in a fresh private file and never follows a planted name"
+else
+  fail "asha_artifact_begin stages in a fresh private file (rc=$stage_rc; victim: $(cat "$stage_victim"); output: $stage_out)"
+fi
+
 echo ""
 # Real finalizer boundaries, including the conditional context used by Codex.
 # Faults use test-owned filesystem permissions or failing I/O commands; no
@@ -1303,7 +1328,7 @@ class FinalizeTests(unittest.TestCase):
         self.assertEqual(len(matches), 1, p.stderr.decode())
         retained = pathlib.Path(os.fsdecode(matches[0]))
         self.addCleanup(shutil.rmtree, retained)
-        stages = list(retained.glob('asha-artifacts-codex-*.jsonl'))
+        stages = list(retained.glob('asha-artifacts-codex-*'))
         self.assertEqual(len(stages), 1)
         rows = [json.loads(line) for line in stages[0].read_text().splitlines()]
         self.assertTrue(any(row['type'] == 'codex-hooks-json' for row in rows))
