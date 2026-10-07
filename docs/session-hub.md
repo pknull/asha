@@ -125,8 +125,8 @@ ended legacy Room offers no attach. `a` handles the selected input request;
 terminal requests open the native harness. `n` starts a job and `o` a Room
 through the project launch form (Project, Harness, Assignment or Topic, then
 optional Model and Effort); `m` sends context, `s` stops, `x` closes gracefully,
-`X` force-closes, and `r` resumes. `M` filters input requests, `A` includes
-history, and `G` opens legacy workflows. `q` exits the dashboard and leaves work
+`X` force-closes, and `r` resumes. `M` filters input requests and `A` includes
+history. `q` exits the dashboard and leaves work
 running. The footer is one line naming the keys that matter for the selected
 row; `?` opens the full key sheet, which Up/Down pages through on a terminal too
 short to show it whole. A resize while the sheet is open keeps it open at its
@@ -248,8 +248,8 @@ service, background terminal scraping, or initiative lifecycle on this path
 (the preview reads only the selected row while it is shown).
 Launch, stop and resume serialize by session; a reused pane cannot be killed
 or attached as though it were the old session. Existing Room, task and
-initiative records remain intact. Their advanced UI is still available via
-`asha control --initiatives`.
+initiative records remain intact; the retired task and initiative records are
+read-only evidence ([Control](control.md)).
 
 ### Live preview (opt-in, off by default)
 

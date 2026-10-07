@@ -432,11 +432,11 @@ fi
 
 # ---------------------------------------------------------------------------
 echo "--- test 2e: a source skill missing from the install is named; install restores it ---"
-skill_link="$SANDBOX/.codex/skills/session-orchestrate-initiative"
+skill_link="$SANDBOX/.codex/skills/session-operate-control"
 if [[ -L "$skill_link" ]]; then
   unlink "$skill_link"
   out="$(run --target codex 2>&1 || true)"
-  if grep -q "installed skill symlinks missing (codex); run: asha install codex" <<<"$out" && grep -q "skills/orchestrate-initiative" <<<"$out"; then
+  if grep -q "installed skill symlinks missing (codex); run: asha install codex" <<<"$out" && grep -q "skills/operate-control" <<<"$out"; then
     ok "missing source skill FAILS --target codex and is named"
   else
     fail "missing source skill not reported: $(grep -i skill <<<"$out" | head -3)"
@@ -584,14 +584,14 @@ echo "--- test 6: claude home with one asha skill is audited; --fix links the re
 mkdir -p "$SANDBOX/.claude/skills"
 ln -sfn "$REPO_ROOT/plugins/session/skills/skill-creator" "$SANDBOX/.claude/skills/session-skill-creator"
 out="$(run --target claude 2>&1 || true)"
-if grep -q "installed skill symlinks missing (claude)" <<<"$out" && grep -q "skills/orchestrate-initiative" <<<"$out"; then
+if grep -q "installed skill symlinks missing (claude)" <<<"$out" && grep -q "skills/operate-control" <<<"$out"; then
   ok "partially installed claude home names the missing skills"
 else
   fail "claude missing-skill probe: $(grep -i skill <<<"$out" | head -3)"
 fi
 out="$(run --target claude --fix 2>&1 || true)"
-if grep -q "FIXED  linked missing skill: $SANDBOX/.claude/skills/session-orchestrate-initiative" <<<"$out" \
-   && [[ "$(readlink -f "$SANDBOX/.claude/skills/session-orchestrate-initiative")" == "$(readlink -f "$REPO_ROOT/plugins/session/skills/orchestrate-initiative")" ]]; then
+if grep -q "FIXED  linked missing skill: $SANDBOX/.claude/skills/session-operate-control" <<<"$out" \
+   && [[ "$(readlink -f "$SANDBOX/.claude/skills/session-operate-control")" == "$(readlink -f "$REPO_ROOT/plugins/session/skills/operate-control")" ]]; then
   ok "--fix links missing claude skills to their sources"
 else
   fail "--fix did not link claude skills: $(grep FIXED <<<"$out" | head -2)"

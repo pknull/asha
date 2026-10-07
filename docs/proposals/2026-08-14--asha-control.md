@@ -9,7 +9,8 @@ origin: Keeper design session after evaluating Workmux, ccsessionctl, and FleetV
 # Asha Control: terminal-native task supervision with tmux and jj
 
 > **Historical record — delivered and superseded as operating guidance.** The
-> design below is preserved as written. Use the current
+> design below is preserved as written; its task substrate was retired on
+> 2026-10-05 (subtraction step L-b). Use the current
 > [Asha Control guide](../control.md) for supported behavior.
 
 ## Status and authority

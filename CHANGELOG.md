@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased — subtraction L-b: the initiative engine, asha task and L3 staging retire (session 2.6.0)
+
+- The legacy initiative engine (`lib/control/orchestration/`), the `asha task`
+  substrate (jj task workspaces, tmux task runs, creation journals, the legacy
+  TUI) and the one-shot SQLite staging, activation and rollback machinery are
+  deleted (Keeper ruling K1, 2026-10-05): about 53,900 production and 61,300
+  test lines. Nothing migrates, deletes or resumes their records.
+- Their evidence stays in place. `asha initiative list|show [--json]` reads the
+  retired initiatives read-only, and `asha initiative export` writes every row
+  of the Control database's `records` table as JSON Lines with its stored
+  payload and digest. Every other `asha initiative` verb is refused.
+- `asha task` and `asha trigger` refuse by name; `asha control event`,
+  `asha control --initiatives`, `asha control registry` and the dashboard's `G`
+  key are gone. Control's doctor moves to `asha control doctor` without the
+  task-plane probes. The cockpit opens the chair beside the session dashboard.
+- The supervisor no longer runs an initiative tick: every 5 s it starts owners
+  for structured sessions with work, and it ignores the `orchestration` config
+  block. The Codex actor tool exposes only `ask`. Structured sessions no longer
+  bind to initiatives; one still bound is stopped. The `danger-full-access`
+  coordinator posture, the hub bridge's legacy `control event` branch and the
+  two coordinator policy rules are gone.
+- A dashboard prompt now repaints the dashboard's own live view behind it
+  instead of the retired legacy tree.
+- `control.workspace_trust` and `control.workspace_root` still parse; a
+  group-writable `ASHA_HOME` no longer refuses `asha migrate`.
+- The `orchestrate-initiative` skill, the operate-control advanced-workflow
+  reference, `docs/orchestration.md` and `docs/control-contracts.md` are
+  removed; `docs/control.md` now covers Rooms, the doctor, the cockpit, the
+  state layout and the retired evidence.
+- After landing: restart the supervisor once to unload the engine, and run
+  `asha install <target>` for each installed harness to prune the retired
+  skill's link.
+
 ## Unreleased — subtraction L-a1: live infrastructure leaves the engine (session 2.5.1)
 
 - The supervisor, the project index and the helpers live Control uses moved

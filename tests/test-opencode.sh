@@ -40,7 +40,7 @@ assert "uses native plural commands directory" '[[ -f "$OC1/commands/session-sav
 assert "uses native plural agents directory" '[[ -f "$OC1/agents/code-reviewer.md" ]]'
 assert "uses native plural plugins directory" '[[ -f "$OC1/plugins/asha.js" ]]'
 assert "does not emit obsolete singular directories" '[[ ! -e "$OC1/command" && ! -e "$OC1/agent" && ! -e "$OC1/plugin" ]]'
-assert "skill destination follows the shared namespace-directory name" '[[ -L "$OC1/skills/session-orchestrate-initiative" ]]'
+assert "skill destination follows the shared namespace-directory name" '[[ -L "$OC1/skills/session-operate-control" ]]'
 assert "rendered command has OpenCode frontmatter" 'head -3 "$OC1/commands/session-save.md" | grep -q "description:"'
 assert "rendered agent declares subagent mode" 'grep -q "^mode: subagent$" "$OC1/agents/code-reviewer.md"'
 assert "canonical character-template agent receives a valid OpenCode name" '[[ -f "$OC1/agents/rp-character-template.md" ]]'

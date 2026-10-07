@@ -1,6 +1,6 @@
 ---
 name: session-operate-control
-description: "Launch, inspect and steer project harness sessions from Asha's conversational chair. Use for independent jobs, ongoing project Rooms, short result-returning utilities, or session status and input handling. Legacy initiative workflows are an explicit advanced option."
+description: "Launch, inspect and steer project harness sessions from Asha's conversational chair. Use for independent jobs, ongoing project Rooms, short result-returning utilities, or session status and input handling."
 ---
 
 # Operate project sessions
@@ -200,13 +200,13 @@ and dashboard. A failed telemetry hook must not block native work.
   row drifts to `unknown`/"Inspect session". Check the process before treating
   it as stuck.
 
-## Advanced workflows
+## Retired initiatives
 
-Use initiatives only when the Keeper requests their staged workflow. Open
-`asha control --initiatives` (or press `G`) and read
-[the advanced workflow reference](references/advanced-workflows.md).
-Preserve its scoped authorities and records. Never automatically resume,
-migrate, replace or archive legacy work while launching ordinary jobs.
+The legacy initiative engine and `asha task` were retired on 2026-10-05. Their
+records are read-only evidence: `asha initiative list|show [--json]` reads
+them and `asha initiative export` writes every Control record as JSON Lines.
+Never migrate, resume or delete them; new staged work runs as workers and
+Rooms.
 
 ## Session experience evidence
 

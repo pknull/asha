@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 2.5.1
+**Version**: 2.6.0
 
 Compact explicit memory publication, bounded crash recovery, reviewed learning
 lifecycle, policy guardrails, guarded loops, and workspace management.
@@ -80,8 +80,7 @@ migration review is owned by `/session:consolidate`.
 | Skill | Role |
 |---|---|
 | `memory-maintenance` | Memory v2 schema, recovery, learnings, and migration rules |
-| `operate-control` | Run the Control plane from the operator's chair: launch fenced coordinators, sign on the Keeper's word, relay questions, prepare integration |
-| `orchestrate-initiative` | Run a bounded initiative as its coordinator from Asha's own tmux pane; approval stays with the Keeper's terminal |
+| `operate-control` | Launch, inspect and steer project sessions from the chair: jobs, Rooms, structured utilities, questions and results |
 | `skill-creator` | Create or update Codex-compatible skills |
 
 ## Hooks
@@ -135,6 +134,17 @@ for the repository; workspace state answers what coordinates the repositories.
   checks required by `AGENTS.md`.
 
 ## Version history
+
+### 2.6.0
+
+Retired with the legacy initiative engine (subtraction step L-b): the
+`orchestrate-initiative` skill, the `operate-control` advanced-workflow
+reference, the hub bridge's legacy `asha control event` branch (outside a hub
+session `control-event.sh` now answers `{}` and calls nothing), and the two
+coordinator policy rules (`coordinator-no-operator-approval`,
+`coordinator-no-authority-grant`). The `operate-control` skill points at the
+read-only `asha initiative list|show|export` evidence instead. Reinstall each
+harness (`asha install <target>`) to prune the retired skill's link.
 
 ### 2.5.1
 

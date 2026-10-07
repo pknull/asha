@@ -108,7 +108,7 @@ updates.
 
 ---
 
-## Control: Rooms, tasks, and initiatives
+## Control: sessions and Rooms
 
 The default `asha control` dashboard shows project harness sessions. Launch
 with `asha control session launch --project PROJECT --prompt ASSIGNMENT`,
@@ -117,63 +117,21 @@ for a Claude/Codex utility. Enter attaches, `a` opens input, `m` sends context,
 `x` closes, and `q` leaves work running. See the
 [session guide](docs/session-hub.md) for status and delivery semantics.
 
-### Advanced staged workflows
-
-`asha control --initiatives` retains the existing workflow surfaces over the same durable state root
-(`~/.asha/state/control/`): **Rooms** — persistent persona-bearing tmux
-conversations working directly in an initialized project's checkout;
-**tasks** — one persistent local container per
-piece of agent work (task record, jj workspace and change, detached tmux
-session, harness runs) — and **initiatives** — bounded orchestration
-lifecycles over those tasks (plan, approval, dispatch, seals, review,
-verification, integration, archive), run by a fenced per-initiative
-coordinator and advanced by a supervisor daemon.
-
-The authority split is one rule: **machines advance deterministic edges; only
-the operator signs.** Create, approve, activate, resume/decide, salvage,
-finalize, record-integration, and archive are operator acts; everything else
-progresses on its own.
-
-| Piece | What it is |
-|---|---|
-| **Rooms** | `asha room open\|list\|attach\|close` — detached, project-bound creative or exploratory sessions using Claude, Codex, Copilot, or OpenCode. Rooms create no workspace and never close for inactivity. |
-| **State store** | The only stateful thing. Write-once journals, CAS revisions, per-initiative locks. |
-| **Supervisor** | `asha control supervisor run\|start\|stop\|status` — the one long-lived controller process. Sweeps every non-terminal initiative on a clock: ingests staged worker results after terminal process evidence, reconciles, runs the result-grace path. Stateless (re-derives from the store each tick) and structurally unable to sign operator acts. |
-| **Advanced monitor** | `asha control --initiatives` — the initiative tree, workers, attention rows and staged workflow controls. The default session dashboard also opens it with `G`. |
-| **Coordinator** | One fenced LLM session per initiative (generation-fenced, pane-anchored). Proposes plans, dispatches within the approved envelope, asks questions. Never lifecycle authority. |
-| **Workers** | One sandboxed harness session per attempt in its own jj workspace. Stage results to a workspace outbox; the controller validates, snapshots, verifies, and publishes with provenance — workers never write the store. |
-
-Command surface, at a glance:
-
 | Command | Purpose |
 |---|---|
+| `asha control session launch\|list\|show\|attach\|send\|close\|stop\|resume …` | Launch and steer project sessions ([session guide](docs/session-hub.md)). |
 | `asha room open NAME --project PROJECT --harness H --prompt TEXT` | Start a Room detached in exactly one initialized Memory v2 project, selected by exact path or indexed name/ID. `list`, `attach`, and confirmed `close` manage it. |
-| `asha task start\|list\|show\|attach\|stop\|archive\|recover\|prune\|doctor …` | The task plane: create and manage persistent containers directly. |
-| `asha initiative create\|plan\|approve\|activate\|dispatch\|resume\|finalize\|record-integration\|archive …` | The orchestration plane: the full lifecycle, with `list`/`show`/`events`/`snapshot`/`reconcile` for inspection. |
-| `asha control` | The monitor TUI. `asha control supervisor …` manages the daemon; `event`/`tmux` are Control internals. |
-| `asha cockpit [DIR]` | A coordinator pane beside the Initiatives monitor. |
-| `asha trigger add\|list\|remove` | Scheduled coordinator launches (systemd user timers); fired runs wait at plan approval. |
+| `asha control projects` | List the projects a session or Room can launch in. |
+| `asha control doctor` | Check Control's dependencies, hooks and state. |
+| `asha control supervisor …` | Start owners for structured sessions; `install` manages its systemd user service ([managed sessions](docs/managed-sessions.md)). |
+| `asha cockpit [DIR]` | The chair beside the session dashboard in one tmux window. |
+| `asha initiative list\|show\|export` | Read the evidence of retired initiatives (read-only). |
 
-A staged workflow: you state an intent (explicit advanced chair request, advanced monitor `n`, or a
-trigger) → the coordinator proposes a plan → you approve and activate →
-workers attempt, results are ingested and sealed, review and verification
-gate the candidate → `ready-for-integration` → you land the diff yourself
-(Control has no merge authority) and `record-integration` advances the
-initiative to `integrated` → you archive. Install the systemd user service once
-and the blue edges advance whenever your user service manager is running:
-
-```bash
-asha control supervisor install
-```
-
-The advanced task plane requires a Git repository, tmux with popup support, an installed
-harness, and an initialized project (`/session:init`). The operating contract,
-state paths, prerequisites, evidence rules, and preservation guarantees live
-in the focused guides: **[docs/control.md](docs/control.md)** (task plane and
-TUI), **[docs/orchestration.md](docs/orchestration.md)** (initiative
-lifecycle, coordinator contract, JSON wrappers), and
-**[docs/control-contracts.md](docs/control-contracts.md)** (frozen v1
-contracts).
+The legacy initiative engine, the `asha task` substrate and `asha trigger` were
+retired on 2026-10-05. Their records stay in place as evidence and
+`asha initiative export` writes all of them; see
+**[docs/control.md](docs/control.md)** for Rooms, the doctor, the state layout
+and the retired evidence.
 
 ---
 
@@ -344,7 +302,7 @@ rules. They are not interchangeable:
 | Store | Scope | Default location | Commit policy | Typical content |
 |---|---|---|---|---|
 | **Global identity and learnings** | User, all projects | `~/.asha/` | Separate user-managed store | Identity, operation rules, preferences, candidate/active/retired learnings |
-| **Machine state** | This machine | `~/.asha/state/`, `~/.asha/workspaces/`, `~/.asha/cache/` | Never commit; machine-managed | Control/orchestration records, worker jj workspaces, rendered persona cache — everything under one `ASHA_HOME` root since the single-root migration |
+| **Machine state** | This machine | `~/.asha/state/`, `~/.asha/workspaces/`, `~/.asha/cache/` | Never commit; machine-managed | Control session, Room and retired-initiative records, retired task workspaces, rendered persona cache — everything under one `ASHA_HOME` root since the single-root migration |
 | **Repository operational memory** | One repository | `<repo>/Memory/` | Explicit save commit | Four-section handoff and current binding decisions |
 | **Workspace operational memory** | A group of repositories | `<workspace>/Memory/` | Explicit workspace-scope save | Cross-repository handoff and binding decisions |
 | **Private workspace memory** | User-local workspace material | `<workspace>/memory-local/` | Never commit | Private notes, work-item state, material not ready for shared review |
@@ -575,9 +533,9 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 
 **Documentation**:
 
-- Asha Control: [docs/control.md](docs/control.md); frozen v1 contracts:
-  [docs/control-contracts.md](docs/control-contracts.md)
-- Orchestration Core Increment 1: [docs/orchestration.md](docs/orchestration.md)
+- Asha Control: [docs/control.md](docs/control.md); sessions:
+  [docs/session-hub.md](docs/session-hub.md) and
+  [docs/managed-sessions.md](docs/managed-sessions.md)
 - Panel system: `plugins/panel/README.md`
 - Code workflows: `plugins/code/README.md`
 - Writing workflows: `plugins/write/README.md`
