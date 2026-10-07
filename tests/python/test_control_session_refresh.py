@@ -397,9 +397,9 @@ class RefresherTests(RefreshFixture):
         self.run_for(refresher, session_view.ViewModel(), 2 * session_refresh.SLOW_SECONDS + 0.3)
         self.assertEqual(self.pages, 3)
 
-    def test_the_refresh_path_never_reads_a_preview(self):
+    def test_the_refresh_path_never_captures_a_pane(self):
         source = Path(session_refresh.__file__).read_text()
-        for forbidden in ('pane_peek', 'session_preview', 'capture-pane', 'capture_pane'):
+        for forbidden in ('capture-pane', 'capture_pane'):
             self.assertNotIn(forbidden, source)
 
 

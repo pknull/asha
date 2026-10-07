@@ -2,12 +2,30 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any
 
 
 ZWJ = "\u200d"
 KEYCAP = "\u20e3"
+
+# ESC-introduced sequences: CSI, OSC (BEL or ST terminated, or cut off), the
+# DCS/SOS/PM/APC string family, tmux's ESC k title, and two-byte escapes; then
+# their 8-bit C1 forms. An unterminated string runs to the end of the text.
+_ESCAPES = re.compile(r"""
+    \x1b\[[0-?]*[ -/]*[@-~]?
+  | \x1b[\]PX^_k][^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)?
+  | \x1b[ -/]*[0-~]?
+  | \x9b[0-?]*[ -/]*[@-~]?
+  | [\x90\x98\x9d\x9e\x9f][^\x07\x1b\x9c]*(?:\x07|\x1b\\|\x9c)?
+""", re.VERBOSE)
+
+
+def sanitize(text: Any) -> str:
+    """Printable text only: escape sequences and control/format characters removed, tabs as a space."""
+    text = _ESCAPES.sub('', str(text)).replace('\t', ' ')
+    return ''.join(ch for ch in text if ch.isprintable() and unicodedata.category(ch) not in {'Cf', 'Cs'})
 
 
 def is_variation_selector(character: str) -> bool:

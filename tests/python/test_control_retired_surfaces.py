@@ -92,7 +92,7 @@ class RetiredSurfaceTests(unittest.TestCase):
 
     def test_dashboard_has_no_advanced_initiatives_key(self):
         from lib.control import session_keys, session_tui
-        sheet = "\n".join(session_keys.key_sheet(preview=True))
+        sheet = "\n".join(session_keys.key_sheet())
         self.assertNotIn("G workflows", sheet)
         self.assertNotIn("initiative", sheet.lower())
         self.assertNotIn("G workflows", session_keys.row_keys(None))
