@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased — subtraction L-a1: live infrastructure leaves the engine (session 2.5.1)
+
+- The supervisor, the project index and the helpers live Control uses moved
+  out of `lib/control/orchestration/` (`supervisor_service.py`, `projects.py`,
+  `text.py`, `tmux.py`, `session_store.py`), so the dashboard, Rooms, sessions
+  and `supervisor status` no longer load the initiative engine. The unit's
+  `asha control supervisor run` is unchanged and needs no reinstall; restart
+  the supervisor once to load the moved code.
+- The supervisor lock follows a symlink and no longer re-checks its inode
+  during observation (Keeper threat model, 2026-10-05). The flock and the
+  process-identity checks before any signal still decide.
+- A malformed `orchestration` block in `~/.asha/config.json` now refuses only
+  `supervisor run`, which still reads its tick interval there (and `start`,
+  which reports that run's exit). The other supervisor verbs, session launch
+  and `session quiesce` no longer parse it.
+- `asha control projects [--root DIR]... [--depth N] [--match TEXT] [--json]`
+  lists the projects a session can launch in, with the same JSON as `asha
+  initiative projects`; the `operate-control` skill now resolves projects
+  through it.
+
 ## Unreleased — subtraction B1: storage core trusts the local user
 
 - Control's shared storage helpers in `config.py`, `store.py` and
