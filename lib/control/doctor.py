@@ -426,15 +426,11 @@ def _managed_sessions_probe(config) -> Probe:
     try:
         from .database import ControlDatabase
         from .sessions import overview
-        from .session_ipc import capability_probe
         with ControlDatabase(config) as database:
             health = database.health()
         summary = overview(config)["summary"]
         if health["integrity"] != "ok" or health["relationships"] != "ok":
             return Probe("managed-sessions", "mismatch", "SQLite integrity check failed")
-        ipc = capability_probe()
-        if not ipc["supported"]:
-            return Probe("managed-sessions", "mismatch", _safe_detail("managed request IPC unavailable: " + ipc["reason"]))
         return Probe("managed-sessions", "match", _safe_detail(
             f"SQLite {health['sqlite_version']} schema {health['schema_version']}, WAL/FULL, FTS5; {summary}"))
     except (StoreError, OSError, ValueError) as exc:

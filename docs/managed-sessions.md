@@ -118,14 +118,14 @@ Managed actors cannot sign operator actions or answer their own questions.
 The managed agent asks a clarification with
 `asha control session ask --question 'Question' --json`, then finishes its turn.
 The client sends a typed request to the owner's private Unix endpoint; it does
-not open SQLite. The owner checks Linux peer credentials, a peer process handle,
-ancestry, retained generation and the active turn before committing the question.
-Environment labels only select the endpoint. `session doctor` probes the required
-kernel support; a sandbox that hides the necessary process identity is refused.
-The owner services requests in a bounded I/O thread while the harness waits on
-its tool process. Frames and deadlines are bounded, database contention gets at
-most three exact-ID client attempts, and lost replies do not discard committed
-questions. Operator answers are unavailable over this actor channel.
+not open SQLite. The endpoint accepts only `ask`. The owner checks the request's
+session, retained generation and active turn before committing the question;
+it does not inspect the peer process, because the local user is trusted.
+Environment labels only select the endpoint. The owner services requests in a
+bounded I/O thread while the harness waits on its tool process. Frames and
+deadlines are bounded, database contention gets at most three exact-ID client
+attempts, and lost replies do not discard committed questions. Operator answers
+are unavailable over this actor channel.
 
 A recorded answer queues exactly one follow-up. Control displays the same
 summary, and the dashboard's `a` answers the selected session's pending
@@ -137,9 +137,9 @@ turn, generation and digest. Press **a** to allow that invocation, **d** to deny
 or **Esc** to leave it pending. CLI callers inspect `session request` and use
 `session permission` with the inspected digest. A decision is sent back to the
 waiting native process in the same turn; it does not enqueue a model message or
-create a persistent permission rule. The operator CLI refuses managed role labels
-and owner descendants, and refuses incomplete ancestry inspection; this has the
-same-user limits described below.
+create a persistent permission rule. The operator CLI refuses managed role labels,
+the worker profile and non-chair sessions on a sandboxed harness; it does not
+inspect process ancestry. This has the same-user limits described below.
 Cancellation or owner loss withdraws pending requests. A lost response remains
 uncertain and is never replayed automatically; `submitted` means the complete
 response was written, not that the tool executed. A later provider cancellation
@@ -484,12 +484,10 @@ empty recovery root. Read-only inspection accepts a restored
 database's DELETE journal mode without converting it. Writable connections require
 WAL. Backups cannot use the source database's own main or sidecar filenames.
 
-The role checks protect the validated CLI. They are not an OS security boundary
-against arbitrary code running as the same user and modifying the database or
-state files directly. Deliberately detached and reparented same-user processes
-also fall outside the descendant proof. A controlling terminal or a shared user
-cgroup would not establish a separate principal. Harness sandbox and execution
-policy remain necessary.
+The role checks protect the validated CLI. They read environment labels only and
+are not an OS security boundary against arbitrary code running as the same user,
+which is trusted (threat model, 2026-10-05). A sandboxed agent cannot write
+Control state; harness sandbox and execution policy remain necessary.
 
 ## Native workflow acceptance
 

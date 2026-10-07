@@ -102,18 +102,15 @@ class SessionIPCTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["question"], "A child asks?")
 
-    def test_peer_proof_is_required_even_with_correct_labels(self):
-        with self.server(), patch("lib.control.session_ipc.caller_descends_from", return_value=False):
-            with self.assertRaises(StoreError):
-                self.ask()
-        self.assertEqual(self.store.snapshot(self.sid)["requests"], [])
-
     def test_endpoint_is_private_and_never_replaces_existing_listener(self):
         with self.server() as first:
             self.assertEqual(first.path.stat().st_mode & 0o777, 0o600)
             with self.assertRaises(StoreError):
                 with self.server():
                     pass
+            # The client trusts the local user: it does not re-check the
+            # endpoint's mode or owner (threat model, 2026-10-05).
+            first.path.chmod(0o660)
             self.assertEqual(self.ask()["question"], "Which chapter?")
 
     def connect(self, server):
@@ -184,46 +181,6 @@ class SessionIPCTests(unittest.TestCase):
             server.close()
             self.assertLess(time.monotonic() - started, 2)
 
-    def test_missing_kernel_peer_proof_is_explicit_and_does_not_launch(self):
-        with patch("lib.control.session_ipc.capability_probe", return_value={"supported": False, "reason": "peer pidfd unavailable"}):
-            with self.assertRaisesRegex(StoreError, "peer pidfd unavailable"):
-                with self.server():
-                    pass
-        self.assertEqual(self.store.snapshot(self.sid)["requests"], [])
-
-    def test_real_unrelated_peer_cannot_impersonate_an_actor(self):
-        second = self.store.create(cwd=str(self.root), prompt="Other owned session")["session_id"]
-        ready = self.root / "ready.json"
-        stop = self.root / "stop"
-        code = (
-            "import sys,json,time; from pathlib import Path; from lib.control.config import load_config; "
-            "from lib.control.session_store import SessionStore; from lib.control.session_ipc import SessionRequestServer; "
-            "config=load_config(); sid=sys.argv[1]; store=SessionStore(config); owner=store.claim_owner(sid); "
-            "turn=store.claim_turn(sid,owner['generation'])['turn_id']; "
-            "server=SessionRequestServer(config,sid,owner['generation'],turn).__enter__(); "
-            "Path(sys.argv[2]).write_text(json.dumps({'turn':turn,'generation':owner['generation']})); "
-            "\nwhile not Path(sys.argv[3]).exists(): time.sleep(0.02)\nserver.close(); store.close()"
-        )
-        child = subprocess.Popen([sys.executable, "-c", code, second, str(ready), str(stop)],
-            env={**os.environ, **self.env}, cwd=Path(__file__).resolve().parents[2])
-        try:
-            until = time.monotonic() + 5
-            while not ready.exists() and child.poll() is None and time.monotonic() < until:
-                time.sleep(0.02)
-            self.assertTrue(ready.exists())
-            values = json.loads(ready.read_text())
-            with self.assertRaisesRegex(StoreError, "ancestry"):
-                request_question(self.config, session_id=second, generation=values["generation"],
-                    turn_id=values["turn"], question="Not a child of that owner")
-            self.assertEqual(self.store.snapshot(second)["requests"], [])
-        finally:
-            stop.touch()
-            try:
-                child.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                child.kill()
-                child.wait(timeout=3)
-
     def test_busy_write_retries_same_request_without_killing_turn(self):
         from lib.control.sessions import run_turn
         original = SessionStore.request
@@ -293,12 +250,17 @@ class SessionIPCTests(unittest.TestCase):
             if timer.ident:
                 timer.join(3)
 
-    def test_unobservable_peer_pid_returns_refusal_and_keeps_server_usable(self):
-        with self.server() as server:
-            with patch("lib.control.session_ipc._peer", side_effect=lambda _connection: (0, os.geteuid(), os.pidfd_open(os.getpid()))):
-                response = self.raw(server, self.wire_request())
-            self.assertFalse(response["ok"])
+    def test_requests_need_no_peer_credentials_and_only_ask_is_served(self):
+        # Neither end reads peer credentials, a peer pidfd or process ancestry;
+        # the endpoint confers only `ask`, so any new kind needs a security review.
+        def unavailable(*_args, **_kwargs):
+            raise OSError("peer credentials unavailable")
+        with self.server() as server, patch.object(socket.socket, "getsockopt", unavailable):
+            for kind in ("answer", "permission", "send", "stop", "close", "launch", "report", "handoff"):
+                with self.subTest(kind=kind):
+                    self.assertFalse(self.raw(server, self.wire_request(kind=kind))["ok"])
             server.check()
+            self.assertEqual(self.store.snapshot(self.sid)["requests"], [])
             self.assertEqual(self.ask()["kind"], "clarification")
 
     def test_error_reply_still_arrives_after_a_lost_success_reply(self):

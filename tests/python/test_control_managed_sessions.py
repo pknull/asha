@@ -50,6 +50,13 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(report['codex_actor']['tool'], 'asha_control')
         self.assertTrue(report['codex_actor']['experimental'])
 
+    def test_owner_anchor_rests_on_the_retained_process_identity_not_the_proc_uid(self):
+        from unittest import mock
+        from lib.control.session_store import anchor_for, verify_anchor
+        anchor = anchor_for(self.config.tasks_dir.parent, self.store.get(self.sid))
+        with mock.patch("lib.control.session_store.os.geteuid", return_value=os.geteuid() + 1):
+            self.assertEqual(verify_anchor(anchor)["session_id"], self.sid)
+
     def test_duplicate_custody_is_idempotent_but_changed_content_conflicts(self):
         one = self.store.enqueue(self.sid, "next", key="same")
         self.assertEqual(one, self.store.enqueue(self.sid, "next", key="same"))

@@ -47,6 +47,16 @@ class CodexActorTests(unittest.TestCase):
         with self.assertRaisesRegex(StoreError, 'changed'):
             self.actor.execute('call-1', {**args, 'question': 'Different?'})
 
+    def test_tool_exposes_exactly_the_ask_operation(self):
+        # The actor tool runs outside the Codex sandbox; a new operation needs a
+        # security review before this pin changes (subtraction B5).
+        from lib.control.codex_actor import TOOL
+        schema = TOOL['inputSchema']
+        self.assertEqual(TOOL['name'], 'asha_control')
+        self.assertEqual(schema['properties']['operation']['enum'], ['ask'])
+        self.assertEqual(set(schema['properties']), {'operation', 'question'})
+        self.assertIs(schema['additionalProperties'], False)
+
     def test_foreign_selectors_and_every_operation_but_ask_are_refused(self):
         for args in ({'operation': 'ask', 'question': 'Q', 'session_id': 'foreign'},
                      {'operation': 'inspect', 'kind': 'head'},

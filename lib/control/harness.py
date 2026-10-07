@@ -134,13 +134,12 @@ def verify_process(pid: int, expected_identity: str) -> bool:
 
 def caller_descends_from(
     ancestor_pid: int, *, start_pid: int | None = None, limit: int = 64,
-    require_complete: bool = False,
 ) -> bool:
     """True when the calling process has ``ancestor_pid`` in its parent chain.
 
     Walks ``/proc`` parent links from ``start_pid`` (default: this process) for
-    at most ``limit`` hops. Negative authorization checks must require a complete
-    walk: disappearing links, cycles and exhausted bounds are then errors.
+    at most ``limit`` hops. A positive proof only: disappearing links, cycles and
+    exhausted bounds answer False.
     """
     ancestor_pid = _validate_pid(ancestor_pid)
     pid = os.getpid() if start_pid is None else _validate_pid(start_pid)
@@ -149,18 +148,10 @@ def caller_descends_from(
             return True
         fields = _process_stat_fields(pid)
         if fields is None:
-            if require_complete:
-                raise HarnessError("process ancestry is unavailable")
             return False
         parent = _stat_integer(fields, 1)
-        if parent == pid:
-            if require_complete:
-                raise HarnessError("process ancestry contains a cycle")
-            return False
-        if parent <= 1:
+        if parent == pid or parent <= 1:
             return False
         pid = parent
-    if require_complete:
-        raise HarnessError("process ancestry exceeds the inspection limit")
     return False
 
