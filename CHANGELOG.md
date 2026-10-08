@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased — post-subtraction parity fixes (session 2.9.3)
+
+- Structured owners start in an isolated interpreter (parity P1): `python3 -B
+  -I -c` with a bootstrap that imports Control only from the checkout's
+  `lib/`, the router's pattern, instead of `python -m lib.control.sessions`.
+  The caller's `PYTHON*` startup variables are scrubbed from the owner's
+  environment, and so from its harness. A `PYTHONPATH` pointing into a
+  project a sandboxed agent can write no longer runs that project's code in
+  the owner, which holds the operator's authority outside the sandbox.
+  `tests/test-control.sh` (router import isolation) now runs in
+  `tests/run-tests.sh` as Suite 26.
+- A bulk owner start (`session list`, `session admission resume`) walks
+  every eligible session in bounded keyset pages instead of the first 100,
+  so sessions behind a page of live owners or launch backoffs are started,
+  and stop intent completes for every ownerless session (parity P2).
+- `harnesses/capabilities.json`, `CLAUDE.md` and `README.md` name Codex's
+  owned `hooks.json` as its hook surface; native `config.toml` keeps only the
+  hooks feature flag and hook trust (parity P3). A new install contract test
+  fails when a declared hook or guardrail surface is not a file the adapter
+  writes.
+- Current guidance no longer offers retired workflows (parity P4):
+  `INSTALLER.md` drops `asha task`, its `jj` requirement and `--pr`/`--issue`
+  modes; the Session README drops legacy-store migration and the migration
+  completion marker; `session quiesce` no longer claims to stop a scheduler;
+  Control doctor's `gh` probe no longer names task source modes.
+- After landing: restart any long-running `asha control` dashboard so its
+  owner starts use the new bootstrap. No harness reinstall is needed; no
+  installed primitive changed.
+
 ## Unreleased — subtraction N1: structured owners start on demand; the supervisor retires (session 2.9.2)
 
 - The `asha-supervisor` daemon is gone (Keeper value call N1, 2026-10-07): its
