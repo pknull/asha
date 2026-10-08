@@ -299,6 +299,28 @@ def _launch_owner(config, sid, env):
             os.close(logfd)
 
 
+_OWNER_PAGE = 100
+
+
+def _each_session(store, where, arguments):
+    """Every managed session matching ``where``, read one bounded page at a time.
+
+    Keyset order (created_at, session_id) visits each row once even while the
+    caller changes rows between pages; no transaction spans a page boundary.
+    """
+    after = ()
+    while True:
+        keyset = " AND (s.created_at > ? OR (s.created_at = ? AND s.session_id > ?))" if after else ""
+        with store.db.transaction() as c:
+            page = [dict(r) for r in c.execute(
+                "SELECT * FROM managed_sessions s WHERE " + where + keyset
+                + " ORDER BY s.created_at, s.session_id LIMIT ?", (*arguments, *after, _OWNER_PAGE))]
+        yield from page
+        if len(page) < _OWNER_PAGE:
+            return
+        after = (page[-1]["created_at"], page[-1]["created_at"], page[-1]["session_id"])
+
+
 def ensure_owners(config, *, env=None, session_id=None):
     """Start a detached owner for each structured session with work and no live owner.
 
@@ -328,35 +350,34 @@ def ensure_owners(config, *, env=None, session_id=None):
         store = SessionStore(config)
     except SessionsUninitialized:
         return {"managed_sessions": 0, "owners_started": 0}
-    scope, arguments = ("", ()) if session_id is None else (" AND session_id=?", (session_id,))
+    # A bulk call walks every matching session in pages (parity P2): live
+    # owners and launch backoff are filtered per row, so a full first page of
+    # them never hides the sessions behind it, and nothing else would sweep.
+    scope, arguments = ("", ()) if session_id is None else (" AND s.session_id=?", (session_id,))
+    considered = 0
     with store:
         with store.db.transaction() as c:
             from .runtime import read_policy
             mode = read_policy(c)["mode"]
-        with store.db.transaction() as c:
-            stopping = c.execute("SELECT session_id FROM managed_sessions WHERE stop_requested=1 AND state!='stopped'"
-                                 + scope + " LIMIT 100", arguments).fetchall()
-        for row in stopping:
-            store.stop(row[0])  # Completes stop intent if the previous owner died.
+        for row in _each_session(store, "s.stop_requested=1 AND s.state!='stopped'" + scope, arguments):
+            store.stop(row["session_id"])  # Completes stop intent if the previous owner died.
         if mode != "running":
             return {"managed_sessions": 0, "owners_started": 0, "admission": mode}
         # A lost owner's running turn needs a new owner to reconcile it; queued
         # input behind an open question waits for its answer, not an owner.
-        with store.db.transaction() as c:
-            rows = [dict(r) for r in c.execute("""SELECT * FROM managed_sessions s
-                WHERE state IN ('queued','idle','running','waiting-input') AND stop_requested=0
-                AND initiative_id IS NULL AND (state='running' OR (EXISTS (
-                    SELECT 1 FROM session_messages m WHERE m.session_id=s.session_id AND m.state='queued')
-                    AND NOT EXISTS (SELECT 1 FROM session_requests r WHERE r.session_id=s.session_id AND r.state='pending')))"""
-                + scope + " ORDER BY created_at LIMIT 100", arguments)]
-        for session in rows:
+        eligible = """s.state IN ('queued','idle','running','waiting-input') AND s.stop_requested=0
+            AND s.initiative_id IS NULL AND (s.state='running' OR (EXISTS (
+                SELECT 1 FROM session_messages m WHERE m.session_id=s.session_id AND m.state='queued')
+                AND NOT EXISTS (SELECT 1 FROM session_requests r WHERE r.session_id=s.session_id AND r.state='pending')))"""
+        for session in _each_session(store, eligible + scope, arguments):
+            considered += 1
             if session["owner_pid"] and process_live(session["owner_pid"], session["owner_identity"]):
                 continue
             if not store.reserve_owner_launch(session["session_id"]):
                 continue
             _launch_owner(config, session["session_id"], values)
             started += 1
-    return {"managed_sessions": len(rows), "owners_started": started}
+    return {"managed_sessions": considered, "owners_started": started}
 
 
 def wake(config, session_id=None, *, env=None):

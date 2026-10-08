@@ -291,6 +291,63 @@ class RecoveryTests(OwnerStartFixture):
         self.assertEqual(self.owner_launches(), [row['session_id']])
 
 
+class BulkOwnerStartTests(OwnerStartFixture):
+    """One bulk call considers every eligible session, not only a first page (parity P2)."""
+
+    def many(self, count, **columns):
+        """``count`` raw structured sessions in a fixed created_at order."""
+        from lib.control.session_store import SessionStore
+        base = time.time() - 10_000
+        with SessionStore(self.config, create=True) as sessions:
+            sids = [sessions.create(cwd=str(self.project), prompt=f'Job {i}')['session_id'] for i in range(count)]
+            with sessions.db.transaction(write=True) as c:
+                for index, sid in enumerate(sids):
+                    values = dict(created_at=base + index, **columns)
+                    c.execute('UPDATE managed_sessions SET ' + ','.join(k + '=?' for k in values)
+                              + ' WHERE session_id=?', (*values.values(), sid))
+        return sids
+
+    def set_columns(self, sids, **columns):
+        from lib.control.session_store import SessionStore
+        with SessionStore(self.config) as sessions, sessions.db.transaction(write=True) as c:
+            for sid in sids:
+                c.execute('UPDATE managed_sessions SET ' + ','.join(k + '=?' for k in columns)
+                          + ' WHERE session_id=?', (*columns.values(), sid))
+
+    def live_owner(self, sids):
+        from lib.control.harness import process_identity
+        self.set_columns(sids, owner_pid=os.getpid(), owner_identity=process_identity(os.getpid()))
+
+    def test_admission_resume_starts_every_queued_session_past_the_first_hundred(self):
+        from lib.control.runtime import set_admission
+        set_admission(self.config, 'paused')
+        sids = self.many(105)
+        # Ineligible rows lead the order: five live owners, five launches
+        # still in their reservation backoff.
+        self.live_owner(sids[:5])
+        self.set_columns(sids[5:10], owner_launch_attempts=1, owner_launch_after=time.time() + 300)
+        code, out, err = self.cli('admission', 'resume', '--json')
+        self.assertEqual(code, 0, err)
+        self.assertIsNone(__import__('json').loads(out)['owner_warning'])
+        self.assertEqual(sorted(self.owner_launches()), sorted(sids[10:]))
+        # A second bulk call has nothing left to start.
+        self.launches.clear()
+        from lib.control.sessions import ensure_owners
+        result = ensure_owners(self.config, env=self.env)
+        self.assertEqual((result['owners_started'], self.launches), (0, []))
+
+    def test_stop_intent_completes_for_every_ownerless_session_past_the_first_hundred(self):
+        from lib.control.session_store import SessionStore
+        from lib.control.sessions import ensure_owners
+        sids = self.many(105, stop_requested=1)
+        self.live_owner(sids[:5])  # a live owner completes its own stop
+        ensure_owners(self.config, env=self.env)
+        with SessionStore(self.config) as sessions:
+            states = [sessions.get(sid)['state'] for sid in sids]
+        self.assertEqual(states, ['queued'] * 5 + ['stopped'] * 100)
+        self.assertEqual(self.launches, [])
+
+
 class OwnerIsolationTests(unittest.TestCase):
     """A real owner process ignores the caller's Python startup environment (parity P1).
 
