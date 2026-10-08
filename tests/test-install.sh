@@ -1650,6 +1650,59 @@ then ok "U8 parent launcher request/failure/source/routing matrix"
 else fail "U8 parent launcher request/failure/source/routing matrix"
 fi
 
+# ---------------------------------------------------------------------------
+# Contract: each harness's declared hook surfaces (harnesses/capabilities.json
+# `hooks` and `guardrails`) name files the adapter writes on install, so the
+# registry cannot drift from the installer silently (parity P3).
+# ---------------------------------------------------------------------------
+echo "--- contract: declared hook surfaces are the files each adapter installs ---"
+reset_sandbox
+seed_native_configs
+surface_check() {
+  python3 - "$REPO_ROOT/harnesses/capabilities.json" "$SANDBOX" "$SANDBOX/surface-before.json" "$1" <<'PY_SURFACE'
+import hashlib, json, re, sys
+from pathlib import Path
+registry, home, record, phase = json.load(open(sys.argv[1])), Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
+homes = {'claude': '.claude', 'codex': '.codex', 'copilot': '.copilot', 'opencode': '.config/opencode'}
+def declared():
+    for harness, entry in registry['harnesses'].items():
+        for feature in ('hooks', 'guardrails'):
+            surface = entry['capabilities'].get(feature, {}).get('surface', '')
+            paths = [t for t in surface.split() if '/' in t or re.search(r'\.(json|js|toml|rules)$', t)]
+            if feature == 'hooks' and not paths:
+                yield harness, feature, None
+            for path in paths:
+                yield harness, feature, path
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+if phase == 'before':
+    record.write_text(json.dumps({f'{h}/{p}': digest(home / homes[h] / p) for h, _, p in declared() if p}))
+    raise SystemExit(0)
+before, problems = json.loads(record.read_text()), []
+for harness, feature, path in declared():
+    if path is None:
+        problems.append(f'{harness} {feature} declares no installed file')
+        continue
+    now = digest(home / homes[harness] / path)
+    if now is None:
+        problems.append(f'{harness} {feature} surface {path} is not installed')
+    elif now == before[f'{harness}/{path}']:
+        problems.append(f'{harness} {feature} surface {path} is not written by the adapter')
+print('\n'.join(problems))
+raise SystemExit(1 if problems else 0)
+PY_SURFACE
+}
+surface_check before
+if surface_out="$(run_install --target all 2>&1)"; then
+  if surface_problems="$(surface_check after)"; then
+    ok "every declared hook and guardrail surface is a file the adapter installs"
+  else
+    fail "declared hook surfaces drift from the installers: $surface_problems"
+  fi
+else
+  fail "install --target all for the surface contract (output: $(tail -5 <<<"$surface_out"))"
+fi
+
 echo "=== Install Test Summary ==="
 echo -e "Passed: ${GREEN}$PASS${NC}"
 echo -e "Failed: ${RED}$FAIL${NC}"
