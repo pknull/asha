@@ -7,6 +7,7 @@ Rooms and workers never start one.
 """
 import contextlib
 import io
+import json
 import os
 import sys
 import threading
@@ -50,7 +51,7 @@ class OwnerStartFixture(unittest.TestCase):
             # Record owner launches (and, on a tree that still has one, a
             # supervisor start); run nothing else of ours for real.
             words = [str(a) for a in argv]
-            if 'owner' in words and 'lib.control.sessions' in words or 'supervisor' in words:
+            if 'owner' in words and any('control.sessions' in w for w in words) or 'supervisor' in words:
                 with lock:
                     self.launches.append((words, kwargs))
                 return FakeChild(words)
@@ -99,13 +100,21 @@ class OwnerStartTests(OwnerStartFixture):
     def test_a_structured_launch_starts_its_owner_before_returning(self):
         caller = dict(self.env, TMUX='/tmp/t/default,1,0', TMUX_PANE='%3', ASHA_HUB_SESSION_ID=str(uuid.uuid4()),
                       ASHA_HUB_GENERATION='4', ASHA_ROOM_ID=str(uuid.uuid4()), ASHA_ROOM_INPUT_FENCE='fence',
-                      ASHA_CONTROL_MANAGED_HINT='x', ASHA_ORCHESTRATION_ROLE='x', ASHA_COORDINATOR_LAUNCH='1')
+                      ASHA_CONTROL_MANAGED_HINT='x', ASHA_ORCHESTRATION_ROLE='x', ASHA_COORDINATOR_LAUNCH='1',
+                      PYTHONPATH=str(self.project), PYTHONHOME='/nowhere', PYTHONSTARTUP='/nowhere/x.py',
+                      PYTHONSAFEPATH='', PYTHONUSERBASE='/nowhere', PYTHONWARNINGS='error')
         from lib.control.session_hub import Hub
         self.hub = Hub(self.config, env=caller, tmux=self.tmux)
         row = self.structured()
         self.assertEqual(self.owner_launches(), [row['session_id']])
         words, kwargs = self.launches[0]
-        self.assertEqual(words, [sys.executable, '-m', 'lib.control.sessions', 'owner', row['session_id']])
+        # Isolated (-I): no PYTHONPATH, user site or cwd on sys.path. The
+        # bootstrap imports Control from this checkout's lib/ alone, as
+        # lib/control.sh does for the router.
+        self.assertEqual(words, [sys.executable, '-B', '-I', '-c',
+                                 'import runpy,sys; sys.path.insert(0, sys.argv.pop(1)); '
+                                 'runpy.run_module("control.sessions", run_name="__main__")',
+                                 str(ROOT / 'lib'), 'owner', row['session_id']])
         # Detached: its own session, no terminal input, cwd at the checkout root.
         self.assertTrue(kwargs['start_new_session'])
         self.assertEqual(kwargs['stdin'], __import__('subprocess').DEVNULL)
@@ -116,6 +125,8 @@ class OwnerStartTests(OwnerStartFixture):
                      'ASHA_ROOM_INPUT_FENCE', 'ASHA_CONTROL_MANAGED_HINT', 'ASHA_ORCHESTRATION_ROLE',
                      'ASHA_COORDINATOR_LAUNCH'):
             self.assertNotIn(name, child_env)
+        # Nor do the caller's Python startup variables reach it or its harness.
+        self.assertEqual([k for k in child_env if k.startswith('PYTHON')], [])
         self.assertIsNone(self.hub.get(row['session_id'])['runtime_warning'])
 
     def test_a_send_to_an_idle_structured_session_starts_its_owner(self):
@@ -278,6 +289,77 @@ class RecoveryTests(OwnerStartFixture):
         self.assertEqual(code, 0, err)
         self.assertEqual(admission(self.config)['mode'], 'running')
         self.assertEqual(self.owner_launches(), [row['session_id']])
+
+
+class OwnerIsolationTests(unittest.TestCase):
+    """A real owner process ignores the caller's Python startup environment (parity P1).
+
+    The owner runs with the operator's authority outside any harness sandbox.
+    A caller's PYTHONPATH may point into a project a sandboxed agent can
+    write; the owner must import only the checkout's own Control package.
+    """
+
+    def setUp(self):
+        import tempfile
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.marker = self.root / 'project-code-ran'
+        self.project = self.root / 'project'
+        self.project.mkdir()
+        plant = ('import pathlib\n'
+                 'with pathlib.Path({marker!r}).open("a") as handle:\n'
+                 '    handle.write({name!r} + " from the project ran in the owner\\n")\n')
+        (self.project / 'sitecustomize.py').write_text(plant.format(marker=str(self.marker), name='sitecustomize'))
+        (self.project / 'json.py').write_text(plant.format(marker=str(self.marker), name='json')
+                                              + 'import os\nos._exit(73)\n')
+        # No harness executable is reachable, and no turn will be claimed.
+        self.env = {'HOME': str(self.root), 'ASHA_HOME': str(self.root / 'asha'), 'PATH': '/usr/bin:/bin'}
+        self.config = load_config(self.env)
+        from lib.control.session_store import SessionStore
+        self.store = SessionStore(self.config, create=True)
+        self.addCleanup(self.store.close)
+
+    def lost_running_turn(self):
+        """A session whose owner died mid-turn: a new owner only reconciles it."""
+        sid = self.store.create(cwd=str(self.project), prompt='Long job')['session_id']
+        owner = self.store.claim_owner(sid)
+        self.store.claim_turn(sid, owner['generation'])
+        with self.store.db.transaction(write=True) as c:
+            c.execute("UPDATE managed_sessions SET owner_pid=?,owner_identity='boot:gone:1' WHERE session_id=?",
+                      (2 ** 22 + 7, sid))
+        return sid, owner['generation']
+
+    def test_a_poisoned_pythonpath_never_runs_project_code_in_the_owner(self):
+        from lib.control import sessions
+        sid, generation = self.lost_running_turn()
+        poisoned = dict(self.env, PYTHONPATH=str(self.project), PYTHONSTARTUP=str(self.project / 'json.py'),
+                        PYTHONUSERBASE=str(self.project))
+        self.assertEqual(sessions.ensure_owners(self.config, env=poisoned, session_id=sid)['owners_started'], 1)
+        child = sessions._OWNER_CHILDREN.pop(sid)
+        code = child.wait(timeout=60)
+        self.assertFalse(self.marker.exists(), self.marker.read_text() if self.marker.exists() else '')
+        self.assertEqual(code, 0, (self.config.tasks_dir.parent / 'session-logs' / (sid + '.log'))
+                         .read_text(errors='replace')[-2000:])
+        # The legitimate owner entry ran in that very process: it claimed the
+        # session, reconciled the lost turn and handed custody back.
+        session = self.store.get(sid)
+        self.assertEqual((session['state'], session['generation'], session['owner_pid']),
+                         ('uncertain', generation + 1, None))
+        claims = [e['payload'] for e in self.store.snapshot(sid)['events'] if e['kind'] == 'owner-claimed']
+        self.assertEqual(json.loads(claims[-1]) if isinstance(claims[-1], str) else claims[-1],
+                         {'pid': child.pid, 'generation': generation + 1})
+
+    def test_the_owner_interpreter_is_isolated_even_from_an_unscrubbed_environment(self):
+        # Each layer holds alone: here the environment scrub is bypassed.
+        from lib.control import sessions
+        sid, generation = self.lost_running_turn()
+        poisoned = dict(self.env, PYTHONPATH=str(self.project), ASHA_CONFIG=str(self.config.config_path))
+        sessions._launch_owner(self.config, sid, poisoned)
+        code = sessions._OWNER_CHILDREN.pop(sid).wait(timeout=60)
+        self.assertFalse(self.marker.exists(), self.marker.read_text() if self.marker.exists() else '')
+        self.assertEqual(code, 0)
+        self.assertEqual(self.store.get(sid)['generation'], generation + 1)
 
 
 class OwnerCustodyTests(unittest.TestCase):

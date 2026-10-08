@@ -346,6 +346,17 @@ else
 fi
 echo ""
 
+# Test Suite 26: Control Router Import Isolation
+echo -e "${BLUE}--- Test Suite 26: Control Router Import Isolation ---${NC}"
+if "$SCRIPT_DIR/test-control.sh"; then
+    echo -e "${GREEN}✓ Control router isolation tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Control router isolation tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
 # Summary
 echo -e "${BLUE}=== Test Summary ===${NC}"
 echo -e "Passed:  ${GREEN}$TOTAL_PASSED${NC}"

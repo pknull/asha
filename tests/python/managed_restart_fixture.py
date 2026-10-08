@@ -67,8 +67,8 @@ def wake(sid):
     from lib.control.sessions import ensure_owners
     real_popen = subprocess.Popen
     def launch(argv, **kwargs):
-        if argv[:3] == [sys.executable, '-m', 'lib.control.sessions'] and argv[3] == 'owner':
-            argv = [sys.executable, str(Path(__file__).resolve()), 'owner', argv[4]]
+        if argv[-2:-1] == ['owner'] and any('control.sessions' in str(word) for word in argv):
+            argv = [sys.executable, str(Path(__file__).resolve()), 'owner', argv[-1]]
         return real_popen(argv, **kwargs)
     # Only the test provider selection differs. The owner launch, its detached
     # process group, the launch reservation and persisted state are real.
@@ -78,5 +78,8 @@ def wake(sid):
 
 
 if __name__ == '__main__':
+    # The substitute owner inherits no PYTHONPATH (parity P1), so it names its
+    # own checkout, as the real owner's bootstrap does.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
     mode = sys.argv[1]
     raise SystemExit(provider() if mode == 'provider' else owner(sys.argv[2]) if mode == 'owner' else wake(sys.argv[2]))

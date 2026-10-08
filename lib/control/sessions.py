@@ -18,6 +18,12 @@ from .session_store import SessionStore, SessionsUninitialized, process_live
 from .store import StoreError, _directory_fd, _managed_start
 
 _OWNER_CHILDREN = {}
+# The owner runs with the operator's authority outside any harness sandbox, so
+# its interpreter is isolated (-I: no PYTHONPATH, user site or cwd on sys.path)
+# and this bootstrap imports Control from the checkout's lib/ alone, as
+# lib/control.sh does for the router. Bare -I with -m would lose the package.
+_OWNER_PROGRAM = ('import runpy,sys; sys.path.insert(0, sys.argv.pop(1)); '
+                  'runpy.run_module("control.sessions", run_name="__main__")')
 
 
 def overview(config, *, limit=100, deadline=None):
@@ -284,9 +290,10 @@ def _launch_owner(config, sid, env):
             from .store import _validate_open_file
             _validate_open_file(logfd, "managed session log")
             # Kept only so a long-lived caller (the dashboard) reaps its exited owners.
+            root = Path(__file__).resolve().parents[2]
             _OWNER_CHILDREN[sid] = subprocess.Popen(
-                [sys.executable, "-m", "lib.control.sessions", "owner", sid],
-                cwd=Path(__file__).resolve().parents[2], env=env,
+                [sys.executable, "-B", "-I", "-c", _OWNER_PROGRAM, str(root / "lib"), "owner", sid],
+                cwd=root, env=env,
                 stdin=subprocess.DEVNULL, stdout=logfd, stderr=logfd, start_new_session=True)
         finally:
             os.close(logfd)
@@ -307,8 +314,9 @@ def ensure_owners(config, *, env=None, session_id=None):
         return {"managed_sessions": 0, "owners_started": 0}
     values = dict(os.environ if env is None else env)
     for key in list(values):
-        # The owner is no Room, hub session or managed actor of its caller.
-        if (key.startswith(("TMUX", "ASHA_CONTROL_", "ASHA_MANAGED_", "ASHA_ORCHESTRATION_", "ASHA_HUB_"))
+        # The owner is no Room, hub session or managed actor of its caller, and
+        # the caller's Python startup variables reach neither it nor its harness.
+        if (key.startswith(("TMUX", "ASHA_CONTROL_", "ASHA_MANAGED_", "ASHA_ORCHESTRATION_", "ASHA_HUB_", "PYTHON"))
                 or key in {"ASHA_COORDINATOR_LAUNCH", "ASHA_ROOM_ID", "ASHA_ROOM_INPUT_FENCE"}):
             values.pop(key)
     values.update(ASHA_HOME=str(config.asha_home), ASHA_CONFIG=str(config.config_path))
