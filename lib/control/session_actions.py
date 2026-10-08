@@ -96,8 +96,12 @@ def send(ctx, row):
         if ctx.hub.owns(row['session_id']):
             ctx.hub.send(row['session_id'], body, key=str(uuid.uuid4()))
         else:
+            from .sessions import wake
             with SessionStore(ctx.config) as sessions:
                 sessions.enqueue(row['session_id'], body, key=str(uuid.uuid4()))
+            warning = wake(ctx.config, row['session_id'], env=ctx.env)
+            if warning:
+                return 'Message retained; ' + warning
         return 'Message retained for the next eligible turn'
     return 'Enter attaches to this legacy Room to provide input directly'
 
@@ -154,8 +158,12 @@ def resume(ctx, row):
     if ctx.hub.owns(row['session_id']):
         ctx.hub.resume(row['session_id'], prompt=body, expected_digest=digest)
     else:
+        from .sessions import wake
         with SessionStore(ctx.config) as sessions:
             sessions.resume(row['session_id'], prompt=body, expected_digest=digest)
+        warning = wake(ctx.config, row['session_id'], env=ctx.env)
+        if warning:
+            return 'Continuation queued; ' + warning
     return 'Continuation queued; prior uncertain input will not be replayed'
 
 

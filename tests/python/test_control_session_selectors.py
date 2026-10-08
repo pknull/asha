@@ -35,8 +35,8 @@ class SessionSelectorTests(unittest.TestCase):
         self.hub = Hub(self.config, env=self.env, tmux=self.tmux)
         self.enterContext(mock.patch('lib.control.session_hub.TmuxAdapter', return_value=self.tmux))
         self.enterContext(mock.patch(
-            'lib.control.supervisor_service.start_supervisor',
-            return_value=({'message': 'started'}, 0)))
+            'lib.control.sessions.ensure_owners',
+            return_value={'managed_sessions': 1, 'owners_started': 1}))
 
     def launch(self, sid=FIRST, **changes):
         return self.hub.launch(project=str(self.project), prompt='Trim the games',

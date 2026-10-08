@@ -68,10 +68,6 @@ def quiesce(config, env):
     """
     refuse_managed_operator(config, env)
     from .database import ControlDatabase
-    from .supervisor_service import stop_supervisor
-    stopped, code = stop_supervisor(config)
-    if code == 2:
-        raise StoreError(stopped["message"])
     with ControlDatabase(config, allow_legacy_reads=True) as db:
         with db.transaction() as c:
             owners = c.execute("SELECT session_id,owner_pid,owner_identity FROM managed_sessions WHERE owner_pid IS NOT NULL").fetchall() if c.execute("SELECT 1 FROM sqlite_master WHERE name='managed_sessions'").fetchone() else []
@@ -92,7 +88,7 @@ def quiesce(config, env):
             signalled.append(sid)
         finally:
             os.close(handle)
-    return {"signalled_sessions": signalled, "supervisor": stopped,
+    return {"signalled_sessions": signalled,
             "message": "Shutdown requested for proven owners; migrate after they exit. Interrupted sessions require explicit recovery."}
 
 
@@ -207,6 +203,8 @@ def run_owner(config, sid, *, env=None, once=False, transport_factory=None):
             store.stopped(sid, generation)
             return 0
         if session["state"] in {"failed", "uncertain", "stopped", "budget-exhausted"}:
+            # Nothing runs until an explicit recovery, which starts a new owner.
+            store.release_owner(sid, generation)
             return 0
         if session["initiative_id"]:
             # Initiatives are retired (L-b); a session bound to one is stopped,
@@ -233,26 +231,24 @@ def run_owner(config, sid, *, env=None, once=False, transport_factory=None):
                 if stopping or session["stop_requested"] or mode == "stopped":
                     store.stopped(sid, generation)
                     return 0
-                if mode == "draining":
-                    return 0
-                if session["state"] in {"failed", "uncertain", "stopped", "budget-exhausted"}:
-                    return 0
-                try:
-                    message = store.claim_turn(sid, generation)
-                except DatabaseBusyError:
-                    # These short transactions roll back on contention. No
-                    # provider has received this turn: retry only admission,
-                    # never a run_turn whose submission could be ambiguous.
-                    if once:
-                        return 0
-                    time.sleep(0.5)
-                    continue
-                except StoreError as exc:
+                message = None
+                if mode == "running" and session["state"] not in {"failed", "uncertain", "stopped", "budget-exhausted"}:
                     try:
-                        store.fail_owner(sid, generation, exc)
-                    except StoreError:
-                        pass  # A replaced owner cannot change its successor.
-                    raise
+                        message = store.claim_turn(sid, generation)
+                    except DatabaseBusyError:
+                        # These short transactions roll back on contention. No
+                        # provider has received this turn: retry only admission,
+                        # never a run_turn whose submission could be ambiguous.
+                        if once:
+                            return 0
+                        time.sleep(0.5)
+                        continue
+                    except StoreError as exc:
+                        try:
+                            store.fail_owner(sid, generation, exc)
+                        except StoreError:
+                            pass  # A replaced owner cannot change its successor.
+                        raise
                 if message:
                     try:
                         run_turn(store, store.get(sid), message, env=values, root=root,
@@ -264,24 +260,56 @@ def run_owner(config, sid, *, env=None, once=False, transport_factory=None):
                         raise
                 if once:
                     return 0
+                # Utility owners are disposable between turns, and nothing
+                # schedules them: custody ends only where no input is runnable,
+                # so later input starts a new owner where it is queued.
                 if not message:
-                    # Utility owners are disposable between turns. Queued input
-                    # starts a new owner through the existing supervisor.
-                    return 0
+                    try:
+                        if store.release_owner(sid, generation):
+                            return 0
+                    except DatabaseBusyError:
+                        pass  # Still the owner; dying here could strand queued input.
                 time.sleep(0.5)
         finally:
             for signum, handler in previous.items():
                 signal.signal(signum, handler)
 
 
-def ensure_owners(config, *, env=None):
-    """Called by the existing supervisor; the UI is never a scheduler."""
+def _launch_owner(config, sid, env):
+    """Start one detached owner; it outlives the CLI or UI that queued the work."""
+    runtime = config.tasks_dir.parent / "session-logs"
+    with _directory_fd(runtime, create=True, managed_start=_managed_start(runtime, ("state", "control", "session-logs"))) as fd:
+        logfd = os.open(sid + ".log", os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+        try:
+            from .store import _validate_open_file
+            _validate_open_file(logfd, "managed session log")
+            # Kept only so a long-lived caller (the dashboard) reaps its exited owners.
+            _OWNER_CHILDREN[sid] = subprocess.Popen(
+                [sys.executable, "-m", "lib.control.sessions", "owner", sid],
+                cwd=Path(__file__).resolve().parents[2], env=env,
+                stdin=subprocess.DEVNULL, stdout=logfd, stderr=logfd, start_new_session=True)
+        finally:
+            os.close(logfd)
+
+
+def ensure_owners(config, *, env=None, session_id=None):
+    """Start a detached owner for each structured session with work and no live owner.
+
+    No daemon schedules owners (the supervisor retired 2026-10-07, N1). This runs
+    where work is queued (launch, send, resume, answer, admission resume) and
+    when an operator runs `session show` or `session list`, which restarts an
+    owner lost to a crash or reboot. ``session_id`` limits it to one session.
+    The launch reservation admits one of any racing starts; an owner's claim
+    fences the rest. The UI is never a scheduler.
+    """
     database = config.tasks_dir.parent / "control.sqlite3"
     if not database.exists():
         return {"managed_sessions": 0, "owners_started": 0}
     values = dict(os.environ if env is None else env)
     for key in list(values):
-        if key.startswith(("TMUX", "ASHA_CONTROL_", "ASHA_MANAGED_", "ASHA_ORCHESTRATION_")) or key == "ASHA_COORDINATOR_LAUNCH":
+        # The owner is no Room, hub session or managed actor of its caller.
+        if (key.startswith(("TMUX", "ASHA_CONTROL_", "ASHA_MANAGED_", "ASHA_ORCHESTRATION_", "ASHA_HUB_"))
+                or key in {"ASHA_COORDINATOR_LAUNCH", "ASHA_ROOM_ID", "ASHA_ROOM_INPUT_FENCE"}):
             values.pop(key)
     values.update(ASHA_HOME=str(config.asha_home), ASHA_CONFIG=str(config.config_path))
     started = 0
@@ -292,45 +320,60 @@ def ensure_owners(config, *, env=None):
         store = SessionStore(config)
     except SessionsUninitialized:
         return {"managed_sessions": 0, "owners_started": 0}
+    scope, arguments = ("", ()) if session_id is None else (" AND session_id=?", (session_id,))
     with store:
         with store.db.transaction() as c:
             from .runtime import read_policy
             mode = read_policy(c)["mode"]
         with store.db.transaction() as c:
-            stopping = c.execute("SELECT session_id FROM managed_sessions WHERE stop_requested=1 AND state!='stopped' LIMIT 100").fetchall()
+            stopping = c.execute("SELECT session_id FROM managed_sessions WHERE stop_requested=1 AND state!='stopped'"
+                                 + scope + " LIMIT 100", arguments).fetchall()
         for row in stopping:
             store.stop(row[0])  # Completes stop intent if the previous owner died.
         if mode != "running":
             return {"managed_sessions": 0, "owners_started": 0, "admission": mode}
+        # A lost owner's running turn needs a new owner to reconcile it; queued
+        # input behind an open question waits for its answer, not an owner.
         with store.db.transaction() as c:
             rows = [dict(r) for r in c.execute("""SELECT * FROM managed_sessions s
                 WHERE state IN ('queued','idle','running','waiting-input') AND stop_requested=0
-                AND initiative_id IS NULL AND (state='running' OR EXISTS (
-                    SELECT 1 FROM session_messages m WHERE m.session_id=s.session_id AND m.state='queued'))
-                ORDER BY created_at LIMIT 100""")]
+                AND initiative_id IS NULL AND (state='running' OR (EXISTS (
+                    SELECT 1 FROM session_messages m WHERE m.session_id=s.session_id AND m.state='queued')
+                    AND NOT EXISTS (SELECT 1 FROM session_requests r WHERE r.session_id=s.session_id AND r.state='pending')))"""
+                + scope + " ORDER BY created_at LIMIT 100", arguments)]
         for session in rows:
-            if session["session_id"] in _OWNER_CHILDREN:
-                continue
             if session["owner_pid"] and process_live(session["owner_pid"], session["owner_identity"]):
                 continue
             if not store.reserve_owner_launch(session["session_id"]):
                 continue
-            # Owner adoption claims are transactional; racing launches cannot both run a turn.
-            runtime = config.tasks_dir.parent / "session-logs"
-            with _directory_fd(runtime, create=True, managed_start=_managed_start(runtime, ("state", "control", "session-logs"))) as fd:
-                name = session["session_id"] + ".log"
-                logfd = os.open(name, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=fd)
-                try:
-                    from .store import _validate_open_file
-                    _validate_open_file(logfd, "managed session log")
-                    child = subprocess.Popen([sys.executable, "-m", "lib.control.sessions", "owner", session["session_id"]],
-                                     cwd=Path(__file__).resolve().parents[2], env=values,
-                                     stdin=subprocess.DEVNULL, stdout=logfd, stderr=logfd, start_new_session=True)
-                    _OWNER_CHILDREN[session["session_id"]] = child
-                finally:
-                    os.close(logfd)
+            _launch_owner(config, session["session_id"], values)
             started += 1
     return {"managed_sessions": len(rows), "owners_started": started}
+
+
+def wake(config, session_id=None, *, env=None):
+    """Start owners now; the failure text when they cannot start, else None."""
+    try:
+        ensure_owners(config, env=env, session_id=session_id)
+    except (StoreError, OSError, ValueError) as exc:
+        return "Owner could not start: " + str(exc)[:500]
+    return None
+
+
+def restart_missing_owners(config, *, env, session_id=None):
+    """`session show` and `session list`: restart owners lost to a crash or reboot.
+
+    Only for an operator caller. A worker or managed actor reads without
+    starting anything, as it may not launch or send either.
+    """
+    try:
+        refuse_managed_operator(config, env)
+    except StoreError:
+        return None
+    warning = wake(config, session_id, env=env)
+    if warning:
+        print("asha control session: " + warning, file=sys.stderr)
+    return warning
 
 
 def parser():
@@ -353,6 +396,8 @@ def parser():
     sub.add_parser("quiesce")
     sub.add_parser("rebuild-search")
     sub.add_parser("summary")
+    sub.add_parser("admission", help="runtime admission for structured work").add_argument(
+        "action", choices=("status", "pause", "drain", "resume", "stop"))
     current = sub.add_parser("current")
     current.add_argument("--kind", choices=("sessions", "requests", "deliveries"), default="sessions")
     current.add_argument("--after")
@@ -465,6 +510,19 @@ def main(argv=None, *, env=None):
         if args.command == "owner":
             refuse_managed_operator(config, values)
             return run_owner(config, args.session_id, env=values)
+        if args.command == "admission":
+            from .runtime import admission, set_admission
+            if args.action == "status":
+                result = admission(config)
+            else:
+                refuse_managed_operator(config, values)
+                result = set_admission(config, {"pause": "paused", "drain": "draining",
+                                                "resume": "running", "stop": "stopped"}[args.action])
+                if args.action == "resume":
+                    # Work queued while admission was closed has no owner yet.
+                    result["owner_warning"] = wake(config, env=values)
+            print(json.dumps(result) if args.json else result["message"])
+            return 0
         if args.command == "summary":
             result = overview(config)
             print(json.dumps(result) if args.json else result["summary"])
@@ -495,6 +553,8 @@ def main(argv=None, *, env=None):
                     database.rebuild_search()
                     result = {"search": "rebuilt"}
         else:
+            if args.command in {"list", "show"}:
+                restart_missing_owners(config, env=values, session_id=getattr(args, "session_id", None))
             with SessionStore(config, create=args.command == "create") as store:
                 if args.command == "create":
                     if not CAPABILITIES[args.harness]["managed"]:
@@ -537,6 +597,11 @@ def main(argv=None, *, env=None):
                     answers = json.loads(args.answers, object_pairs_hook=_unique_object)
                     result = NativeRequests(store).answer_native(args.request_id, answers,
                         expected_digest=args.digest)
+            if args.command in {"create", "send", "resume", "answer"}:
+                # Queued work starts its owner here; no daemon will later.
+                warning = wake(config, result["session_id"], env=values)
+                if warning:
+                    print("asha control session: " + warning, file=sys.stderr)
         from .text import terminal_safe
         print(json.dumps(terminal_safe(result), ensure_ascii=True, indent=None if args.json else 2))
         return 0

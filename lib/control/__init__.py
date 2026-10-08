@@ -1,4 +1,4 @@
-"""Asha Control: project sessions, Rooms, the supervisor and retained evidence."""
+"""Asha Control: project sessions, Rooms, structured session owners and retained evidence."""
 
 from .model import TASK_CONTRACT, RUN_CONTRACT
 

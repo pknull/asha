@@ -8,14 +8,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 from lib.control.config import load_config
 from lib.control.runtime import admission, require_admission, set_admission
 from lib.control.session_store import SessionStore
 from lib.control.sessions import ensure_owners, run_owner
 from lib.control.store import StoreError
-from lib.control.supervisor_service import supervisor_main
 
 
 class RuntimeAdmissionTests(unittest.TestCase):
@@ -66,14 +65,15 @@ class RuntimeAdmissionTests(unittest.TestCase):
             self.assertEqual(store.snapshot(sid)["messages"][0]["state"], "cancelled")
 
     def test_cli_mutations_refuse_managed_actor_and_status_is_read_only(self):
+        from lib.control.sessions import main as session_main
         output = io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-            self.assertEqual(supervisor_main(["pause", "--json"], env={**self.env, "ASHA_MANAGED_SESSION_ID": "label"}), 2)
-            self.assertEqual(supervisor_main(["pause", "--json"], env=self.env), 0)
-            self.assertEqual(supervisor_main(["drain", "--json"], env=self.env), 0)
-            self.assertEqual(supervisor_main(["resume", "--json"], env=self.env), 0)
+            self.assertEqual(session_main(["admission", "pause", "--json"], env={**self.env, "ASHA_MANAGED_SESSION_ID": "label"}), 2)
+            self.assertEqual(session_main(["admission", "pause", "--json"], env=self.env), 0)
+            self.assertEqual(session_main(["admission", "drain", "--json"], env=self.env), 0)
+            self.assertEqual(session_main(["admission", "resume", "--json"], env=self.env), 0)
             before = admission(self.config)
-            supervisor_main(["status", "--json"], env=self.env)
+            session_main(["admission", "status", "--json"], env=self.env)
             self.assertEqual(admission(self.config), before)
 
     def test_corrupt_state_stops_dispatch_instead_of_assuming_running(self):
@@ -126,8 +126,7 @@ class RuntimeAdmissionTests(unittest.TestCase):
                     # Exercise the old-version inspection gate with a process
                     # owned by the test; no old-schema writes are permitted.
                     c.execute("PRAGMA user_version=1")
-            with patch("lib.control.supervisor_service.stop_supervisor", return_value=({"message": "not running"}, 1)):
-                result = quiesce(self.config, self.env)
+            result = quiesce(self.config, self.env)
             self.assertEqual(result["signalled_sessions"], [sid])
             self.assertEqual(child.wait(timeout=3), -15)
         finally:

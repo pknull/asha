@@ -552,7 +552,7 @@ Usage:
                                    manage persistent project conversations
   asha initiative list|show|export [...]
                                    read retired initiative evidence (read-only)
-  asha control [session|projects|doctor|tmux|supervisor]
+  asha control [session|projects|doctor|tmux]
                                    run the terminal TUI or Control internals
   asha cockpit [DIR] [--dry-run]   chair pane (asha claude at DIR) beside the Control dashboard
   asha process route <task>        advisory process route with risks and fallback
@@ -618,12 +618,6 @@ if [[ "${1:-}" == "task" || "${1:-}" == "room" || "${1:-}" == "control" || "${1:
   control_route="$1"; shift
   # shellcheck disable=SC1090
   source "$ASHA_ROOT/lib/control.sh"
-  # The supervisor unit's ExecStart. Under KillMode=process systemd signals
-  # only MainPID, so the supervisor must be that process, not a child (#121).
-  if [[ "$control_route" == control && "${1:-}" == supervisor && "${2:-}" == run ]]; then
-    asha_control_exec "$control_route" "$@"
-    exit $?
-  fi
   ( set -euo pipefail; asha_control_main "$control_route" "$@" )
   exit $?
 fi

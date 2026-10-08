@@ -128,7 +128,7 @@ waiter; re-running `close` joins a pending request and finalizes an expired
 one. A finished report that is still current and settled plus a save for the current
 assignment closes at once. The handoff never commits or pushes; landing code
 remains a separate explicit decision. Dashboard `q` only exits the UI; it does
-not stop workers or the supervisor. `M` filters input requests; `A` includes
+not stop workers or structured session owners. `M` filters input requests; `A` includes
 retained history.
 
 Treat `memory_saved_at` and `closure.guidance` as evidence; never infer a save
@@ -152,10 +152,12 @@ The digest prevents resuming different state than the one inspected. Uncertain
 submissions are never automatically replayed. The dashboard shows retained
 recovery state before accepting a continuation.
 
-Structured work uses the existing supervisor and runtime admission setting.
-A paused runtime retains the assignment; report that fact rather than silently
-resuming it. Ordinary terminal sessions run independently of the supervisor
-and dashboard. A failed telemetry hook must not block native work.
+Structured work starts its owner when it is queued (launch, send, resume,
+answer); no daemon runs. If an owner was lost to a crash or reboot, `session
+show ID` or `session list` restarts it. A paused runtime retains the assignment
+(`session admission status`); report that fact rather than silently resuming
+it. Ordinary terminal sessions run independently of structured owners and the
+dashboard. A failed telemetry hook must not block native work.
 
 ## Gotchas
 

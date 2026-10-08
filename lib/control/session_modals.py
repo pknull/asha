@@ -1213,5 +1213,7 @@ def _answer_session_request(stdscr, curses_module, model, config, env, request_i
         return
     with SessionStore(config) as sessions:
         sessions.answer(request["request_id"], answer, expected_digest=request["digest"])
+    from .sessions import wake
+    warning = wake(config, request["session_id"], env=env)
     model.managed_summary = overview(config)["summary"]
-    model.message = "answer retained; backend resumes the session when eligible"
+    model.message = "answer retained; " + (warning or "its session owner starts the next turn")

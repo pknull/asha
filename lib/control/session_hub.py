@@ -505,18 +505,13 @@ class Hub:
                         c.execute('SELECT 1 FROM managed_sessions WHERE session_id=?', (sid,)).fetchone())
 
     def _wake_structured(self, sid):
-        from .supervisor_service import start_supervisor
+        """Start this session's owner now, detached; no daemon starts it later."""
         # Admission is an operator runtime preference, never an initiative gate.
         from .runtime import admission
+        from .sessions import wake
         mode = admission(self.config)['mode']
-        warning = None
         if mode == 'running':
-            try:
-                outcome, code = start_supervisor(self.config, self.env)
-                if code:
-                    warning = outcome.get('message', 'Supervisor could not start')
-            except (ValueError, OSError) as exc:
-                warning = str(exc)
+            warning = wake(self.config, sid, env=self.env)
         else:
             warning = 'Queued; runtime admission is ' + mode
         self._update(sid, runtime_warning=warning)

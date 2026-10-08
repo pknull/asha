@@ -94,63 +94,31 @@ class DoctorVerdictTests(DoctorOkFixture):
         self.assertEqual(broken["probes"][0]["outcome"], "mismatch")
         self.assertIn("could not be authenticated", broken["probes"][0]["detail"])
 
-    def test_supervisor_service_probe_is_advisory_and_reports_all_states(self) -> None:
+    def test_a_leftover_retired_supervisor_unit_is_advisory_with_removal_steps(self) -> None:
         values = dict(self.env, XDG_CONFIG_HOME=str(self.root / "config"))
         unit = self.root / "config/systemd/user/asha-supervisor.service"
         unit.parent.mkdir(parents=True)
         unit.write_text("[Unit]\n", encoding="utf-8")
-        calls = []
-
-        def runner(argv, **_kwargs):
-            calls.append(list(argv))
-            return subprocess.CompletedProcess(argv, 1, b"", b"")
-
         result = run_doctor(
-            self.config,
-            probes={"supervisor-service": DEFAULT_PROBES["supervisor-service"]},
-            env=values, runner=runner, which=lambda command: f"/usr/bin/{command}",
+            self.config, probes={"supervisor-service": DEFAULT_PROBES["supervisor-service"]}, env=values,
         )
+        self.assertTrue(result["ok"])
+        probe = result["probes"][0]
+        self.assertEqual(probe["outcome"], "mismatch")
+        self.assertIn(f"retired supervisor unit still installed at {unit}", probe["detail"])
+        self.assertIn("systemctl --user disable --now asha-supervisor.service", probe["detail"])
+        self.assertIn("daemon-reload", probe["detail"])
 
+    def test_no_supervisor_unit_matches(self) -> None:
+        values = dict(self.env, XDG_CONFIG_HOME=str(self.root / "config"))
+        result = run_doctor(
+            self.config, probes={"supervisor-service": DEFAULT_PROBES["supervisor-service"]}, env=values,
+        )
         self.assertTrue(result["ok"])
         self.assertEqual(result["probes"], [{
-            "name": "supervisor-service",
-            "outcome": "mismatch",
-            "detail": "supervisor service present=yes, enabled=no, active=no",
+            "name": "supervisor-service", "outcome": "match",
+            "detail": "no supervisor unit installed; structured session owners start where work is queued",
         }])
-        self.assertEqual(calls, [
-            ["/usr/bin/systemctl", "--user", "is-enabled", "asha-supervisor.service"],
-            ["/usr/bin/systemctl", "--user", "is-active", "asha-supervisor.service"],
-        ])
-
-    def test_supervisor_service_probe_is_informational_without_systemctl(self) -> None:
-        result = run_doctor(
-            self.config,
-            probes={"supervisor-service": DEFAULT_PROBES["supervisor-service"]},
-            env=self.env, which=lambda _command: None,
-        )
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["probes"][0]["outcome"], "unavailable")
-        self.assertIn("systemctl is unavailable", result["probes"][0]["detail"])
-
-    def test_missing_supervisor_unit_is_informational(self) -> None:
-        values = dict(self.env, XDG_CONFIG_HOME=str(self.root / "config"))
-
-        def runner(argv, **_kwargs):
-            return subprocess.CompletedProcess(argv, 1, b"", b"")
-
-        result = run_doctor(
-            self.config,
-            probes={"supervisor-service": DEFAULT_PROBES["supervisor-service"]},
-            env=values, runner=runner, which=lambda command: f"/usr/bin/{command}",
-        )
-
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["probes"][0]["outcome"], "missing")
-        self.assertEqual(
-            result["probes"][0]["detail"],
-            "supervisor service present=no, enabled=no, active=no",
-        )
 
     def test_a_probe_mismatch_remains_blocking(self) -> None:
         result = run_doctor(None, probes={

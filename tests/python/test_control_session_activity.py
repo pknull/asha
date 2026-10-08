@@ -151,14 +151,15 @@ class SessionActivityTests(unittest.TestCase):
                     self.assertNotIn("SCAN ", plan)
                     self.assertNotIn("TEMP B-TREE", plan)
 
-    def test_delivery_waits_on_recovery_and_idle_with_input_waits_on_supervisor(self):
+    def test_delivery_waits_on_recovery_and_idle_with_input_waits_on_its_owner(self):
         with self.store.db.transaction(write=True) as c:
             c.execute("UPDATE managed_sessions SET state='failed' WHERE session_id=?", (self.sid,))
         self.assertEqual(self.store.current_work(kind="deliveries")["rows"][0]["next_action"], "inspect-recovery")
         with self.store.db.transaction(write=True) as c:
             c.execute("UPDATE managed_sessions SET state='idle' WHERE session_id=?", (self.sid,))
         row = self.store.current_work()["rows"][0]
-        self.assertEqual(row["waiting_on"], "supervisor")
+        self.assertEqual(row["waiting_on"], "owner")
+        self.assertIn("`session show` restarts a missing one", row["reason"])
 
     def test_capacity_wait_is_visible_and_clears_without_spending_a_turn(self):
         occupied = []
@@ -189,7 +190,7 @@ class SessionActivityTests(unittest.TestCase):
         sid, generation, turn = occupied[0]
         self.store.finish(sid, generation, turn['turn_id'], success=True)
         row = next(r for r in self.store.current_work()['rows'] if r['session_id'] == self.sid)
-        self.assertEqual(row['waiting_on'], 'supervisor')
+        self.assertEqual(row['waiting_on'], 'owner')
         self.assertIsNotNone(self.store.claim_turn(self.sid, self.generation))
 
     def test_request_and_delivery_pages_resume_after_reopen(self):

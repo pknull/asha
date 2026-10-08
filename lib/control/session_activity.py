@@ -94,7 +94,7 @@ def _waiting(row, kind, policy, capacity_full=False, pending_request=False):
         return "operator", "send", "No running turn is recorded"
     if capacity_full:
         return "capacity", "observe", f"Input is retained; the limit of {MAX_RUNNING_TURNS} managed turns is occupied"
-    return "supervisor", "observe", "Input is retained and awaiting dispatch"
+    return "owner", "observe", "Input is retained and awaiting its session owner; `session show` restarts a missing one"
 
 
 def _page(store, c, kind, *, limit, after, now, policy, deadline=None):

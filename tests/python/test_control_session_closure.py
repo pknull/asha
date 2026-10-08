@@ -28,9 +28,9 @@ class ClosureFixture(unittest.TestCase):
         self.config = load_config(self.env)
         from lib.control.session_hub import Hub
         self.hub = Hub(self.config, env=self.env, tmux=self.tmux)
-        self.supervisor = self.enterContext(mock.patch(
-            'lib.control.supervisor_service.start_supervisor',
-            return_value=({'message': 'started'}, 0)))
+        self.owner_start = self.enterContext(mock.patch(
+            'lib.control.sessions.ensure_owners',
+            return_value={'managed_sessions': 1, 'owners_started': 1}))
         # Closure never commits, pushes or integrates: any git invocation is a failure.
         original_run, original_popen = subprocess.run, subprocess.Popen
         def guard(factory):
@@ -599,11 +599,11 @@ class StructuredClosureTests(FastClose):
     def test_close_queues_the_next_structured_turn_and_closes_on_its_save(self):
         from lib.control.session_store import SessionStore
         sid = self.structured()
-        wakes = self.supervisor.call_count
+        wakes = self.owner_start.call_count
         closing = self.request(sid)
         record = closing['closure']
         self.assertEqual(record['delivery']['channel'], 'structured-turn')
-        self.assertEqual(self.supervisor.call_count, wakes + 1)
+        self.assertEqual(self.owner_start.call_count, wakes + 1)
         self.request(sid)
         with SessionStore(self.config) as sessions, sessions.db.transaction() as c:
             keys = [r[0] for r in c.execute("SELECT delivery_key FROM session_messages WHERE session_id=? AND delivery_key LIKE 'close:%'", (sid,))]

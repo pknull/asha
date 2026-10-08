@@ -13,9 +13,6 @@ from typing import Any
 
 HARNESSES = frozenset({"claude", "codex", "copilot", "opencode"})
 
-# Harnesses with a one-turn headless mode: the structured-session owners the
-# supervisor starts run these (its unit pins their commands).
-HEADLESS_HARNESSES = frozenset({"claude", "codex"})
 # Harnesses whose Asha launches run commands inside a native sandbox (Codex
 # Rooms, workers and chair; subtraction panel E5). Claude, Copilot and OpenCode
 # run unsandboxed under native permissions. Session operator verbs refuse a

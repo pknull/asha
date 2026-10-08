@@ -1,8 +1,9 @@
 """The legacy initiative engine, `asha task` and L3 staging are retired (L-b).
 
 Their entry points are refused rather than silently reinterpreted, and the
-surviving Control surfaces (the doctor, the supervisor, the Codex actor tool,
-the dashboard) no longer reach them.
+surviving Control surfaces (the doctor, structured session owners, the Codex
+actor tool, the dashboard) no longer reach them. The supervisor daemon retired
+later (N1, 2026-10-07) and is refused the same way.
 """
 from __future__ import annotations
 
@@ -127,10 +128,21 @@ class RetiredSurfaceTests(unittest.TestCase):
             session = store.get(sid)
         self.assertEqual((session["state"], session["stop_requested"]), ("stopped", 1))
 
-    def test_supervisor_run_never_loads_the_engine(self):
-        from lib.control import supervisor_service
-        self.assertFalse(hasattr(supervisor_service, "tick"))
-        self.assertFalse(hasattr(supervisor_service, "_initiative_sweep"))
+    def test_asha_control_supervisor_is_refused_as_retired(self):
+        import importlib.util
+        self.assertIsNone(importlib.util.find_spec("lib.control.supervisor_service"))
+        for verb in ("status", "start", "stop", "pause", "drain", "resume", "install", "uninstall"):
+            code, out, err = self._run("control", "supervisor", verb, "--json")
+            self.assertEqual((code, out), (2, ""), verb)
+            for text in ("retired on 2026-10-07", "session admission",
+                         "systemctl --user disable --now asha-supervisor.service", "daemon-reload"):
+                self.assertIn(text, err, verb)
+        # An installed unit runs `supervisor run` with Restart=on-failure: a
+        # clean exit stops it instead of restarting it every five seconds.
+        code, out, err = self._run("control", "supervisor", "run")
+        self.assertEqual((code, out), (0, ""))
+        self.assertIn("retired on 2026-10-07", err)
+        self.assertFalse((self.root / "asha/state/control/supervisor.json").exists())
 
 
 if __name__ == "__main__":

@@ -123,7 +123,7 @@ for a Claude/Codex utility. Enter attaches, `a` opens input, `m` sends context,
 | `asha room open NAME --project PROJECT --harness H --prompt TEXT` | Start a Room detached in exactly one initialized Memory v2 project, selected by exact path or indexed name/ID. `list`, `attach`, and confirmed `close` manage it. |
 | `asha control projects` | List the projects a session or Room can launch in. |
 | `asha control doctor` | Check Control's dependencies, hooks and state. |
-| `asha control supervisor …` | Start owners for structured sessions; `install` manages its systemd user service ([managed sessions](docs/managed-sessions.md)). |
+| `asha control session admission …` | Pause, drain, resume or stop structured work; structured owners start where work is queued ([managed sessions](docs/managed-sessions.md)). |
 | `asha cockpit [DIR]` | The chair beside the session dashboard in one tmux window. |
 | `asha initiative list\|show\|export` | Read the evidence of retired initiatives (read-only). |
 
