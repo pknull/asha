@@ -237,7 +237,7 @@ class SessionTests(unittest.TestCase):
         self.assertFalse(snapshot["complete"]["events"])
         self.assertTrue(snapshot["complete"]["sessions"])
 
-    def test_stop_before_owner_start_is_terminal_without_supervisor(self):
+    def test_stop_before_owner_start_is_terminal_without_an_owner(self):
         sid = self.store.create(cwd=self.tmp.name, prompt="Do not run")["session_id"]
         self.store.stop(sid)
         self.assertEqual(self.store.get(sid)["state"], "stopped")

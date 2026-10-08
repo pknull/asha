@@ -24,6 +24,18 @@ _MIGRATE_RETIRED = (
     "asha migrate: the one-shot move to the single ~/.asha root was retired on "
     "2026-10-07; no supported home still uses the pre-consolidation layout"
 )
+# Retired 2026-10-07 (Keeper, subtraction value call N1). `run` exits 0 so an
+# installed unit (Restart=on-failure) stops instead of restarting every 5 s.
+_SUPERVISOR_RETIRED = (
+    "asha control supervisor: the supervisor daemon was retired on 2026-10-07. "
+    "Structured session owners start where work is queued (launch, send, resume, "
+    "answer), and `asha control session show` or `list` restarts a missing one. "
+    "Runtime admission moved to `asha control session admission "
+    "{status|pause|drain|resume|stop}`. Remove an installed unit with: "
+    "systemctl --user disable --now asha-supervisor.service; "
+    "rm ${XDG_CONFIG_HOME:-~/.config}/systemd/user/asha-supervisor.service; "
+    "systemctl --user daemon-reload"
+)
 
 
 def _json(value: Any) -> None:
@@ -43,8 +55,8 @@ to start a native worker; add `--profile room` for an Asha project conversation,
 or `--transport structured` for a Claude/Codex result-returning utility.
 Session commands include list, show, attach, send, close, stop, resume and doctor.
 Each command accepts --help; existing structured request commands remain available.
-Use `asha control supervisor {run|start|stop|pause|drain|resume|status} [--json]` for the
-structured-session supervisor; `install` manages its systemd user service.""", file=stream)
+Structured owners start where work is queued; `session admission
+{status|pause|drain|resume|stop}` sets runtime admission for structured work.""", file=stream)
 
 
 def _room_usage(stream=sys.stdout) -> None:
@@ -335,8 +347,8 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
                 ), end="")
                 return 0
             if tail and tail[0] == "supervisor":
-                from .supervisor_service import supervisor_main
-                return supervisor_main(tail[1:], env=values)
+                print(_SUPERVISOR_RETIRED, file=sys.stderr)
+                return 0 if tail[1:2] == ["run"] else 2
             if tail and tail[0] == "session":
                 from .sessions import main as session_main
                 return session_main(tail[1:], env=values)

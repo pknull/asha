@@ -44,14 +44,6 @@ _CONTROL_EVENT_HANDLER = (
     Path(__file__).resolve().parents[2]
     / "plugins/session/hooks/handlers/control-event.sh"
 )
-def supervisor_service_status(
-    values: Mapping[str, str], *, runner=None, which=None,
-) -> dict[str, bool | None]:
-    # Keep the supervisor service and its unit logic out of doctor import.
-    from .supervisor_service import supervisor_service_status as inspect
-    return inspect(values, runner=runner, which=which)
-
-
 def _python_probe(config) -> Probe:
     if sys.version_info >= (3, 11):
         return Probe("python", "match", f"Python {sys.version_info.major}.{sys.version_info.minor} supports the Control core")
@@ -388,34 +380,17 @@ def _rooms_registry_probe(config) -> Probe:
     )
 
 
-def _supervisor_service_probe(config, *, env=None, runner=None, which=None) -> Probe:
+def _supervisor_service_probe(config, *, env=None) -> Probe:
+    """The supervisor retired 2026-10-07 (N1); a leftover user unit only needs removing."""
     values = dict(os.environ if env is None else env)
-    if config is not None:
-        values["HOME"] = str(config.home)
-        values["ASHA_HOME"] = str(config.asha_home)
-    status = supervisor_service_status(values, runner=runner, which=which)
-    present = status["service_present"]
-    enabled = status["service_enabled"]
-    active = status["service_active"]
-    if present is None:
-        return Probe(
-            "supervisor-service", "unavailable",
-            "systemctl is unavailable; supervisor service state was not probed",
-        )
-    def label(value: bool | None) -> str:
-        return "unknown" if value is None else "yes" if value else "no"
-
-    detail = (
-        f"supervisor service present={label(present)}, "
-        f"enabled={label(enabled)}, active={label(active)}"
-    )
-    if not present:
-        outcome = "missing"
-    elif enabled and active:
-        outcome = "match"
-    else:
-        outcome = "mismatch"
-    return Probe("supervisor-service", outcome, detail)
+    home = Path(str(config.home) if config is not None else values.get("HOME") or str(Path.home()))
+    unit = Path(values.get("XDG_CONFIG_HOME") or str(home / ".config")) / "systemd/user/asha-supervisor.service"
+    if unit.exists() or unit.is_symlink():
+        return Probe("supervisor-service", "mismatch", _safe_detail(
+            f"retired supervisor unit still installed at {unit}; remove it: systemctl --user disable "
+            "--now asha-supervisor.service, delete the file, then systemctl --user daemon-reload"))
+    return Probe("supervisor-service", "match",
+                 "no supervisor unit installed; structured session owners start where work is queued")
 
 
 def _managed_sessions_probe(config) -> Probe:
@@ -454,7 +429,7 @@ DEFAULT_PROBES: Mapping[str, ProbeFunction] = {
 
 def run_doctor(
     config, probes: Mapping[str, ProbeFunction] | None = None, *,
-    env: Mapping[str, str] | None = None, runner=None, which=None, required_harnesses=None,
+    env: Mapping[str, str] | None = None, required_harnesses=None,
 ) -> dict[str, Any]:
     if required_harnesses is not None:
         if (not isinstance(required_harnesses, (tuple, list)) or not required_harnesses
@@ -467,7 +442,7 @@ def run_doctor(
                 re.fullmatch(r"[a-z][a-z0-9-]{0,31}", name) is None):
             raise ValueError("invalid doctor probe name")
         if probe is _supervisor_service_probe:
-            result = probe(config, env=env, runner=runner, which=which)
+            result = probe(config, env=env)
         elif probe in (_harness_probe, _hooks_probe) and required_harnesses is not None:
             result = probe(config, required_harnesses=required_harnesses)
         else:
@@ -476,8 +451,8 @@ def run_doctor(
             raise ValueError(f"doctor probe {name} returned an invalid result")
         results.append(Probe(result.name, result.outcome, result.detail))
     limitations = [result.detail for result in results if result.outcome != "match"]
-    # GitHub support and supervisor service state are contextual; report them
-    # without failing the general check.
+    # GitHub support and a leftover retired supervisor unit are contextual;
+    # report them without failing the general check.
     blocking = [
         result for result in results
         if result.outcome != "match" and result.name not in {"gh", "supervisor-service"}

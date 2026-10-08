@@ -350,6 +350,11 @@ def dispatch(argv, *, env):
     try:
         if verb in SESSION_ID_VERBS:
             args.session_id = resolve_session(config, hub, args.session_id, room_names=verb in {'attach', 'close'})
+        if verb in {'list', 'show'}:
+            # No daemon schedules structured work: an operator's list or show
+            # restarts an owner a crash or reboot left missing.
+            from .sessions import restart_missing_owners
+            restart_missing_owners(config, env=env, session_id=args.session_id if verb == 'show' else None)
         if verb == 'launch':
             result = hub.launch(**{k: v for k, v in vars(args).items() if k != 'json'})
         elif verb == 'list':

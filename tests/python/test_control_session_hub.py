@@ -21,9 +21,9 @@ class SessionHubTests(unittest.TestCase):
         self.config = load_config(self.env)
         from lib.control.session_hub import Hub
         self.hub = Hub(self.config, env=self.env, tmux=self.tmux)
-        self.supervisor = self.enterContext(mock.patch(
-            'lib.control.supervisor_service.start_supervisor',
-            return_value=({'message': 'started'}, 0)))
+        self.owner_start = self.enterContext(mock.patch(
+            'lib.control.sessions.ensure_owners',
+            return_value={'managed_sessions': 1, 'owners_started': 1}))
 
     def launch(self, **changes):
         return self.hub.launch(project=str(self.project), prompt='Trim the games',
@@ -509,7 +509,7 @@ class SessionHubTests(unittest.TestCase):
         self.assertEqual(self.hub.list(include_closed=True)['rows'][0]['session_id'], sid)
         self.hub.send(sid, 'Now summarize that reply', key='followup')
         self.assertNotEqual(self.hub.show(sid)['activity'], 'finished')
-        self.assertEqual(self.supervisor.call_count, 2)
+        self.assertEqual(self.owner_start.call_count, 2)
 
     def test_failed_launch_can_resume_after_ownership_check(self):
         sid = str(uuid.uuid4())
@@ -522,12 +522,12 @@ class SessionHubTests(unittest.TestCase):
         self.assertEqual(resumed['generation'], 2)
         self.assertEqual(len(self.tmux.created), 1)
 
-    def test_failed_supervisor_is_reported_with_durable_assignment(self):
-        self.supervisor.return_value = ({'message': 'failed to start'}, 1)
+    def test_failed_owner_start_is_reported_with_durable_assignment(self):
+        self.owner_start.side_effect = OSError('fork failed')
         row = self.launch(transport='structured')
-        self.assertEqual(row['reason'], 'failed to start')
+        self.assertEqual(row['reason'], 'Owner could not start: fork failed')
         self.assertEqual(row['pending_messages'], 1)
-        self.supervisor.return_value = ({'message': 'started'}, 0)
+        self.owner_start.side_effect = None
         receipt = self.hub.send(row['session_id'], 'More context', key='followup')
         self.assertIsNone(receipt['dispatch_warning'])
         self.assertIsNone(self.hub.get(row['session_id'])['runtime_warning'])

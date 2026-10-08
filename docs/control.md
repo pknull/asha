@@ -1,8 +1,8 @@
 # Asha Control: Rooms, state and retired initiative evidence
 
 The default session launcher and dashboard are described in
-[Project sessions](session-hub.md), and structured sessions and the supervisor
-in [Managed sessions](managed-sessions.md). This guide covers the retained Room
+[Project sessions](session-hub.md), and structured sessions and their
+on-demand owners in [Managed sessions](managed-sessions.md). This guide covers the retained Room
 surface, Control's doctor, the cockpit, Control's state layout, and the
 read-only evidence of the retired initiative engine and `asha task` substrate.
 
@@ -19,8 +19,7 @@ asha control doctor [--json]
 asha control projects [--root DIR]... [--depth N] [--match TEXT] [--json]
 asha control tmux
 asha control session ...     see session-hub.md and managed-sessions.md
-asha control supervisor {run|start|stop|pause|drain|resume|status} [--json]
-asha control supervisor {install|uninstall} [--dry-run] [--json]
+asha control supervisor ...  retired 2026-10-07; prints how to remove its unit
 
 asha initiative list [--json]
 asha initiative show <id|slug> [--json]
@@ -74,7 +73,8 @@ creates its own worktree.
 probe, or the `asha.control-doctor.v1` JSON payload: `python`,
 `configuration`, `supervisor-service`, `tmux`, `harness`, `gh`,
 `rooms-registry`, `managed-sessions`, `hooks` and `tui`. The `gh` and `supervisor-service` probes are informational and never
-fail the check. Hook checks cover only the installed Claude and Codex
+fail the check; `supervisor-service` now only reports a leftover unit of the
+retired supervisor and how to remove it. Hook checks cover only the installed Claude and Codex
 configurations. The retired task substrate's probes (`jj`, `repository`,
 `default-context`, `transactions`, `registry-backend`, `prunable`,
 `stale-workspaces` and `harness-events`) left with it, and `asha task doctor`

@@ -18,10 +18,3 @@ asha_control_main() {
   _asha_control_ready || return
   python3 -B -I -c "$_ASHA_CONTROL_PROGRAM" "$ASHA_ROOT/lib" "$@"
 }
-
-# Replace the calling shell with Control rather than forking it, so a service
-# manager that started the shell tracks and signals Control itself (#121).
-asha_control_exec() {
-  _asha_control_ready || return
-  exec python3 -B -I -c "$_ASHA_CONTROL_PROGRAM" "$ASHA_ROOT/lib" "$@"
-}

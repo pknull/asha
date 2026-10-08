@@ -346,6 +346,29 @@ class SessionStore:
             self._event(c, sid, "owner-claimed", {"pid": pid, "generation": s["generation"] + 1})
         return self.get(sid)
 
+    def release_owner(self, sid, generation):
+        """End this owner's custody unless its session has runnable input.
+
+        Decided in one transaction with the queue: input queued after the
+        owner's last claim is either run by this owner or finds no owner and
+        starts a new one. Input held only by the managed turn limit keeps its
+        owner waiting. True means custody ended.
+        """
+        with self.db.transaction(write=True) as c:
+            s = self._owner(c, sid, generation)
+            from .runtime import read_policy
+            runnable = (read_policy(c)["mode"] == "running" and not s["stop_requested"]
+                        and s["state"] not in {"running", "uncertain", "stopped", "failed", "budget-exhausted"}
+                        and s["turns"] < s["max_turns"]
+                        and not c.execute("SELECT 1 FROM session_requests WHERE session_id=? AND state='pending'", (sid,)).fetchone()
+                        and c.execute("SELECT 1 FROM session_messages WHERE session_id=? AND state='queued'", (sid,)).fetchone())
+            if runnable:
+                return False
+            c.execute("UPDATE managed_sessions SET owner_pid=NULL,owner_identity=NULL,updated_at=? WHERE session_id=?",
+                      (time.time(), sid))
+            self._event(c, sid, "owner-released", {"generation": generation})
+            return True
+
     def _owner(self, c, sid, generation):
         s = self._session(c, sid)
         if s["generation"] != generation or s["owner_pid"] != os.getpid() or not verify_process(s["owner_pid"], s["owner_identity"]):

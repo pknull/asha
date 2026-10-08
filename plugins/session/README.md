@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 2.9.1
+**Version**: 2.9.2
 
 Compact explicit memory publication, bounded crash recovery, reviewed learning
 lifecycle, policy guardrails, guarded loops, and workspace management.
@@ -134,6 +134,13 @@ for the repository; workspace state answers what coordinates the repositories.
   checks required by `AGENTS.md`.
 
 ## Version history
+
+### 2.9.2
+
+The `operate-control` skill describes on-demand structured owners (subtraction
+value call N1): queued work starts its owner, `session show` or `session list`
+restarts one lost to a crash or reboot, and runtime admission lives under
+`asha control session admission`. The supervisor daemon it named is retired.
 
 ### 2.9.1
 

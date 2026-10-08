@@ -1,8 +1,8 @@
 """Shared private-storage helpers: directory traversal, file opens and locks.
 
 The task registry that once exercised these helpers retired with the task
-substrate (L-b); Rooms, sessions, the database and the supervisor still use
-them, so their guards are pinned here directly.
+substrate (L-b); Rooms, sessions and the database still use them, so their
+guards are pinned here directly.
 """
 from __future__ import annotations
 

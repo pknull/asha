@@ -1,7 +1,6 @@
 # Managed sessions
 
-This guide covers the structured backend and the supervisor that starts its
-session owners. The default [session dashboard](session-hub.md) launches plain
+This guide covers the structured backend and how its session owners start. The default [session dashboard](session-hub.md) launches plain
 workers, Rooms and structured utilities. Structured utilities inherit native
 permissions, sandbox settings and subagents. Utility owners exit between turns.
 The initiative coordinators this backend once also served were retired with
@@ -15,9 +14,9 @@ the [session hub](session-hub.md); `session create` is the lower-level form
 below. In Control, Enter on a structured session shows state and event pages
 without changing delivery acknowledgements.
 
-Use `asha control supervisor status --json` to inspect runtime admission.
-Creating a session preserves paused or stopped admission rather than silently
-resuming it.
+Use `asha control session admission status --json` to inspect runtime
+admission. Creating a session preserves paused or stopped admission rather than
+silently resuming it.
 
 ## Current work
 
@@ -68,8 +67,10 @@ permission; the Control header and chair startup include qualified global
 counts. Read-only WAL recovery failures surface as unavailable rather than
 triggering a repair or returning an empty success.
 
-Managed sessions connect Asha's structured backend to Claude and Codex. The supervisor starts an independent session owner; the owner drains the
-harness stream, records events and runs queued follow-ups at turn boundaries.
+Managed sessions connect Asha's structured backend to Claude and Codex. Queuing
+work starts an independent session owner, detached from the command that queued
+it; the owner drains the harness stream, records events and runs queued
+follow-ups at turn boundaries.
 Control is a reader and operator interface. Closing it leaves owners running.
 Rooms retain their existing tmux attach/close behavior.
 
@@ -78,7 +79,7 @@ Rooms retain their existing tmux attach/close behavior.
 ```sh
 asha control projects --match NAME --json
 asha control session create --cwd /absolute/project --prompt 'Assignment' --max-turns 12 --json
-asha control supervisor start --json
+asha control session admission status --json
 asha control session list --json
 asha control session summary
 asha control session show SESSION_ID --after 0 --limit 100 --json
@@ -101,8 +102,9 @@ asha control session rebuild-search --json
 then the current directory; `--match` selects by name, directory, relative
 path or project ID.
 
-`create` records work; the supervisor starts its owner on the next sweep. An
-operator can also run `session owner SESSION_ID` in the foreground. One owner is
+`create`, `send`, `answer` and `resume` record work and start its owner at once
+(see [Owner start and recovery](#owner-start-and-recovery)). An operator can
+also run `session owner SESSION_ID` in the foreground. One owner is
 fenced by its PID, process incarnation and retained generation. Duplicate delivery
 keys with identical content return the existing message. Different content using
 the same key is refused.
@@ -282,64 +284,62 @@ startup barrier and terminates its process group if its owner dies. Recovery and
 dead-owner stop refuse while a retained provider process is still live. Processes
 that deliberately detach into another group remain outside this cleanup contract.
 
-Session owners survive scheduling-supervisor process restarts. Generated systemd
-units use `KillMode=process` for that reason; existing installations need the usual
-`supervisor install` update to acquire this setting. Because systemd then signals
-only the unit's main process, `asha control supervisor run` replaces the launcher
-shell with the supervisor instead of forking it. Operator runtime commands
-persist separately from the supervisor process:
+Operator runtime commands persist separately from any owner process:
 
 | Command | Effect |
 | --- | --- |
-| `supervisor pause` | Pause new input turns; let admitted work finish and keep session owners available. |
-| `supervisor drain` | Pause admission and let managed owners exit after their current turn. Queued inputs and questions remain. |
-| `supervisor resume` | Reopen admission. This does not launch a missing supervisor or clear individual session stop requests. |
-| `supervisor stop` | Persist stop requests for managed sessions and stop the scheduling process. |
-| `supervisor status` | Show scheduling-process status and durable admission policy separately. |
+| `session admission pause` | Pause new input turns; a turn in progress finishes and idle owners exit. |
+| `session admission drain` | Pause admission and let managed owners exit after their current turn. Queued inputs and questions remain. |
+| `session admission resume` | Reopen admission and start owners for work queued meanwhile. It does not clear individual session stop requests. |
+| `session admission stop` | Persist stop requests for managed sessions; owners cancel their turns. |
+| `session admission status` | Show the durable admission policy. |
 
-These commands accept `--json`. Restarting the supervisor or closing Control does
-not reset a pause. Use `supervisor resume` after inspecting recovered state, and
-`supervisor start` when its process is absent. Individual stopped or uncertain
-sessions still need their own recovery action. No live service or session is
-automatically changed by installing these code files.
+These commands accept `--json`; every verb but `status` refuses managed actors
+and workers. Closing Control does not reset a pause. Use `admission resume`
+after inspecting recovered state. Individual stopped or uncertain sessions
+still need their own recovery action. No live session is automatically changed
+by installing these code files.
 
-### Supervisor process and user service
+### Owner start and recovery
 
-`asha control supervisor run` holds the foreground loop. `start` launches that
-same run route detached with argv-only exec, `stop` verifies the retained Linux
-boot/start-ticks process identity before SIGTERM, and `status` exits zero only
-when both the flock and exact process are live. The exclusive 0600 lock and
-atomic presentation status are `supervisor.lock` and `supervisor.json` beneath
-the Control state root. Every five seconds the loop starts an owner for each
-structured session with queued or running work, so a launch or follow-up waits
-at most that long; launches also start the supervisor when it is absent.
-Starting is idempotent; no session hook starts the supervisor automatically.
-The initiative tick and its `orchestration` configuration block retired with
-the engine (L-b): nothing reads that block any more.
+No daemon schedules structured work. An owner starts, detached in its own
+process session, where work is queued: a structured `session launch`,
+`create`, `send`, `answer`, `resume`, a close request for a structured
+session, the dashboard's send, answer and resume, and `session admission
+resume`. It outlives the command that started it and inherits that command's
+environment, without tmux, Room, hub-session and managed-actor fields, so a
+harness on the caller's `PATH` is found. Each owner logs to
+`session-logs/SESSION_ID.log` beneath the Control state root.
 
-Install the operator-managed systemd user service with:
+A session has one owner. A transactional launch reservation admits one of any
+racing starts and holds off another start for five seconds; the owner's
+generation claim fences the rest. A start that never claims backs off from five
+seconds, doubling to 300, and the session fails after eight unclaimed launches.
+
+An owner keeps custody while its session has runnable input, including input
+that waits only for the managed turn limit, and gives custody back in the same
+transaction that finds none. Input queued after its last turn is therefore run
+by that owner or starts a new one.
+
+An owner lost to a crash or reboot restarts on the next operator
+`asha control session show ID` of that session or `session list`, as well as on
+a send or resume to it. The new owner reconciles a turn its predecessor left
+running to `uncertain`; nothing is replayed. Until then the session reads
+`waiting_on: owner`. Reads by a worker or managed actor never start an owner,
+and neither does the dashboard's refresh.
+
+The supervisor daemon and its systemd user unit retired on 2026-10-07.
+`asha control supervisor ...` prints these steps, and `asha control doctor`
+reports a unit left installed:
 
 ```bash
-asha control supervisor install
+systemctl --user disable --now asha-supervisor.service
+rm "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/asha-supervisor.service"
+systemctl --user daemon-reload
 ```
 
-The command writes the marked `asha-supervisor.service` unit beneath
-`${XDG_CONFIG_HOME:-~/.config}/systemd/user/`, stops a manually started
-supervisor, reloads the user manager, and enables and starts the service.
-`status` reports whether the unit is present, enabled, and active. Use
-`uninstall` to disable and remove only Asha's marked unit; both lifecycle
-commands accept `--dry-run` and `--json`.
-
-The unit's `PATH` is fixed to `~/.local/bin` and the system directories, so
-`install` resolves `jj`, `claude` and `codex` in the installing shell and pins
-them as `ASHA_JJ`, `ASHA_CLAUDE_CMD` and `ASHA_CODEX_CMD`. Structured session
-owners run under this service and use those pins; a harness installed through
-asdf or npm is otherwise not found. Harness pins keep the path as found on
-`PATH` (an asdf shim, Claude's launcher link) rather than its target, and an
-existing `ASHA_*_CMD` override wins. Rerun `install` after moving a harness.
-
-User lingering is advisory and is never changed: without lingering the service
-starts at login, while with lingering it starts at boot.
+Nothing reads `supervisor.lock`, `supervisor.json` or a `supervisor.log`
+beneath the Control state root any more; they may be deleted.
 
 ## Capability limits
 
@@ -388,14 +388,16 @@ reached ready-for-integration in233 seconds, with three completed coordinator
 dispatch actions and no coordinator terminal intervention. The fixture did not integrate its changes. The adapter is enabled; the later
 managed-default rollout and live SQLite cutover are recorded in the migration audit.
 
-The scheduling supervisor can restart while a managed owner and its provider
-connection remain live. A process-level failure test now kills the supervisor,
-starts a replacement, and verifies unchanged owner/generation/provider identity,
-the retained pending question, and one effective delivery of a repeated answer.
-Under a fixture load of250 stopped historical sessions and two active owners,
-four eligible turns reserved in0.25–0.50 seconds with a1-second supervisor tick.
-Provider behavior in these failure/load checks is deterministic; the separate
-native Claude and Codex cycles above establish provider compatibility.
+A process-level test starts a real owner from a caller that exits at once and
+verifies that the owner outlives it, opens the retained question, refuses a
+second owner while it is live, gives custody back once the question parks the
+session, and that a later answer starts a new owner which delivers it exactly
+once in the same native conversation. (Before 2026-10-07 the same test killed
+and replaced the retired supervisor; a fixture load of 250 stopped sessions and
+two active owners then reserved four eligible turns in 0.25–0.50 seconds under
+a one-second supervisor tick.) Provider behavior in these checks is
+deterministic; the separate native Claude and Codex cycles above establish
+provider compatibility.
 
 Room creation, actual terminal attach/detach and close have also passed on an
 activated SQLite registry using a dedicated real tmux server and a fixture process.

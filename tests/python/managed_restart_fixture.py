@@ -1,4 +1,4 @@
-"""Deterministic provider behind real owner and supervisor processes."""
+"""Deterministic provider behind real owner processes started on demand."""
 import json
 import os
 from pathlib import Path
@@ -61,20 +61,22 @@ def owner(sid):
     return run_owner(load_config(), sid, transport_factory=factory)
 
 
-def supervisor():
+def wake(sid):
+    """A short-lived caller, as a send or answer CLI is: start the owner, then exit."""
     from lib.control.config import load_config
-    from lib.control.supervisor_service import run_supervisor
+    from lib.control.sessions import ensure_owners
     real_popen = subprocess.Popen
     def launch(argv, **kwargs):
         if argv[:3] == [sys.executable, '-m', 'lib.control.sessions'] and argv[3] == 'owner':
             argv = [sys.executable, str(Path(__file__).resolve()), 'owner', argv[4]]
         return real_popen(argv, **kwargs)
-    # Only the test provider selection differs. Ownership launch, process groups,
-    # persisted state, supervisor lock, polling, and reconciliation are real.
+    # Only the test provider selection differs. The owner launch, its detached
+    # process group, the launch reservation and persisted state are real.
     with mock.patch('lib.control.sessions.subprocess.Popen', side_effect=launch):
-        return run_supervisor(load_config(), json_output=True)
+        emit(ensure_owners(load_config(), session_id=sid))
+    return 0
 
 
 if __name__ == '__main__':
     mode = sys.argv[1]
-    raise SystemExit(provider() if mode == 'provider' else owner(sys.argv[2]) if mode == 'owner' else supervisor())
+    raise SystemExit(provider() if mode == 'provider' else owner(sys.argv[2]) if mode == 'owner' else wake(sys.argv[2]))
