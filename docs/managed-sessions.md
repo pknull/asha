@@ -308,8 +308,12 @@ process session, where work is queued: a structured `session launch`,
 session, the dashboard's send, answer and resume, and `session admission
 resume`. It outlives the command that started it and inherits that command's
 environment, without tmux, Room, hub-session and managed-actor fields, so a
-harness on the caller's `PATH` is found. Each owner logs to
-`session-logs/SESSION_ID.log` beneath the Control state root.
+harness on the caller's `PATH` is found. The owner holds the operator's
+authority outside any harness sandbox, so it runs in an isolated interpreter
+(`python3 -B -I`) that imports Control only from the checkout's `lib/`, and the
+caller's `PYTHON*` startup variables reach neither it nor its harness: a
+`PYTHONPATH` into a project cannot run that project's code in the owner. Each
+owner logs to `session-logs/SESSION_ID.log` beneath the Control state root.
 
 A session has one owner. A transactional launch reservation admits one of any
 racing starts and holds off another start for five seconds; the owner's
