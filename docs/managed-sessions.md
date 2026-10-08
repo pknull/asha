@@ -330,7 +330,11 @@ An owner lost to a crash or reboot restarts on the next operator
 a send or resume to it. The new owner reconciles a turn its predecessor left
 running to `uncertain`; nothing is replayed. Until then the session reads
 `waiting_on: owner`. Reads by a worker or managed actor never start an owner,
-and neither does the dashboard's refresh.
+and neither does the dashboard's refresh. A bulk start (`session list`,
+`session admission resume`) walks every eligible session in bounded pages,
+skipping per session those with a live owner or a launch still in backoff, and
+completes stop intent for every ownerless session the same way, so sessions
+beyond the first hundred are never stranded.
 
 The supervisor daemon and its systemd user unit retired on 2026-10-07.
 `asha control supervisor ...` prints these steps, and `asha control doctor`
