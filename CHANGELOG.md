@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased — subtraction N1: structured owners start on demand; the supervisor retires (session 2.9.2)
+
+- The `asha-supervisor` daemon is gone (Keeper value call N1, 2026-10-07): its
+  five-second sweep, flock, `supervisor.json` status, systemd unit renderer and
+  installer, and `asha control supervisor ...` (now a refusal that prints how to
+  remove an installed unit; `supervisor run` exits 0 so an installed unit stops
+  instead of restarting). Session tracking (hub records, Room tmux identity and
+  markers, hook-driven status) is unchanged.
+- A structured owner starts, detached, where work is queued: a structured
+  launch, `session create|send|answer|resume`, a structured close request, the
+  dashboard's send, answer and resume, and `session admission resume`. It
+  inherits the caller's environment (so its `PATH` finds the harness) without
+  tmux, Room, hub-session and managed-actor fields.
+- The launch reservation admits one of racing starts. An owner keeps custody
+  while its input is runnable, waits for the managed turn limit instead of
+  exiting, and gives custody back in the same transaction that finds no input,
+  so input queued as it retires is never stranded.
+- An owner lost to a crash or reboot restarts on the next operator `session
+  show` of that session or `session list`; the new owner reconciles a turn left
+  running to `uncertain`. Worker and managed-actor reads never start owners, nor
+  does the dashboard refresh. A session waiting for its owner reads
+  `waiting_on: owner` (was `supervisor`).
+- Runtime admission moved to `asha control session admission
+  {status|pause|drain|resume|stop}`. Control's doctor keeps its advisory
+  `supervisor-service` probe, which now only reports a leftover unit.
+- After landing: remove the installed unit (`systemctl --user disable --now
+  asha-supervisor.service`, delete the unit file, `systemctl --user
+  daemon-reload`); optionally delete `supervisor.lock`, `supervisor.json` and
+  any `supervisor.log` beneath `~/.asha/state/control/`. Reinstall harness
+  targets for the skill text.
+
 ## Unreleased — subtraction B6a: plugin tools trust the local user (session 2.9.1, asha 3.1.2, admin 0.3.2)
 
 - Plugin tools no longer defend Asha's files against same-user tampering
