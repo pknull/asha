@@ -78,7 +78,7 @@ Important shared seams:
 | Commands | Native command Markdown | Rendered skills | Rendered skills | Native cleaned command Markdown |
 | Agents | Source Markdown | Generated TOML | Generated `.agent.md` | Generated Markdown subagents |
 | Skills | Symlinked directories | Symlinked directories | Symlinked directories | Symlinked directories |
-| Hooks | Tagged `settings.json` entries | Nested TOML hook tables | Dedicated hook JSON | Generated `plugins/asha.js` bridge |
+| Hooks | Tagged `settings.json` entries | Owned `hooks.json` (native `config.toml` keeps feature and trust) | Dedicated hook JSON | Generated `plugins/asha.js` bridge |
 | Persona | Append-system-prompt file | `model_instructions_file` | Custom instructions directory | Wrapper-scoped instructions array |
 
 Claude commands may retain Claude-only frontmatter. Renderers must strip or

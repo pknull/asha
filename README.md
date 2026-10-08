@@ -165,7 +165,7 @@ Candidates and retired records are never injected as instructions. Claude receiv
 and OpenCode through the wrapper-scoped instructions array. Files are generated
 by `identity/operational-merge.sh` with the same budgets.
 
-**Hook surfaces are harness-native.** Claude uses JSON in `settings.json`; Codex uses nested TOML hook tables; Copilot uses dedicated hook JSON; OpenCode uses `plugins/asha.js`. Prompt/tool hooks update bounded recovery state, whilst policy adapters bridge each real-time hook contract to the shared rules.
+**Hook surfaces are harness-native.** Claude uses JSON in `settings.json`; Codex uses an owned `hooks.json` (its native `config.toml` keeps only the hooks feature flag and hook trust); Copilot uses dedicated hook JSON; OpenCode uses `plugins/asha.js`. Prompt/tool hooks update bounded recovery state, whilst policy adapters bridge each real-time hook contract to the shared rules.
 
 **First launch requires the harness's own config to already exist** for Claude and Codex. Their installers deliberately refuse to fabricate `settings.json` / `config.toml` (the harness owns that file's format). Copilot and OpenCode use additive Asha-owned files and have no such precondition.
 
@@ -246,7 +246,7 @@ nor copies them.
 | Harness | Save surface | Recovery/context seam | End behavior |
 |---|---|---|---|
 | **Claude Code** | Native `/session:save` command | Native `SessionStart`, `UserPromptSubmit`, and `PostToolUse` hooks; SessionStart injects the coherent project pair, operational layer, active learnings, workspace context, and any verify-first recovery hint | Native `SessionEnd` seals recovery only |
-| **OpenAI Codex** | Rendered `session-save` skill | Native TOML hooks call the shared startup/recovery handlers where Codex exposes the event; wrapper instructions supply operation and active learnings | No supported SessionEnd hook; the next start sweeps stale snapshots |
+| **OpenAI Codex** | Rendered `session-save` skill | Native hooks in an owned `hooks.json` call the shared startup/recovery handlers where Codex exposes the event; wrapper instructions supply operation and active learnings | No supported SessionEnd hook; the next start sweeps stale snapshots |
 | **GitHub Copilot CLI** | Rendered `session-save` skill | `asha-recovery.json`; SessionStart returns the coherent project pair plus workspace/recovery context through `additionalContext`, whilst wrapper instructions supply operation and active learnings | `sessionEnd` seals recovery only |
 | **OpenCode** | Rendered native `session-save` command | Generated `plugins/asha.js` calls the shared startup/recovery handlers and injects their context through system-prompt transformation | `dispose` seals recovery only |
 

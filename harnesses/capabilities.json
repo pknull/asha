@@ -168,9 +168,10 @@
         },
         "hooks": {
           "support": "partial",
-          "surface": "config.toml",
+          "surface": "hooks.json",
           "verifier": "doctor:toml-hooks",
           "limitations": [
+            "hooks.json is ledger-owned; native config.toml keeps only the hooks feature flag and hash-bound hook trust, and install reads it but never writes it",
             "Some unified_exec shell calls are not intercepted",
             "Non-shell non-MCP tools are not universally intercepted",
             "Hooks are not a complete enforcement boundary"
@@ -205,7 +206,7 @@
         },
         "guardrails": {
           "support": "partial",
-          "surface": "config.toml and rules/asha.rules",
+          "surface": "hooks.json and rules/asha.rules",
           "verifier": "doctor:rules + python test_experience_save_defaults",
           "limitations": [
             "Rules are prefix-based and apply at approval/sandbox boundaries",
