@@ -96,6 +96,17 @@ class RetiredSurfaceTests(unittest.TestCase):
         code, _out, err = self._run("control", "doctor", "--bogus")
         self.assertEqual(code, 2)
 
+    def test_the_gh_probe_names_no_retired_task_source_modes(self):
+        from lib.control.config import load_config
+        from lib.control.doctor import DEFAULT_PROBES
+        config = load_config(self.env)
+        for found in ("/usr/bin/gh", None):
+            with mock.patch("lib.control.doctor.shutil.which", return_value=found):
+                detail = DEFAULT_PROBES["gh"](config).detail
+            for retired in ("--pr", "--issue", "task", "source mode"):
+                self.assertNotIn(retired, detail, found)
+            self.assertIn("optional", detail, found)
+
     def test_codex_actor_exposes_only_ask(self):
         from lib.control.codex_actor import TOOL
         self.assertEqual(TOOL["inputSchema"]["properties"]["operation"]["enum"], ["ask"])

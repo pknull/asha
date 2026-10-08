@@ -10,9 +10,12 @@ CLI, GitHub Copilot CLI, and OpenCode stable v1. All launch through one `asha` d
 Source skills, agents, and commands remain shared Markdown; adapters render each
 harness's native form.
 
-Asha Control adds no install target. The existing dispatcher exposes `asha
-task` and `asha control`; using them requires local `jj` and `tmux`. The `gh`
-CLI is required only for the optional `--pr` and `--issue` source modes.
+Asha Control adds no install target. The dispatcher exposes `asha control`:
+`asha control session launch` starts native terminal jobs and project Rooms,
+which run in local `tmux`, and Claude or Codex structured utilities, which run
+headless. Control needs neither `jj` nor `gh`. `asha initiative
+list|show|export` only reads retired initiative evidence. See
+[Project sessions](docs/session-hub.md) and [Control](docs/control.md).
 
 ## Architecture
 
@@ -259,8 +262,8 @@ claude`/`asha codex`/`asha copilot`/`asha opencode` — opens the seat: the
 harness word selects only the tool, and the session launches from
 `$ASHA_HOME/chair` (created `0700` on first use) so the chair always boots
 in the same neutral context with one shared `/resume` lineage per harness.
-Arguments keep the caller's cwd, and Control-managed launches (coordinator
-sessions, workers) always keep their own start directories. A Codex seat
+Arguments keep the caller's cwd, and Control-managed launches (workers and
+Rooms) always keep their own start directories. A Codex seat
 launch also carries the per-launch trust override for the chair directory.
 The unattended coordinator posture (`--sandbox danger-full-access`) retired
 with the initiative engine and is applied to no launch.
@@ -269,8 +272,9 @@ Wrapped `asha claude` and `asha codex` launches also carry the orchestrator
 stance by default: `identity/orchestrator-brief.md` — the operator's-chair
 brief pointing at the `operate-control` skill — is appended to the launch
 instructions (a separate combined cache file; the canonical identity render
-stays identity-only). It is suppressed for Control-launched coordinator
-sessions (`ASHA_COORDINATOR_LAUNCH`), for Control-managed workers
+stays identity-only). It is suppressed for a launch marked
+`ASHA_COORDINATOR_LAUNCH` (the retired coordinator's marker, which no current
+Control path sets), for Control-managed workers
 (`ASHA_PERSONA=0`), by `"orchestrator_stance": false` in
 `~/.asha/config.json`, or per-launch via `ASHA_ORCHESTRATOR_STANCE=0`
 (`=1` overrides a config `false`; the coordinator suppression beats both).

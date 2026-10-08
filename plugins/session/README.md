@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 2.9.2
+**Version**: 2.9.3
 
 Compact explicit memory publication, bounded crash recovery, reviewed learning
 lifecycle, policy guardrails, guarded loops, and workspace management.
@@ -8,9 +8,9 @@ lifecycle, policy guardrails, guarded loops, and workspace management.
 ## When to use it
 
 Use Session to initialize project memory, publish a handoff, inspect recovery,
-silence persistence, migrate legacy stores, run an autonomous loop, or manage a
-declared multi-repository workspace. Use `/code:verify` for verification alone;
-use RP commands for story-session lifecycle.
+silence persistence, maintain reviewed learnings, run an autonomous loop, or
+manage a declared multi-repository workspace. Use `/code:verify` for
+verification alone; use RP commands for story-session lifecycle.
 
 ## Invocation
 
@@ -72,13 +72,14 @@ than 90 days.
 | `capability-broker` | Match tasks to verified harness capabilities |
 
 Removed in v2: memory steward and curator. Context is now direct and bounded.
-The reviewed v1 migration (`/session:consolidate`) was retired in 2.7.0.
+The reviewed v1 migration (`/session:consolidate`) was retired in 2.7.0; see
+[Legacy Memory](../../docs/memory-architecture.md#legacy-memory).
 
 ## Skills
 
 | Skill | Role |
 |---|---|
-| `memory-maintenance` | Memory v2 schema, recovery, learnings, and migration rules |
+| `memory-maintenance` | Memory v2 schema, recovery and learning rules, and how init treats legacy files |
 | `operate-control` | Launch, inspect and steer project sessions from the chair: jobs, Rooms, structured utilities, questions and results |
 | `skill-creator` | Create or update Codex-compatible skills |
 
@@ -95,7 +96,7 @@ The reviewed v1 migration (`/session:consolidate`) was retired in 2.7.0.
 
 Copilot receives one generated `asha-recovery.json`. OpenCode's generated
 plugin calls the same four recovery handlers and seals on `dispose`; it never
-starts a save. Codex renders the shared native hooks to TOML.
+starts a save. Codex renders the shared native hooks into an owned `hooks.json`.
 
 ## Workspace boundary
 
@@ -125,15 +126,24 @@ for the repository; workspace state answers what coordinates the repositories.
 
 - `.asha/config.json` must carry a stable `project_id` and `memory_version: 2`.
 - Publication is limited to the selected plane's two files.
-- Legacy sources are never deleted by init or migration apply.
-- A successful reviewed migration writes a private global completion marker so
-  preserved legacy evidence does not produce a warning upon every reinstall.
+- Init never deletes legacy (pre-v2) files. It refuses a published
+  `activeContext.md` or `decisions.md` that is not valid v2 until you rewrite it
+  in the v2 format; nothing migrates it (see
+  [Legacy Memory](../../docs/memory-architecture.md#legacy-memory)).
+- Publication runs only through `/session:save` or a Control session handoff.
 - Generated installers prune removed Copilot/OpenCode artifacts; uninstall
   preserves modified generated files for review.
 - Run `./tests/run-tests.sh`; for harness work also run Codex/OpenCode drift
   checks required by `AGENTS.md`.
 
 ## Version history
+
+### 2.9.3
+
+Current guidance describes the shipped system (parity review P3/P4): the
+"migrate legacy stores" use and the migration completion-marker promise are
+gone, the `memory-maintenance` row names what init does with legacy files, and
+Codex hooks are described as an owned `hooks.json`, not TOML.
 
 ### 2.9.2
 

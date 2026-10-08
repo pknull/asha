@@ -458,9 +458,9 @@ schema is refused until an operator runs `session migrate` with managed owners
 stopped. Schema upgrades are transactional: interruption leaves the previous
 version and canonical record bytes intact. This command upgrades the database
 schema.
-If an older schema prevents ordinary lifecycle commands, `session quiesce` stops
-the scheduler and requests shutdown through verified owner process handles without
-writing that older schema. Wait for those owners to exit, then migrate. Interrupted
+If an older schema prevents ordinary lifecycle commands, `session quiesce`
+requests shutdown through verified owner process handles without writing that
+older schema. Wait for those owners to exit, then migrate. Interrupted
 sessions use digest-bound `session resume` with a fresh recovery prompt; cancelled
 old inputs are retained as cancelled and are never replayed automatically.
 

@@ -118,13 +118,10 @@ def _harness_probe(config, *, required_harnesses=None) -> Probe:
 
 def _gh_probe(config) -> Probe:
     executable = shutil.which("gh")
-    scope = "gh is required only for --pr and --issue; ad-hoc tasks do not require it"
+    scope = "gh is optional: no Control command needs it; GitHub workflows such as the code plugin's issue loop do"
     if executable is None:
         return Probe("gh", "unavailable", f"gh executable was not found on PATH; {scope}")
-    return Probe(
-        "gh", "match",
-        f"gh resolves on PATH; authentication is checked when GitHub source mode starts; {scope}",
-    )
+    return Probe("gh", "match", f"gh resolves on PATH; {scope}")
 
 
 def _tui_probe(config) -> Probe:
