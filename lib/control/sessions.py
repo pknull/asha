@@ -300,6 +300,31 @@ def _launch_owner(config, sid, env):
 
 
 _OWNER_PAGE = 100
+# Stop intent whose owner died before completing it; also the WHERE of the
+# managed_session_stopping index, which this walk reads.
+_STOP_PENDING = "s.stop_requested=1 AND s.state!='stopped'"
+# A lost owner's running turn needs a new owner to reconcile it; queued input
+# behind an open question waits for its answer, not an owner. The redundant
+# NOT IN term repeats managed_session_runnable's WHERE so this walk can read
+# that index; _owner_eligible fills {plus}.
+_OWNER_ELIGIBLE = """{plus}s.state IN ('queued','idle','running','waiting-input')
+    AND s.state NOT IN ('stopped','failed','uncertain','budget-exhausted') AND s.stop_requested=0
+    AND s.initiative_id IS NULL AND ({plus}s.state='running' OR (EXISTS (
+        SELECT 1 FROM session_messages m WHERE m.session_id=s.session_id AND m.state='queued')
+        AND NOT EXISTS (SELECT 1 FROM session_requests r WHERE r.session_id=s.session_id AND r.state='pending')))"""
+
+
+def _owner_eligible(c):
+    """The eligible predicate, reading managed_session_runnable when it exists (#122).
+
+    Unary plus keeps both state terms off managed_session_state. Its per-state
+    ranges re-read, on every page, rows the rest of the predicate rejects
+    (idle sessions without queued input), and on SQLite 3.35 the 'running'
+    arm plus the EXISTS-to-IN rewrite plans a multi-index OR. A database from
+    before the index (until its next write open) keeps the per-state ranges.
+    """
+    indexed = c.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name='managed_session_runnable'").fetchone()
+    return _OWNER_ELIGIBLE.format(plus="+" if indexed else "")
 
 
 def _each_session(store, where, arguments):
@@ -307,10 +332,15 @@ def _each_session(store, where, arguments):
 
     Keyset order (created_at, session_id) visits each row once even while the
     caller changes rows between pages; no transaction spans a page boundary.
+    Through a walk's partial order index (session_store.SCHEMA) the row-value
+    continuation is one range seek, and each indexed row is judged once per
+    walk: query work is linear in the rows of that walk's index (#122). The
+    equivalent OR form planned a multi-index OR that re-sorted every
+    remaining row on each page.
     """
     after = ()
     while True:
-        keyset = " AND (s.created_at > ? OR (s.created_at = ? AND s.session_id > ?))" if after else ""
+        keyset = " AND (s.created_at, s.session_id) > (?, ?)" if after else ""
         with store.db.transaction() as c:
             page = [dict(r) for r in c.execute(
                 "SELECT * FROM managed_sessions s WHERE " + where + keyset
@@ -318,7 +348,7 @@ def _each_session(store, where, arguments):
         yield from page
         if len(page) < _OWNER_PAGE:
             return
-        after = (page[-1]["created_at"], page[-1]["created_at"], page[-1]["session_id"])
+        after = (page[-1]["created_at"], page[-1]["session_id"])
 
 
 def ensure_owners(config, *, env=None, session_id=None):
@@ -359,16 +389,11 @@ def ensure_owners(config, *, env=None, session_id=None):
         with store.db.transaction() as c:
             from .runtime import read_policy
             mode = read_policy(c)["mode"]
-        for row in _each_session(store, "s.stop_requested=1 AND s.state!='stopped'" + scope, arguments):
+            eligible = _owner_eligible(c)
+        for row in _each_session(store, _STOP_PENDING + scope, arguments):
             store.stop(row["session_id"])  # Completes stop intent if the previous owner died.
         if mode != "running":
             return {"managed_sessions": 0, "owners_started": 0, "admission": mode}
-        # A lost owner's running turn needs a new owner to reconcile it; queued
-        # input behind an open question waits for its answer, not an owner.
-        eligible = """s.state IN ('queued','idle','running','waiting-input') AND s.stop_requested=0
-            AND s.initiative_id IS NULL AND (s.state='running' OR (EXISTS (
-                SELECT 1 FROM session_messages m WHERE m.session_id=s.session_id AND m.state='queued')
-                AND NOT EXISTS (SELECT 1 FROM session_requests r WHERE r.session_id=s.session_id AND r.state='pending')))"""
         for session in _each_session(store, eligible + scope, arguments):
             considered += 1
             if session["owner_pid"] and process_live(session["owner_pid"], session["owner_identity"]):

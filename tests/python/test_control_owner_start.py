@@ -9,6 +9,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -318,6 +319,13 @@ class BulkOwnerStartTests(OwnerStartFixture):
         from lib.control.harness import process_identity
         self.set_columns(sids, owner_pid=os.getpid(), owner_identity=process_identity(os.getpid()))
 
+    @staticmethod
+    def reserved_since(moment):
+        """Hold the store's clock at ``moment``: a launch reserved since then
+        still fences (its first backoff is 5 s), however slowly a loaded
+        machine reached the next bulk call."""
+        return mock.patch('lib.control.session_store.time', mock.Mock(**{'time.return_value': moment}))
+
     def test_admission_resume_starts_every_queued_session_past_the_first_hundred(self):
         from lib.control.runtime import set_admission
         set_admission(self.config, 'paused')
@@ -326,6 +334,7 @@ class BulkOwnerStartTests(OwnerStartFixture):
         # still in their reservation backoff.
         self.live_owner(sids[:5])
         self.set_columns(sids[5:10], owner_launch_attempts=1, owner_launch_after=time.time() + 300)
+        resumed = time.time()
         code, out, err = self.cli('admission', 'resume', '--json')
         self.assertEqual(code, 0, err)
         self.assertIsNone(__import__('json').loads(out)['owner_warning'])
@@ -333,7 +342,8 @@ class BulkOwnerStartTests(OwnerStartFixture):
         # A second bulk call has nothing left to start.
         self.launches.clear()
         from lib.control.sessions import ensure_owners
-        result = ensure_owners(self.config, env=self.env)
+        with self.reserved_since(resumed):
+            result = ensure_owners(self.config, env=self.env)
         self.assertEqual((result['owners_started'], self.launches), (0, []))
 
     def test_stop_intent_completes_for_every_ownerless_session_past_the_first_hundred(self):
@@ -346,6 +356,217 @@ class BulkOwnerStartTests(OwnerStartFixture):
             states = [sessions.get(sid)['state'] for sid in sids]
         self.assertEqual(states, ['queued'] * 5 + ['stopped'] * 100)
         self.assertEqual(self.launches, [])
+
+    def tied(self, count, **columns):
+        """``count`` structured sessions sharing one created_at, in walk (session_id) order."""
+        from lib.control.session_store import SessionStore
+        values = dict(created_at=time.time() - 10_000, **columns)
+        with SessionStore(self.config, create=True) as sessions, sessions.db.transaction(write=True) as c:
+            sids = [sessions._create_in_transaction(c, cwd=str(self.project), prompt=f'Job {i}') for i in range(count)]
+            c.executemany('UPDATE managed_sessions SET ' + ','.join(k + '=?' for k in values) + ' WHERE session_id=?',
+                          [(*values.values(), sid) for sid in sids])
+        return sorted(sids)
+
+    def test_tied_sessions_behind_two_pages_of_live_and_reserved_owners_all_start(self):
+        from lib.control.runtime import set_admission
+        from lib.control.sessions import ensure_owners
+        set_admission(self.config, 'paused')
+        sids = self.tied(305)
+        # With every timestamp tied, only the session_id tie-break orders the
+        # walk: a full page of live owners, then a full page still reserved.
+        self.live_owner(sids[:100])
+        self.set_columns(sids[100:200], owner_launch_attempts=1, owner_launch_after=time.time() + 300)
+        resumed = time.time()
+        code, out, err = self.cli('admission', 'resume', '--json')
+        self.assertEqual(code, 0, err)
+        self.assertIsNone(json.loads(out)['owner_warning'])
+        self.assertEqual(sorted(self.owner_launches()), sids[200:])
+        self.launches.clear()
+        with self.reserved_since(resumed):
+            result = ensure_owners(self.config, env=self.env)
+        self.assertEqual((result['managed_sessions'], result['owners_started'], self.launches), (305, 0, []))
+
+    def test_tied_stop_intent_completes_behind_a_page_of_live_owners_while_paused(self):
+        from lib.control.runtime import set_admission
+        from lib.control.session_store import SessionStore
+        from lib.control.sessions import ensure_owners
+        set_admission(self.config, 'paused')
+        sids = self.tied(305, stop_requested=1)
+        self.live_owner(sids[:100])
+        # Each completed stop changes a row the walk has already passed.
+        self.assertEqual(ensure_owners(self.config, env=self.env),
+                         {'managed_sessions': 0, 'owners_started': 0, 'admission': 'paused'})
+        with SessionStore(self.config) as sessions:
+            states = [sessions.get(sid)['state'] for sid in sids]
+        self.assertEqual(states, ['queued'] * 100 + ['stopped'] * 205)
+        self.assertEqual(self.launches, [])
+
+
+class BulkWalkCostTests(OwnerStartFixture):
+    """A bulk walk's query work is linear in the sessions it can match (#122).
+
+    Each walk of ensure_owners pages through its own partial index in
+    (created_at, session_id) order: managed_session_runnable for the start
+    walk, managed_session_stopping for the stop walk. A page resumes after the
+    last row with one range seek and judges each indexed row once, so no page
+    re-reads or re-sorts the rows before it, and settled history is never read.
+    """
+
+    STOPPING = dict(state='queued', stop_requested=1)
+
+    def store(self):
+        from lib.control.session_store import SessionStore
+        store = SessionStore(self.config, create=True)
+        self.addCleanup(store.close)
+        return store
+
+    @staticmethod
+    def insert(store, count, **columns):
+        """Raw tied rows: the walk's SQL cost, without launch or message setup."""
+        values = {**dict(harness='claude', cwd='/', state='running', max_turns=12,
+                         created_at=1000.0, updated_at=1000.0), **columns}
+        with store.db.transaction(write=True) as c:
+            c.executemany('INSERT INTO managed_sessions(session_id,' + ','.join(values) + ') VALUES(?'
+                          + ',?' * len(values) + ')', [(str(uuid.uuid4()), *values.values()) for _ in range(count)])
+
+    @staticmethod
+    def clear(store):
+        with store.db.transaction(write=True) as c:
+            c.execute('DELETE FROM managed_sessions')
+
+    def bulk(self):
+        """The production ensure_owners, with nothing launched or stopped.
+
+        Returns the sessions it would stop and would start, its SQLite VM
+        steps, and each page statement with its bound parameters.
+        """
+        from lib.control.database import ControlDatabase, Transaction
+        from lib.control.session_store import SessionStore
+        from lib.control.sessions import ensure_owners
+        steps, pages = [0], []
+        real_connect, real_execute = ControlDatabase._connect, Transaction.execute
+
+        def tick():
+            steps[0] += 1
+            return 0
+
+        def connect(database):
+            connection = real_connect(database)
+            connection.set_progress_handler(tick, 100)
+            return connection
+
+        def execute(handle, sql, parameters=()):
+            if 'FROM managed_sessions s' in sql:
+                pages.append((sql, tuple(parameters)))
+            return real_execute(handle, sql, parameters)
+        with mock.patch.object(ControlDatabase, '_connect', connect), \
+                mock.patch.object(Transaction, 'execute', execute), \
+                mock.patch.object(SessionStore, 'stop') as stop, \
+                mock.patch.object(SessionStore, 'reserve_owner_launch', return_value=False) as reserve:
+            ensure_owners(self.config, env=self.env)
+        self.assertEqual(self.launches, [])
+        return ([call.args[0] for call in stop.call_args_list], [call.args[0] for call in reserve.call_args_list],
+                steps[0] * 100, pages)
+
+    def plans(self, store, pages, walk):
+        """EXPLAIN QUERY PLAN of one walk's pages, with their bound parameters.
+
+        Inlining the values as literals (as the trace seam does) can change the plan.
+        """
+        marker = 's.stop_requested=1' if walk == 'stop' else 's.stop_requested=0'
+        with store.db.transaction() as c:
+            # SQLite before 3.36 prints "SCAN TABLE managed_sessions AS s ...".
+            return [[re.sub(r'^(SCAN|SEARCH) TABLE \w+ AS ', r'\1 ', r[3])
+                     for r in c.execute('EXPLAIN QUERY PLAN ' + sql, parameters)]
+                    for sql, parameters in pages if marker in sql]
+
+    def test_tied_bulk_walks_do_query_work_linear_in_the_sessions_they_read(self):
+        store = self.store()
+        # Idle sessions without queued input share the eligible states but never
+        # need an owner: a walk that re-reads them on every page is quadratic too.
+        for name, shapes in (('start', [{}]), ('start among idle sessions', [{}, dict(state='idle')]),
+                             ('stop', [self.STOPPING])):
+            with self.subTest(walk=name):
+                self.clear(store)
+                steps, total = [], 0
+                for count in (1000, 2000, 4000):
+                    for columns in shapes:
+                        self.insert(store, count - total, **columns)
+                    total = count
+                    stopped, started, work, _ = self.bulk()
+                    walked = stopped if name == 'stop' else started
+                    self.assertEqual((len(walked), len(set(walked))), (count, count))
+                    steps.append(work)
+                # Doubling the sessions roughly doubles the work; re-reading the
+                # remainder on every page (the defect) roughly quadruples it.
+                self.assertLess(steps[1] / steps[0], 2.5, steps)
+                self.assertLess(steps[2] / steps[1], 2.5, steps)
+
+    def test_settled_history_adds_no_walk_work(self):
+        store = self.store()
+        self.insert(store, 500)
+        self.insert(store, 50, **self.STOPPING)
+        *_, before, _ = self.bulk()
+        # Failed, uncertain and budget-exhausted sessions rest until an
+        # operator stops or resumes them; stopped ones stay as history.
+        self.insert(store, 2000, state='stopped', stop_requested=1)
+        for state in ('failed', 'uncertain', 'budget-exhausted'):
+            self.insert(store, 1000, state=state)
+        stopped, started, after, _ = self.bulk()
+        self.assertEqual((len(stopped), len(started)), (50, 500))
+        self.assertLess(after, 1.2 * before, (before, after))
+
+    def test_no_state_term_of_the_start_walk_can_reach_the_state_index(self):
+        # SQLite 3.35 rewrites EXISTS to IN, so any unplussed state arm of the
+        # OR plans a multi-index OR there; this check holds on every SQLite.
+        from lib.control.sessions import _owner_eligible
+        store = self.store()
+        with store.db.transaction() as c:
+            predicate = _owner_eligible(c)
+        terms = re.findall(r'(\+?)s\.state\b(\s+NOT IN)?', predicate)
+        self.assertEqual(sorted(terms), [('', ' NOT IN')] + [('+', '')] * (len(terms) - 1))
+        self.assertGreater(len(terms), 2)
+
+    def test_each_walk_pages_through_its_global_order_index(self):
+        store = self.store()
+        for walk, index, columns in (('start', 'managed_session_runnable', {}),
+                                     ('stop', 'managed_session_stopping', self.STOPPING)):
+            with self.subTest(walk=walk):
+                self.clear(store)
+                self.insert(store, 250, **columns)
+                *_, pages = self.bulk()
+                plans = self.plans(store, pages, walk)
+                self.assertEqual(len(plans), 3)
+                self.assertEqual(plans[0][0], f'SCAN s USING INDEX {index}')
+                for plan in plans[1:]:
+                    self.assertEqual(plan[0], f'SEARCH s USING INDEX {index} ((created_at,session_id)>(?,?))')
+                for step in (step for plan in plans for step in plan):
+                    self.assertNotIn('TEMP B-TREE', step)
+                    self.assertNotIn('MULTI-INDEX OR', step)
+
+    def test_a_database_from_before_the_order_indexes_gains_them_on_its_next_write_open(self):
+        from lib.control.session_store import SessionStore
+        store = self.store()
+        with store.db.transaction(write=True) as c:
+            c.execute('DROP INDEX managed_session_runnable')
+            c.execute('DROP INDEX managed_session_stopping')
+        self.insert(store, 250)
+        self.insert(store, 250, **self.STOPPING)
+        stopped, started, _, pages = self.bulk()
+        self.assertEqual((len(set(stopped)), len(set(started))), (250, 250))
+        # Until then the start walk seeks one ordered range per eligible state.
+        for plan in self.plans(store, pages, 'start')[1:]:
+            self.assertEqual(plan[0], 'SEARCH s USING INDEX managed_session_state (state=? AND (created_at,session_id)>(?,?))')
+        store.close()
+
+        def order_indexes():
+            with SessionStore(self.config) as reader, reader.db.transaction() as c:
+                return [[r[2] for r in c.execute(f'PRAGMA index_info({name})')]
+                        for name in ('managed_session_runnable', 'managed_session_stopping')]
+        self.assertEqual(order_indexes(), [[], []])  # an ordinary open never writes the schema
+        with SessionStore(self.config, create=True):
+            pass  # structured launch, `session create` and `session init` open for writing
+        self.assertEqual(order_indexes(), [['created_at', 'session_id']] * 2)
 
 
 class OwnerIsolationTests(unittest.TestCase):

@@ -932,6 +932,115 @@
         "owner": "asha/code",
         "version": "1.0.0"
       }
+    },
+    {
+      "id": "github-cli",
+      "kind": "skill",
+      "description": "Portable GitHub CLI foundation (code-github-cli): bounded repository, issue, pull-request, review, Actions and release reads; writes only on explicit request with separate authorization for merge and publication.",
+      "categories": [
+        "github",
+        "integration"
+      ],
+      "task_patterns": [
+        "github"
+      ],
+      "prerequisites": [
+        "gh-authenticated-for-target-host",
+        "explicit-target-repository-when-cwd-is-ambiguous"
+      ],
+      "required_config": [],
+      "risk": "medium",
+      "approval": [
+        "explicit-user-request-for-each-remote-write",
+        "separate-authorization-for-merge-or-publication"
+      ],
+      "output_contract": "gh-cli-output",
+      "permissions": [
+        "read",
+        "propose"
+      ],
+      "harness_support": {
+        "claude": {
+          "capability_ref": "claude.capabilities.skills",
+          "fallback": "Run the documented gh commands inline after checking gh help."
+        },
+        "codex": {
+          "capability_ref": "codex.capabilities.skills",
+          "fallback": "Run the documented gh commands inline after checking gh help."
+        },
+        "copilot": {
+          "capability_ref": "copilot.capabilities.skills",
+          "fallback": "Run the documented gh commands inline after checking gh help."
+        },
+        "opencode": {
+          "capability_ref": "opencode.capabilities.skills",
+          "fallback": "Run the documented gh commands inline after checking gh help."
+        }
+      },
+      "fallback": "Run read-only gh commands inline; check exact command help before any write.",
+      "ownership": {
+        "owner": "asha/code",
+        "version": "1.0.0"
+      },
+      "dependencies": [
+        {
+          "id": "github-cli-setup",
+          "relation": "requires",
+          "when": {
+            "type": "command-missing",
+            "command": "gh"
+          },
+          "reason": "gh is not on PATH; follow the official setup documentation first."
+        }
+      ]
+    },
+    {
+      "id": "github-cli-setup",
+      "kind": "skill",
+      "description": "Setup and authentication procedure of the code-github-cli skill (references/setup.md): point to official gh documentation; installation, login and persistent configuration need explicit user approval.",
+      "categories": [
+        "github",
+        "setup"
+      ],
+      "task_patterns": [],
+      "prerequisites": [
+        "user-chosen-installation-method"
+      ],
+      "required_config": [],
+      "risk": "medium",
+      "approval": [
+        "explicit-user-approval-to-install",
+        "explicit-user-approval-to-authenticate",
+        "explicit-user-approval-for-persistent-configuration"
+      ],
+      "output_contract": "setup-guidance",
+      "permissions": [
+        "read",
+        "propose"
+      ],
+      "harness_support": {
+        "claude": {
+          "capability_ref": "claude.capabilities.skills",
+          "fallback": "Recommend the official gh installation and authentication documentation inline."
+        },
+        "codex": {
+          "capability_ref": "codex.capabilities.skills",
+          "fallback": "Recommend the official gh installation and authentication documentation inline."
+        },
+        "copilot": {
+          "capability_ref": "copilot.capabilities.skills",
+          "fallback": "Recommend the official gh installation and authentication documentation inline."
+        },
+        "opencode": {
+          "capability_ref": "opencode.capabilities.skills",
+          "fallback": "Recommend the official gh installation and authentication documentation inline."
+        }
+      },
+      "fallback": "Recommend https://cli.github.com/ and the gh manual; do not install or log in without approval.",
+      "ownership": {
+        "owner": "asha/code",
+        "version": "1.0.0"
+      }
     }
   ]
 }

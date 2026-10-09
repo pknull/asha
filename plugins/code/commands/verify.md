@@ -83,23 +83,12 @@ Summary: 2/3 checks passed
 
 ## Configuration
 
-Verification config comes from `verify.yaml` at the project root. When absent,
-infer the narrow checks from repository-native manifests and instructions
-(`AGENTS.md`, package/build files, CI configuration), then report that inference.
-
-Create `verify.yaml` to customize (optional):
-
-```yaml
-level: standard
-checkers:
-  typescript:
-    typecheck: true
-    lint: true
-  python:
-    enabled: false
-thresholds:
-  coverage: 80
-```
+The engine reads no configuration file. It selects checkers from project files
+(`tsconfig.json`, `pyproject.toml`, `go.mod`, `pom.xml`, `Cargo.toml` and
+similar) and the tools found on `PATH`. When that selection does not fit the
+project, infer the narrow checks from repository-native manifests and
+instructions (`AGENTS.md`, package/build files, CI configuration), run those
+instead, and report that inference.
 
 ## Tips
 

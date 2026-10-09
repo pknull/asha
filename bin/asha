@@ -558,6 +558,11 @@ Usage:
   asha process route <task>        advisory process route with risks and fallback
   asha capabilities match <task>   registry-backed harness capability match
                                    (both accept --json)
+  asha capabilities plan <id>      read-only dependency plan for one capability
+                                   (--json, --probe looks commands up on PATH)
+  asha standalone list|export|validate [...]
+                                   opt-in portable subset: matrix, export at a
+                                   revision, isolated validation
   asha init-repo [--dir D] [...]   scaffold agent/Copilot standards files into a repo
                                    (--dry-run | --check for CI | --force)
   asha-<harness> [args...]         shim form (launch that harness)
@@ -651,6 +656,14 @@ if [[ "${1:-}" == "process" || "${1:-}" == "capabilities" ]]; then
   # shellcheck disable=SC1090
   source "$ASHA_ROOT/lib/broker.sh"
   ( set -euo pipefail; asha_broker_main "$@" )
+  exit $?
+fi
+
+# Standalone reuse (#126): the opt-in portable subset. Isolated interpreter;
+# the tool is standard-library only and never installs or launches anything.
+if [[ "${1:-}" == "standalone" ]]; then
+  shift
+  python3 -I "$ASHA_ROOT/lib/standalone.py" "$@"
   exit $?
 fi
 

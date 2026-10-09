@@ -534,6 +534,8 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 - Writing workflows: `plugins/write/README.md`
 - Image generation: `plugins/image/README.md`
 - Session & memory: `plugins/session/README.md`
+- Using the portable subset without Asha:
+  [docs/standalone-reuse.md](docs/standalone-reuse.md)
 - Development guide: `CLAUDE.md`
 
 ---
