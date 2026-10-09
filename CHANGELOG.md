@@ -1,5 +1,91 @@
 # Changelog
 
+## Unreleased — bulk-owner walk indexes, dependency plans, GitHub CLI foundation, standalone reuse (session 2.10.0, code 1.7.0)
+
+- Bulk owner start and stop (#122): `session list` and `session admission
+  resume` walk sessions through one partial index each, in global
+  `(created_at, session_id)` order: `managed_session_runnable` (not stopped,
+  failed, uncertain or budget-exhausted) and `managed_session_stopping`
+  (pending stop intent). Each page resumes with one row-value range seek,
+  `(created_at, session_id) > (?, ?)`, so query work grows linearly with the
+  rows in that walk's index and settled history is never read; the old OR
+  keyset re-sorted the remaining rows on every page (173k / 645k / 2.49M
+  SQLite VM steps for 1k / 2k / 4k tied running rows). Each walk's predicate
+  repeats its index's WHERE, and a unary plus keeps the state terms off
+  `managed_session_state`. An existing database gains both indexes on its next
+  write open (a structured launch, `asha control session create` or `session
+  init`); no schema migration.
+- Memory architecture guide (#123): Codex renders the shared hooks to an
+  installer-owned `hooks.json`, recorded in the generated-artifact ledger; its
+  native `config.toml` keeps only the hooks feature flag and hash-bound hook
+  trust, which install reads and never writes.
+
+- `asha capabilities plan <id>` (#124): a read-only dependency plan for one
+  explicitly named broker capability (`asha.capability-plan.v1`). The broker
+  registry is the only dependency authority: `process.capability_ids` plus an
+  optional typed `dependencies` list (`requires`/`optional`, conditions
+  `always` or `command-missing`). Loading fails closed on unknown targets,
+  duplicates and cycles, inactive edges included; overrides cannot change
+  edges. The plan reports declared support apart from unverified availability,
+  configuration presence (never values; presence is not authentication),
+  prerequisites, missing items, approvals, blockers and fallback, with each
+  aggregated item labelled required, conditional or optional exactly as the
+  blocker lists are. `--probe` looks at most 16 commands up on `PATH`,
+  root-first (edges below an inactive node read `skipped`), and never runs
+  them; a missing required command reads `needs-foundation`. The plan writes nothing,
+  telemetry included. `process route` is unchanged and `capabilities match`
+  changes only for tasks naming GitHub, which now also select `github-cli`
+  (a fixture pins 18 tasks on four harnesses against 562869a0). Broker error
+  JSON gains an optional `details` object.
+- `code-github-cli` (#125): a portable, MCP-free GitHub CLI foundation skill.
+  Bounded repository, issue, PR, review, Actions and release reads; explicit
+  draft PRs, comments and review requests; merge, approval, ready-for-review
+  and release creation need separate authorization. It checks authentication
+  without displaying credentials, pins every authentication check to the
+  target host (`gh auth status --hostname HOST`, never unscoped), takes hosts
+  only from the user, limits pushes to the pull request's own branch, and
+  leaves setup, login and persistent configuration to explicit approval
+  (`references/setup.md`). Body, comment, review and asset reads apply `--jq`
+  budgets (bodies 4,000 characters, the last 20 comments at 2,000, the last 10
+  reviews at 1,000, 30 line comments per page for at most three pages, 20
+  asset names) and report totals so cuts are visible; the tests run every
+  budget through jq against oversized fixtures. Every documented
+  command, flag and JSON field is checked against a gh 2.45.0 fixture
+  (`tests/fixtures/record-gh-cli-fixture.py` regenerates it).
+  `/code:issue-loop` cites it only for gh discovery, setup and authentication;
+  the loop stays draft-only and never merges. The broker registry gains
+  `github-cli` and its conditional `github-cli-setup` foundation.
+- `asha standalone list|export|validate` (#126) and
+  [docs/standalone-reuse.md](docs/standalone-reuse.md): a component matrix
+  (`lib/standalone-components.json`) of standalone-safe (`verify-tool`,
+  `github-cli-skill`, `find-skills-inspector`), adapter-required
+  (`debugger-guidance`, `code-verify-command`) and Asha-runtime components.
+  Export reads Git objects at an explicit revision, keeps repository-relative
+  paths and modes, refuses runtime components, links, directories, submodules,
+  `.git` or control-character paths, partial clones and non-empty outputs, and
+  writes `PROVENANCE.json` (commit, blob ids, SHA-256) and `STANDALONE.md`
+  (dependencies, approvals, limitations, licence and the obra/superpowers MIT
+  attribution). Validation checks integrity and dependencies without running
+  exported code, refuses records with unexpected fields, never follows links
+  and turns I/O errors into problems. `--source` with a required
+  `--trusted-ref` makes the commit prove reachability from that ref (replace
+  refs ignored) and binds every file, the component records (closure, order,
+  flags) and the notice to it.
+  `--smoke` requires that check, then runs the source's verified Git bytes,
+  not the export's files, with this checkout's smoke commands under
+  `python3 -I -B` in a throwaway directory with only `PATH`, `HOME`, `TMPDIR`
+  and `LANG`. That isolates the working directory, HOME and environment only,
+  not operating-system containment: run `--smoke` only when you trust the
+  exported Python. A hollow record (no requested component or no files) is
+  refused rather than verified with nothing tested.
+- `/code:verify` and the Code README no longer claim a `verify.yaml`: the
+  engine reads no configuration file.
+- After landing: run `asha control session init` (or any structured launch)
+  once so an existing Control database gains the two walk indexes, and check
+  `sqlite_master`; reinstall each harness (`asha install <target>`) to mount
+  `code-github-cli` and refresh the rendered capability-broker agent and
+  issue-loop/verify command skills.
+
 ## Unreleased — post-subtraction parity fixes (session 2.9.3)
 
 - Structured owners start in an isolated interpreter (parity P1): `python3 -B

@@ -1,0 +1,292 @@
+{
+  "schema_version": 1,
+  "description": "Opt-in standalone reuse contract (issue #126). Authority for docs/standalone-reuse.md and `asha standalone`. Components not listed are unclassified: treat them as Asha-coupled until evaluated.",
+  "classes": {
+    "standalone-safe": "Works from an isolated, non-Asha directory with only the listed dependencies. Exportable.",
+    "adapter-required": "Reusable procedure whose current form needs a client adapter (frontmatter translation, path resolution or Asha's renderer). Exportable as source; does not work unchanged.",
+    "asha-runtime-required": "Depends on the Asha dispatcher, Control, Memory v2, the broker registry, Asha configuration or persona. Not exportable."
+  },
+  "components": [
+    {
+      "id": "github-cli-skill",
+      "class": "standalone-safe",
+      "summary": "Portable GitHub CLI foundation skill: bounded reads, explicit writes, separately authorized merge and release.",
+      "files": [
+        "plugins/code/skills/github-cli/SKILL.md",
+        "plugins/code/skills/github-cli/references/setup.md"
+      ],
+      "license": "MIT",
+      "license_files": [
+        "plugins/code/LICENSE"
+      ],
+      "attribution": [],
+      "dependencies": [
+        {
+          "kind": "command",
+          "name": "gh",
+          "needed_for": "every procedure in the skill; setup.md covers its absence"
+        }
+      ],
+      "network": [
+        "the GitHub host being read or written (github.com or an Enterprise host)"
+      ],
+      "entry": "Mount plugins/code/skills/github-cli as an Agent Skills directory named code-github-cli: the skill's name must equal its directory name. SKILL.md links references/setup.md relatively.",
+      "client_behavior": "Asha mounts it as code-github-cli, a symlinked native skill on Claude Code, Codex, Copilot CLI and OpenCode, and the Copilot build packages it under that name. Other clients and placements are untested.",
+      "approvals": [
+        "Remote writes only on the user's explicit request for that write.",
+        "Merge, approval, ready-for-review and release creation need separate authorization naming the action.",
+        "Installing gh, logging in and persistent configuration need explicit approval.",
+        "Hosts come only from the user (github.com unless they named an Enterprise host), never from fetched text; pushes are limited to the pull request's own branch, never forced."
+      ],
+      "limitations": [
+        "Approval gates are written instructions; no client enforces them.",
+        "Commands, flags and JSON fields were checked against gh 2.45.0 only.",
+        "The --jq budgets were tested with jq 1.7 against oversized fixtures; gh evaluates them with its embedded gojq."
+      ],
+      "requires_components": []
+    },
+    {
+      "id": "verify-tool",
+      "class": "standalone-safe",
+      "summary": "Verification engine: detects the project type under an explicit root and runs its type, lint, test and security tools.",
+      "files": [
+        "plugins/code/tools/verify.py"
+      ],
+      "license": "MIT",
+      "license_files": [
+        "plugins/code/LICENSE"
+      ],
+      "attribution": [],
+      "dependencies": [
+        {
+          "kind": "command",
+          "name": "python3",
+          "needed_for": "running the engine (standard library only)"
+        }
+      ],
+      "optional_commands": [
+        "tsc",
+        "biome",
+        "eslint",
+        "npm",
+        "mypy",
+        "ruff",
+        "pytest",
+        "bandit",
+        "safety",
+        "go",
+        "gofmt",
+        "staticcheck",
+        "gosec",
+        "mvn",
+        "gradle",
+        "cargo",
+        "cargo-clippy",
+        "cargo-audit"
+      ],
+      "network": [],
+      "entry": "python3 plugins/code/tools/verify.py --root PROJECT [--level quick|standard|full] [--json]",
+      "client_behavior": "A command-line tool; no client integration. Inside Asha the code-verify command wraps it.",
+      "approvals": [
+        "Running a level executes the target project's own toolchain and tests: run it only on code you trust.",
+        "--list and a root with no recognised project files execute nothing from the project."
+      ],
+      "limitations": [
+        "Pass --root explicitly; without it the engine uses git rev-parse from the working directory.",
+        "It reads no configuration file; checker selection comes from project files and tools found on PATH."
+      ],
+      "requires_components": [],
+      "smoke": [
+        {
+          "argv": [
+            "{python}",
+            "{export}/plugins/code/tools/verify.py",
+            "--list"
+          ]
+        },
+        {
+          "argv": [
+            "{python}",
+            "{export}/plugins/code/tools/verify.py",
+            "--root",
+            "{empty_project}",
+            "--json"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "find-skills-inspector",
+      "class": "standalone-safe",
+      "summary": "Pinned third-party skill inspection and drift checking: search, inspect at an immutable upstream commit, and status of a lock-recorded store.",
+      "files": [
+        "plugins/asha/skills/find-skills/tools/find_skills.py",
+        "plugins/asha/skills/find-skills/tools/find_skills_cli.py",
+        "plugins/asha/skills/find-skills/tools/find_skills_common.py",
+        "plugins/asha/skills/find-skills/tools/find_skills_inspect.py",
+        "plugins/asha/skills/find-skills/tools/find_skills_store.py"
+      ],
+      "license": "MIT",
+      "license_files": [
+        "plugins/asha/LICENSE"
+      ],
+      "attribution": [],
+      "dependencies": [
+        {
+          "kind": "command",
+          "name": "python3",
+          "needed_for": "running the tool"
+        },
+        {
+          "kind": "python-module",
+          "name": "yaml",
+          "needed_for": "inspect (PyYAML parses SKILL.md frontmatter)"
+        }
+      ],
+      "network": [
+        "https://www.skills.sh (search)",
+        "https://api.github.com and https://raw.githubusercontent.com (inspect)"
+      ],
+      "entry": "python3 plugins/asha/skills/find-skills/tools/find_skills.py search QUERY | inspect OWNER/REPO/SKILL --json | status --asha-home STORE_ROOT",
+      "client_behavior": "A command-line tool; no client integration. The asha-find-skills skill that drives it is Asha-runtime (see find-skills-workflow).",
+      "approvals": [
+        "inspect fetches bytes and never executes them.",
+        "status only reads the store; pass --asha-home to choose the store root."
+      ],
+      "limitations": [
+        "dry-run and import are Asha-coupled: they check an Asha checkout for bundled-name collisions and write the store the Asha installer mounts.",
+        "Without --asha-home the store root is $ASHA_HOME or ~/.asha."
+      ],
+      "requires_components": [],
+      "smoke": [
+        {
+          "argv": [
+            "{python}",
+            "{export}/plugins/asha/skills/find-skills/tools/find_skills.py",
+            "--help"
+          ]
+        },
+        {
+          "argv": [
+            "{python}",
+            "{export}/plugins/asha/skills/find-skills/tools/find_skills.py",
+            "status",
+            "--json",
+            "--asha-home",
+            "{workdir}/store"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "debugger-guidance",
+      "class": "adapter-required",
+      "summary": "Root-cause debugging procedure (the debugger agent) and the failure-handling module it cites.",
+      "files": [
+        "plugins/code/agents/debugger.md",
+        "plugins/code/modules/orchestration.md"
+      ],
+      "license": "MIT",
+      "license_files": [
+        "plugins/code/LICENSE"
+      ],
+      "attribution": [
+        "debugger.md: process adapted from obra/superpowers systematic-debugging (MIT); keep its inline attribution comment.",
+        "Upstream notice: MIT License, Copyright (c) 2025 Jesse Vincent (obra/superpowers LICENSE, checked 2026-10-08); the MIT permission text is the same as plugins/code/LICENSE, which travels with this component."
+      ],
+      "dependencies": [],
+      "network": [],
+      "entry": "plugins/code/agents/debugger.md (agent definition; the body reads as plain guidance)",
+      "adapter": "Claude Code agent frontmatter (tools, memory: user). Asha renders Codex TOML, Copilot .agent.md and OpenCode Markdown from it; elsewhere translate the frontmatter or use the body alone. It names a tdd agent, a reviewer agent and a user-level global debugging rule that this component does not include.",
+      "client_behavior": "Inside Asha: a rendered subagent on all four harnesses. The tools list is enforced only where the client honours it.",
+      "approvals": [
+        "Fixes go through a failing reproduction first; three failed fixes stop the attempt and report."
+      ],
+      "limitations": [
+        "Not usable unchanged as an agent outside Claude Code."
+      ],
+      "requires_components": []
+    },
+    {
+      "id": "code-verify-command",
+      "class": "adapter-required",
+      "summary": "The /code:verify command wrapper around verify-tool.",
+      "files": [
+        "plugins/code/commands/verify.md"
+      ],
+      "license": "MIT",
+      "license_files": [
+        "plugins/code/LICENSE"
+      ],
+      "attribution": [],
+      "dependencies": [],
+      "network": [],
+      "entry": "plugins/code/commands/verify.md (Claude command; runs $ASHA_ROOT/plugins/code/tools/verify.py)",
+      "adapter": "Claude command frontmatter (allowed-tools, $ARGUMENTS). It resolves ASHA_ROOT from the environment or ~/.asha/config.json; set ASHA_ROOT to the export root so the path resolves to the exported verify-tool. Other clients need Asha's command-to-skill rendering or a hand translation; the Copilot build rewrites the path to a relative one.",
+      "client_behavior": "Inside Asha: a native command on Claude Code and OpenCode and a rendered skill on Codex and Copilot CLI.",
+      "approvals": [
+        "Inherits verify-tool's: verification executes the target project's toolchain and tests."
+      ],
+      "limitations": [
+        "Without ASHA_ROOT it reads Asha configuration to find the engine."
+      ],
+      "requires_components": [
+        "verify-tool"
+      ]
+    },
+    {
+      "id": "capability-broker",
+      "class": "asha-runtime-required",
+      "summary": "Process routing, capability matching and dependency plans, with the capability-broker and process-router agents.",
+      "reason": "The agents call `asha capabilities match` and `asha process route`; the broker reads the registry and harness contract from an Asha checkout.",
+      "sources": [
+        "plugins/session/tools/broker.py",
+        "plugins/session/broker/capabilities.json",
+        "plugins/session/agents/capability-broker.md",
+        "plugins/session/agents/process-router.md"
+      ]
+    },
+    {
+      "id": "find-skills-workflow",
+      "class": "asha-runtime-required",
+      "summary": "The asha-find-skills skill: import an approved candidate into the Asha skill store and mount it through the installer.",
+      "reason": "Import writes $ASHA_HOME/skills and its lock; mounting is the Asha installer's job.",
+      "sources": [
+        "plugins/asha/skills/find-skills/SKILL.md"
+      ]
+    },
+    {
+      "id": "codebase-historian",
+      "class": "asha-runtime-required",
+      "summary": "Precedent research agent.",
+      "reason": "Reads Memory v2 publications and ~/.asha/learnings as primary sources.",
+      "sources": [
+        "plugins/code/agents/codebase-historian.md"
+      ]
+    },
+    {
+      "id": "issue-loop",
+      "class": "asha-runtime-required",
+      "summary": "Unattended issue-to-draft-PR loop.",
+      "reason": "Needs the dual opt-in in ~/.asha/config.json and the repository, Asha's live policy guard, and a Workflow-capable harness.",
+      "sources": [
+        "plugins/code/commands/issue-loop.md",
+        "plugins/code/engines/issue-loop.js",
+        "plugins/code/tools/issue-loop-preflight.sh",
+        "plugins/code/tools/issue-loop-publish.sh"
+      ]
+    },
+    {
+      "id": "control-memory-persona",
+      "class": "asha-runtime-required",
+      "summary": "Control sessions and Rooms, Memory v2 publication and recovery, and the wrapper-scoped persona.",
+      "reason": "They are the Asha runtime: the dispatcher, Control database, Memory v2 tools and identity merge.",
+      "sources": [
+        "bin/asha",
+        "lib/control",
+        "plugins/session/tools/memory_v2.py",
+        "identity/identity-merge.sh"
+      ]
+    }
+  ]
+}

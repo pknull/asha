@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 2.9.3
+**Version**: 2.10.0
 
 Compact explicit memory publication, bounded crash recovery, reviewed learning
 lifecycle, policy guardrails, guarded loops, and workspace management.
@@ -17,7 +17,8 @@ verification alone; use RP commands for story-session lifecycle.
 Claude exposes `/session:init`, `/session:save`, and the other native slash
 commands. Codex, Copilot, and OpenCode render those commands as skills named
 `session-init`, `session-save`, and so forth. `asha workspace …`, `asha process
-route …`, and `asha capabilities match …` are harness-independent CLI verbs.
+route …`, `asha capabilities match …` and `asha capabilities plan …` are
+harness-independent CLI verbs.
 
 ## Memory v2
 
@@ -69,7 +70,7 @@ than 90 days.
 |---|---|
 | `loop-operator` | Operate bounded autonomous loops |
 | `process-router` | Recommend a registry-backed process without executing it |
-| `capability-broker` | Match tasks to verified harness capabilities |
+| `capability-broker` | Match tasks to verified harness capabilities; show one named capability's read-only dependency plan |
 
 Removed in v2: memory steward and curator. Context is now direct and bounded.
 The reviewed v1 migration (`/session:consolidate`) was retired in 2.7.0; see
@@ -137,6 +138,31 @@ for the repository; workspace state answers what coordinates the repositories.
   checks required by `AGENTS.md`.
 
 ## Version history
+
+### 2.10.0
+
+Control's bulk owner start and stop walks (#122) each read a partial index in
+`(created_at, session_id)` order, `managed_session_runnable` or
+`managed_session_stopping`, and resume with a row-value cursor, so their query
+work is linear in the walk's rows; an existing database gains the indexes on
+its next write open (structured launch, `session create` or `session init`).
+The Memory architecture guide now names Codex's owned `hooks.json` (#123).
+
+`asha capabilities plan <id>` (issue #124) returns a read-only dependency plan
+for one explicitly named broker capability: typed dependency edges with their
+conditions, a dependencies-first order, human prerequisites, configuration
+presence, missing and unverified items, approvals, blockers and fallback.
+`plugins/session/broker/capabilities.json` is the only dependency authority:
+edges are validated at load (unknown targets, duplicates, cycles, inactive
+edges included) and overrides cannot change them. Declared harness support is
+reported apart from availability, which stays unverified; `--probe` looks
+conditional commands up on `PATH` without running them, root-first, and a
+missing required command reads `needs-foundation`. The plan writes nothing,
+telemetry included. `process route` output is unchanged; `capabilities match`
+is unchanged except that tasks naming GitHub now also select `github-cli`
+(pinned against 562869a0 by a fixture). The registry gains `github-cli` and
+its conditional `github-cli-setup` foundation, and the capability-broker agent
+documents the plan.
 
 ### 2.9.3
 

@@ -168,8 +168,10 @@ path for private Memory; this setting does not change Git save behavior.
 
 - Claude reads `hooks.json` directly and receives context in native
   `SessionStart` output.
-- Codex renders the supported shared hooks to native TOML and receives the same
-  startup context from the shared handler.
+- Codex renders the supported shared hooks to an installer-owned `hooks.json`,
+  recorded in the generated-artifact ledger, and receives the same startup
+  context from the shared handler. Its native `config.toml` keeps only the hooks
+  feature flag and hash-bound hook trust; install reads it and never writes it.
 - Copilot installs one `asha-recovery.json`; its SessionStart wrapper carries
   the shared handler output in `additionalContext`.
 - OpenCode generates `plugins/asha.js`, calling the same startup/recovery

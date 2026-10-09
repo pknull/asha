@@ -12,11 +12,12 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 
 TOOL_DIR = Path(__file__).resolve().parent
@@ -33,20 +34,32 @@ WORD_RE = re.compile(r"[a-z0-9][a-z0-9_.+-]*", re.IGNORECASE)
 PROHIBITED_OVERRIDE_KEYS = {
     "command", "commands", "shell", "exec", "executable", "action", "actions",
     "permissions", "harness_support", "output_contract", "kind", "ownership", "process",
+    "dependencies",
 }
 ALLOWED_OVERRIDE_KEYS = {
     "id", "enabled", "description", "categories", "task_patterns",
     "prerequisites", "required_config", "risk", "approval", "fallback",
 }
+# Dependency edges (issue #124). The registry is their only authority; a
+# condition is typed data the resolver evaluates, never a command it runs.
+DEPENDENCY_RELATIONS = ("requires", "optional")
+CONDITION_TYPES = ("always", "command-missing")
+COMMAND_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,63}")
+MAX_PROBE_COMMANDS = 16
+# "skipped": the edge's source does not apply here, so it was not evaluated.
+ACTIVATION_RANK = {"inactive": 0, "skipped": 0, "unevaluated": 1, "active": 2}
+NODE_ACTIVATION = {0: "inactive", 1: "conditional", 2: "active"}
 
 
 class BrokerError(Exception):
     """Typed user/configuration error; never silently downgraded."""
 
-    def __init__(self, code: str, message: str, *, path: Optional[Path] = None):
+    def __init__(self, code: str, message: str, *, path: Optional[Path] = None,
+                 details: Optional[dict[str, Any]] = None):
         super().__init__(message)
         self.code = code
         self.path = str(path) if path else None
+        self.details = details
 
 
 def _json_file(path: Path) -> dict[str, Any]:
@@ -116,7 +129,92 @@ def _validate_registry(data: dict[str, Any], path: Path) -> dict[str, dict[str, 
             if target not in result:
                 raise BrokerError("unknown_identifier", f"{cap_id} references unknown capability: {target}", path=path)
         _strings(process.get("verification"), f"{cap_id}.process.verification", path)
+    for cap_id, cap in result.items():
+        _validate_dependencies(cap_id, cap, result, path)
+    _reject_cycles(result, path)
     return result
+
+
+def _validate_condition(cap_id: str, target: str, condition: Any, path: Path) -> None:
+    where = f"{cap_id} -> {target} condition"
+    if not isinstance(condition, dict) or condition.get("type") not in CONDITION_TYPES:
+        raise BrokerError("invalid_registry", f"{where} must be one of {list(CONDITION_TYPES)}", path=path)
+    if condition["type"] == "always":
+        if set(condition) != {"type"}:
+            raise BrokerError("invalid_registry", f"{where} 'always' takes no other fields", path=path)
+        return
+    command = condition.get("command")
+    if set(condition) != {"type", "command"} or not isinstance(command, str) \
+            or not COMMAND_NAME_RE.fullmatch(command):
+        raise BrokerError("invalid_registry", f"{where} needs one bare command name", path=path)
+
+
+def _validate_dependencies(cap_id: str, cap: dict[str, Any], entries: dict[str, dict[str, Any]],
+                           path: Path) -> None:
+    edges = cap.get("dependencies")
+    if edges is None:
+        return
+    if not isinstance(edges, list):
+        raise BrokerError("invalid_registry", f"{cap_id}.dependencies must be a list", path=path)
+    process_ids = set((cap.get("process") or {}).get("capability_ids", []))
+    seen: set[str] = set()
+    for offset, edge in enumerate(edges):
+        if not isinstance(edge, dict) or not isinstance(edge.get("id"), str) \
+                or edge.get("relation") not in DEPENDENCY_RELATIONS \
+                or not set(edge).issubset({"id", "relation", "when", "reason"}):
+            raise BrokerError("invalid_registry", f"{cap_id}.dependencies[{offset}] is invalid", path=path)
+        target = edge["id"]
+        if "reason" in edge and (not isinstance(edge["reason"], str) or not edge["reason"]):
+            raise BrokerError("invalid_registry", f"{cap_id} -> {target} reason must be non-empty", path=path)
+        if "when" in edge:
+            _validate_condition(cap_id, target, edge["when"], path)
+        if target in seen or target in process_ids:
+            raise BrokerError("conflicting_metadata", f"{cap_id} declares {target} more than once",
+                              path=path, details={"from": cap_id, "to": target})
+        seen.add(target)
+        if target not in entries:
+            raise BrokerError("unknown_identifier", f"{cap_id} depends on unknown capability: {target}",
+                              path=path, details={"from": cap_id, "to": target})
+
+
+def _edges(cap: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every outgoing edge, process capabilities first, in declaration order."""
+    edges = [
+        {"id": target, "relation": "requires", "when": {"type": "always"}, "source": "process"}
+        for target in (cap.get("process") or {}).get("capability_ids", [])
+    ]
+    for edge in cap.get("dependencies") or []:
+        edges.append({**edge, "when": edge.get("when", {"type": "always"}), "source": "dependencies"})
+    return edges
+
+
+def _reject_cycles(entries: dict[str, dict[str, Any]], path: Path) -> None:
+    # Conditions are ignored here: an edge that is inactive on this machine is
+    # still part of the declared graph and must not hide a cycle.
+    state: dict[str, int] = {}
+    for start in sorted(entries):
+        if state.get(start):
+            continue
+        stack: list[tuple[str, Iterator[dict[str, Any]]]] = [(start, iter(_edges(entries[start])))]
+        trail = [start]
+        state[start] = 1
+        while stack:
+            node, pending = stack[-1]
+            edge = next(pending, None)
+            if edge is None:
+                stack.pop()
+                trail.pop()
+                state[node] = 2
+                continue
+            target = edge["id"]
+            if state.get(target) == 1:
+                cycle = trail[trail.index(target):] + [target]
+                raise BrokerError("dependency_cycle", "dependency cycle: " + " -> ".join(cycle),
+                                  path=path, details={"cycle": cycle})
+            if not state.get(target):
+                state[target] = 1
+                trail.append(target)
+                stack.append((target, iter(_edges(entries[target]))))
 
 
 def _find_ancestor(start: Path, relative: str) -> Optional[Path]:
@@ -388,6 +486,248 @@ def capability_match(task: str, registry: Registry, harness: str) -> dict[str, A
     }
 
 
+class _Probe:
+    """Explicit, bounded PATH lookups. A command is located, never run."""
+
+    def __init__(self, requested: bool):
+        self.requested = requested
+        self.results: dict[str, bool] = {}
+        self.truncated = False
+
+    def command_found(self, command: str) -> Optional[bool]:
+        if not self.requested:
+            return None
+        if command not in self.results:
+            if len(self.results) >= MAX_PROBE_COMMANDS:
+                self.truncated = True
+                return None
+            self.results[command] = shutil.which(command) is not None
+        return self.results[command]
+
+    def report(self) -> dict[str, Any]:
+        if not self.requested:
+            return {"requested": False}
+        return {
+            "requested": True, "kind": "path-lookup", "truncated": self.truncated,
+            "commands": [{"name": name, "found": found} for name, found in self.results.items()],
+        }
+
+
+def _condition_state(condition: dict[str, Any], probe: _Probe) -> str:
+    if condition["type"] == "always":
+        return "active"
+    found = probe.command_found(condition["command"])
+    if found is None:
+        return "unevaluated"
+    return "inactive" if found else "active"
+
+
+def _describe_condition(condition: dict[str, Any]) -> str:
+    return "always" if condition["type"] == "always" else f"{condition['type']} {condition['command']}"
+
+
+def capability_plan(cap_id: str, registry: Registry, harness: str, *, probe: bool = False) -> dict[str, Any]:
+    """Resolve one explicitly selected capability's dependency closure.
+
+    Inspection only: it reads the already-loaded registry, checks that
+    configuration names are present (never their values), and with ``probe``
+    looks commands up on PATH. It never runs, installs, authenticates, loads a
+    skill, writes state, or executes the selected workflow.
+    """
+    if cap_id not in registry.entries:
+        raise BrokerError("unknown_identifier", f"unknown capability: {cap_id}", details={"to": cap_id})
+    lookups = _Probe(probe)
+    edges: list[dict[str, Any]] = []
+    order: list[str] = []
+    # Iterative depth-first walk, edges in declaration order. The registry was
+    # proven acyclic at load, so post-order is a dependencies-first order.
+    stack: list[tuple[str, Iterator[dict[str, Any]]]] = [(cap_id, iter(_edges(registry.entries[cap_id])))]
+    visited = {cap_id}
+    while stack:
+        node, pending = stack[-1]
+        edge = next(pending, None)
+        if edge is None:
+            stack.pop()
+            order.append(node)
+            continue
+        target = edge["id"]
+        row = {
+            "from": node, "to": target, "relation": edge["relation"], "source": edge["source"],
+            "condition": dict(edge["when"]), "condition_state": "unevaluated",
+        }
+        if "reason" in edge:
+            row["reason"] = edge["reason"]
+        edges.append(row)
+        if target not in visited:
+            visited.add(target)
+            stack.append((target, iter(_edges(registry.entries[target]))))
+
+    depth = {cap_id: 0}
+    frontier = [cap_id]
+    while frontier:
+        following: list[str] = []
+        for node in frontier:
+            for row in edges:
+                if row["from"] == node and row["to"] not in depth:
+                    depth[row["to"]] = depth[node] + 1
+                    following.append(row["to"])
+        frontier = following
+
+    # Evaluate conditions and propagate root-first (reverse post-order is a
+    # topological order), so a node's activation is final before its own edges
+    # are looked at: edges below an inactive node are never probed.
+    activation = {cap_id: ACTIVATION_RANK["active"]}
+    # required_active: an all-"requires" path whose conditions all hold;
+    # required_live: one whose conditions may hold (unevaluated counts);
+    # declared: an all-"requires" path whatever the conditions say.
+    required_active = {cap_id}
+    required_live = {cap_id}
+    declared = {cap_id}
+    for node in reversed(order):
+        for row in (e for e in edges if e["from"] == node):
+            if activation.get(node, 0) > ACTIVATION_RANK["inactive"]:
+                row["condition_state"] = _condition_state(row["condition"], lookups)
+            else:
+                row["condition_state"] = "skipped"
+            edge_rank = ACTIVATION_RANK[row["condition_state"]]
+            target = row["to"]
+            activation[target] = max(activation.get(target, 0), min(activation.get(node, 0), edge_rank))
+            requires = row["relation"] == "requires"
+            if requires and node in required_active and edge_rank == ACTIVATION_RANK["active"]:
+                required_active.add(target)
+            if requires and node in required_live and edge_rank > ACTIVATION_RANK["inactive"]:
+                required_live.add(target)
+            if requires and node in declared:
+                declared.add(target)
+
+    nodes: list[dict[str, Any]] = []
+    blockers: list[dict[str, Any]] = []
+    conditional_blockers: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    prerequisites: list[dict[str, Any]] = []
+    config_rows: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+    unverified: list[dict[str, Any]] = []
+    approvals: list[dict[str, str]] = []
+    for node_id in sorted(order, key=lambda value: (depth[value], order.index(value))):
+        cap = registry.entries[node_id]
+        support = registry.support(cap, harness)
+        state = NODE_ACTIVATION[activation.get(node_id, 0)]
+        live = state != "inactive"
+        enabled = cap.get("enabled", True) is not False
+        present = {name: bool(os.environ.get(name)) for name in cap["required_config"]}
+        node_blockers: list[dict[str, Any]] = []
+        if not enabled:
+            node_blockers.append({"capability": node_id, "reason": "disabled-by-override"})
+        if support["status"] == "unsupported":
+            node_blockers.append({"capability": node_id, "reason": "unsupported-on-harness",
+                                  "detail": support["capability_ref"]})
+        absent = [name for name, found in present.items() if not found]
+        if absent:
+            node_blockers.append({"capability": node_id, "reason": "missing-configuration", "names": absent})
+        nodes.append({
+            "id": node_id, "kind": cap["kind"], "description": cap["description"],
+            "depth": depth[node_id], "activation": state,
+            "requirement": "required" if node_id in declared else "optional",
+            "enabled": enabled, "declared_support": support,
+            "availability": {"state": "unverified", "basis": "declared-support-only"},
+            "prerequisites": list(cap["prerequisites"]),
+            "required_config": [{"name": name, "present": found} for name, found in present.items()],
+            "approval_requirements": list(cap["approval"]), "risk": cap["risk"],
+            "fallback": support["fallback"] if support["status"] == "unsupported" else cap["fallback"],
+            "blockers": node_blockers,
+        })
+        if not live:
+            continue
+        if node_id in required_active:
+            blockers.extend(node_blockers)
+        elif node_id in required_live:
+            conditional_blockers.extend(node_blockers)
+        else:
+            warnings.extend(node_blockers)
+        # Aggregated items carry the same classification as the blocker lists:
+        # required for certain, required only if a condition holds, or optional.
+        label = {"applicability": "required" if node_id in required_active
+                 else "conditional" if node_id in required_live else "optional"}
+        prerequisites.extend({"capability": node_id, "name": name, "state": "unverified", **label}
+                             for name in cap["prerequisites"])
+        for name, found in present.items():
+            config_rows.append({"capability": node_id, "name": name, "present": found,
+                                "verifies": "presence-only", **label})
+            if not found:
+                missing.append({"type": "config", "capability": node_id, "name": name, **label})
+            else:
+                unverified.append({"type": "credential", "capability": node_id, "name": name,
+                                   "detail": "presence does not establish authentication or authorization"})
+        approvals.extend({"capability": node_id, "approval": value, **label} for value in cap["approval"])
+        unverified.append({"type": "availability", "capability": node_id,
+                           "detail": "declared harness support only; installation and runtime availability not inspected"})
+
+    foundation_needed = False
+    for row in edges:
+        if row["condition"]["type"] != "command-missing":
+            continue
+        if activation.get(row["from"], 0) == ACTIVATION_RANK["inactive"]:
+            continue
+        if row["condition_state"] == "unevaluated":
+            detail = ("probe bound reached; not evaluated" if lookups.requested
+                      else "not evaluated; rerun with --probe for a PATH lookup")
+            unverified.append({"type": "condition", "edge": f"{row['from']} -> {row['to']}",
+                               "condition": _describe_condition(row["condition"]), "detail": detail})
+        elif row["condition_state"] == "active":
+            requires = row["relation"] == "requires"
+            applicability = ("required" if requires and row["from"] in required_active
+                             else "conditional" if requires and row["from"] in required_live else "optional")
+            missing.append({"type": "command", "capability": row["from"], "name": row["condition"]["command"],
+                            "remedy": row["to"], "applicability": applicability})
+            foundation_needed = foundation_needed or applicability == "required"
+
+    selected = registry.entries[cap_id]
+    root_support = registry.support(selected, harness)
+    if blockers:
+        status = "blocked"
+    elif foundation_needed:
+        # A required command is known to be missing; its foundation must run,
+        # with its approvals, before the selected capability. Certain, so it
+        # outranks blockers that hold only behind an unevaluated condition.
+        status = "needs-foundation"
+    elif conditional_blockers:
+        status = "conditionally-blocked"
+    else:
+        status = "no-known-blockers"
+    return {
+        "contract": "asha.capability-plan.v1",
+        "selected": {"id": cap_id, "kind": selected["kind"], "description": selected["description"]},
+        "harness": harness,
+        "execution_mode": "inspection",
+        "advisory_only": True,
+        "status": status,
+        "nodes": nodes,
+        "edges": edges,
+        "resolution_order": [node for node in order if activation.get(node, 0) != ACTIVATION_RANK["inactive"]],
+        "prerequisites": prerequisites,
+        "required_config": config_rows,
+        "missing": missing,
+        "unverified": unverified,
+        "approval_requirements": approvals,
+        "blockers": blockers,
+        "conditional_blockers": conditional_blockers,
+        "warnings": warnings,
+        "fallback": root_support["fallback"] if root_support["status"] == "unsupported" else selected["fallback"],
+        "probe": lookups.report(),
+        "registry": {
+            "path": str(REGISTRY_PATH), "schema_version": 1,
+            "harness_registry_path": str(HARNESS_REGISTRY_PATH), "harness_schema_version": 3,
+            "overrides": registry.override_paths,
+        },
+        "prohibited_automatic_actions": [
+            "install", "authenticate", "load-skills", "write-memory", "execute-workflow",
+            "start-loop", "create-worktree", "publish", "commit", "push", "merge", "delete",
+            "destructive-command",
+        ],
+    }
+
+
 def _silenced(project_root: Path) -> bool:
     if (project_root / "Work" / "markers" / "silence").is_file():
         return True
@@ -445,13 +785,47 @@ def _human_capabilities(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _human_plan(result: dict[str, Any]) -> str:
+    lines = [f"Plan for {result['selected']['id']} [inspection only, {result['harness']}]: {result['status']}"]
+    for node in result["nodes"]:
+        support = node["declared_support"]
+        lines.append(f"- {node['id']} ({node['kind']}, {node['requirement']}, {node['activation']}): "
+                     f"declared {support['status']} ({support['capability_ref']}); availability unverified")
+    for edge in result["edges"]:
+        lines.append(f"  edge {edge['from']} -> {edge['to']} [{edge['relation']}] when "
+                     f"{_describe_condition(edge['condition'])}: {edge['condition_state']}")
+    lines.append("Order: " + " -> ".join(result["resolution_order"]))
+    if result["prerequisites"]:
+        lines.append("Prerequisites (unverified): " + ", ".join(
+            f"{item['capability']}: {item['name']}" for item in result["prerequisites"]))
+    if result["approval_requirements"]:
+        lines.append("Approvals: " + ", ".join(
+            f"{item['capability']}: {item['approval']}" for item in result["approval_requirements"]))
+    for item in result["missing"]:
+        lines.append(f"Missing {item['type']}: {item['name']} ({item['capability']})"
+                     + (f"; remedy: {item['remedy']}" if "remedy" in item else ""))
+    for label in ("blockers", "conditional_blockers", "warnings"):
+        for item in result[label]:
+            lines.append(f"{label.replace('_', ' ').capitalize()}: {item['capability']}: {item['reason']}")
+    if any(item["type"] == "condition" for item in result["unverified"]):
+        lines.append("Conditions not evaluated; --probe performs PATH lookups only.")
+    lines.append("Fallback: " + result["fallback"])
+    return "\n".join(lines)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="asha broker", add_help=True)
     sub = parser.add_subparsers(dest="command", required=True)
     route = sub.add_parser("process-route")
     match = sub.add_parser("capabilities-match")
+    plan = sub.add_parser("capabilities-plan",
+                          help="read-only dependency plan for one explicitly named capability")
     for child in (route, match):
         child.add_argument("task", nargs="+")
+    plan.add_argument("capability")
+    plan.add_argument("--probe", action="store_true",
+                      help="look conditional commands up on PATH (never runs them)")
+    for child in (route, match, plan):
         child.add_argument("--json", action="store_true", dest="as_json")
         child.add_argument("--project-root")
         child.add_argument("--harness", choices=("claude", "codex", "copilot", "opencode"), default=os.environ.get("ASHA_HARNESS", "claude"))
@@ -461,13 +835,18 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = _parser().parse_args(argv)
-    task = " ".join(args.task).strip()
+    task = args.capability.strip() if args.command == "capabilities-plan" else " ".join(args.task).strip()
     as_json = args.as_json
     try:
         if not task:
             raise BrokerError("empty_task", "task must be non-empty")
         project = _project_root(args.project_root)
         registry = load_registry(project, args.override)
+        if args.command == "capabilities-plan":
+            # Inspection writes nothing, telemetry included.
+            result = capability_plan(task, registry, args.harness, probe=args.probe)
+            print(json.dumps(result, indent=2, sort_keys=True) if as_json else _human_plan(result))
+            return 0
         if args.command == "process-route":
             result = process_route(task, registry, args.harness)
             human = _human_route(result)
@@ -479,6 +858,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 0
     except BrokerError as exc:
         error = {"contract": "asha.broker-error.v1", "error": {"code": exc.code, "message": str(exc), "path": exc.path}}
+        if exc.details is not None:
+            error["error"]["details"] = exc.details
         if as_json:
             print(json.dumps(error, indent=2, sort_keys=True))
         else:

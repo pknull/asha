@@ -1,6 +1,6 @@
 # Code Plugin
 
-**Version**: 1.6.0
+**Version**: 1.7.0
 
 Development workflows for implementation, debugging, review, refactoring,
 verification, PostgreSQL work, and guarded issue processing.
@@ -15,6 +15,7 @@ verification, PostgreSQL work, and guarded issue processing.
 | Process eligible GitHub issues unattended | `/code:issue-loop` | Isolated worktrees, mechanical test gates, cold review, draft PRs only |
 | Diagnose one difficult bug | Ask for the `debugger` agent | Direct specialist use is clearer than a full feature workflow |
 | Review or design PostgreSQL work | Ask for the `postgres` skill | Loads database-specific guidance without starting an orchestration |
+| Read or act on GitHub with `gh` | Ask for the `github-cli` skill | Portable gh foundation: bounded reads, explicit writes, separately authorized merge and release |
 
 Commands coordinate work. Agents perform one bounded role. Skills add domain
 instructions. Most users should start with a command rather than selecting a
@@ -70,8 +71,9 @@ than roughly 1,000 lines when possible so findings remain attributable.
 | `--full` | Security and dependency checks before a PR or release |
 | `--file PATH` | Narrow check while editing one file |
 
-The verifier detects TypeScript, Python, Go, Java, and Rust projects. A
-repository may override the detected checks with `verify.yaml`.
+The verifier detects TypeScript, Python, Go, Java, and Rust projects from
+their project files. It reads no configuration file; when detection does not
+fit, the command infers narrow checks from the repository's own manifests.
 
 ### `/code:orchestrate TYPE DESCRIPTION`
 
@@ -127,11 +129,17 @@ Direct agents do not replace the command's coordination contract. For example,
 `/code:review` decides scope, applies multiple lenses, and validates the merged
 findings.
 
-## Skill
+## Skills
 
 | Skill | Purpose | Example request |
 |---|---|---|
 | `postgres` (installed as `code-postgres`) | Query plans, schema design, RLS, migration safety, and database security | `Use code-postgres to review this migration and RLS policy.` |
+| `github-cli` (installed as `code-github-cli`) | Portable GitHub CLI foundation: discovery and authentication checks, bounded repository, issue, PR, review, Actions and release reads, explicit draft PRs, comments and review requests; merge, approval and release need separate authorization | `Use code-github-cli to summarise the failing checks on PR 42 in OWNER/REPO.` |
+
+`github-cli` needs no MCP server, persona, Memory or issue-loop configuration.
+Repository policy and workflow limits stay with their owners: `/code:issue-loop`
+uses it only for gh discovery, setup and authentication and keeps its draft-only,
+never-merge rule.
 
 ## Installation
 
@@ -143,6 +151,9 @@ findings.
 
 Re-run installation after changing command or agent sources because Codex and
 Copilot receive generated artifacts rather than live symlinks for those forms.
+
+To use `verify.py`, the `github-cli` skill or the debugging guidance without
+Asha, see [Standalone reuse](../../docs/standalone-reuse.md).
 
 ## License
 

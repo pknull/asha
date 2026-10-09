@@ -334,7 +334,15 @@ and neither does the dashboard's refresh. A bulk start (`session list`,
 `session admission resume`) walks every eligible session in bounded pages,
 skipping per session those with a live owner or a launch still in backoff, and
 completes stop intent for every ownerless session the same way, so sessions
-beyond the first hundred are never stranded.
+beyond the first hundred are never stranded. Each walk reads its own partial
+index in `(created_at, session_id)` order (`managed_session_runnable`,
+`managed_session_stopping`), and each page resumes after the last row with one
+range seek. Query work grows linearly with the rows in the walk's index
+(unsettled sessions for the start walk, pending stops for the stop walk);
+stopped, failed, uncertain and budget-exhausted history is never read. A
+database created before these indexes gains them on its next write open (a
+structured launch, `asha control session create` or `session init`); this
+needs no schema migration.
 
 The supervisor daemon and its systemd user unit retired on 2026-10-07.
 `asha control supervisor ...` prints these steps, and `asha control doctor`

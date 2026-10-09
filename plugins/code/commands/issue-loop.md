@@ -32,6 +32,10 @@ A cloned repo cannot self-authorize, and a local allowlist cannot enable a
 repo that never opted in. Also required: `gh` authenticated, and
 `.asha/worktrees/` git-ignored in the target repo.
 
+For gh discovery, setup and authentication checks, see the `code-github-cli` skill.
+Its write and merge guidance does not widen this loop, which opens draft PRs
+only and never merges.
+
 ## Behavior
 
 ### Step 1: Safety rails (preflight)

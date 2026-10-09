@@ -36,6 +36,14 @@ SCHEMA = (
         owner_launch_after REAL NOT NULL DEFAULT 0,
         created_at REAL NOT NULL, updated_at REAL NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS managed_session_state ON managed_sessions(state,created_at,session_id)",
+    # Global (created_at, session_id) walk order for bulk owner start and stop
+    # (#122), one partial index per walk holding only rows it can match. Each
+    # walk's predicate in sessions.py repeats its index's WHERE verbatim, which
+    # is what lets the planner use a partial index.
+    "CREATE INDEX IF NOT EXISTS managed_session_runnable ON managed_sessions(created_at,session_id)"
+    " WHERE state NOT IN ('stopped','failed','uncertain','budget-exhausted')",
+    "CREATE INDEX IF NOT EXISTS managed_session_stopping ON managed_sessions(created_at,session_id)"
+    " WHERE stop_requested=1 AND state!='stopped'",
     """CREATE TABLE IF NOT EXISTS session_messages (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT, message_id TEXT NOT NULL UNIQUE,
         session_id TEXT NOT NULL REFERENCES managed_sessions(session_id),
@@ -200,6 +208,14 @@ class SessionStore:
                     self._initialize(c)
                 elif [r[0] for r in version] != [1]:
                     raise StoreError("unsupported managed session schema")
+                elif create:
+                    # A write open (structured launch, `session create`,
+                    # `session init`) re-applies SCHEMA, adding indexes newer
+                    # than this database, such as the walk-order pair. This
+                    # holds while every statement is IF NOT EXISTS and names
+                    # only columns that version-1 session tables already have.
+                    for statement in SCHEMA:
+                        c.execute(statement)
         except BaseException:
             self.db.close()
             raise

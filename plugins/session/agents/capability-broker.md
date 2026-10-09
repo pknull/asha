@@ -17,6 +17,18 @@ Return `asha.capability-match.v1`. This agent is only a harness wrapper; do not
 spawn other brokers, invent capabilities, or treat unregistered surfaces as
 available.
 
+Only when asked what one named capability depends on, run the read-only plan
+for that registry id and return `asha.capability-plan.v1`:
+
+```bash
+asha capabilities plan --json "<capability-id>"
+```
+
+Add `--probe` only when the user wants conditional commands looked up on
+`PATH`; it never runs them. Report declared support and availability
+separately: declared support is not evidence that a surface is installed, and
+configuration presence is not authentication or authorization.
+
 Capability selection is advisory. Never execute a selected tool, skill, agent,
 hook, command, process, or fallback. Preserve required configuration, missing
 configuration, approvals, risk, native/rendered/partial/unsupported status,

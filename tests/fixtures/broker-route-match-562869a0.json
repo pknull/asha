@@ -1,0 +1,642 @@
+{
+ "cases": {
+  "claude::add a cli flag to the parser": {
+   "match_selected": [
+    "code-verify"
+   ],
+   "match_sha256": "2212ceb4fc68bf4863575fc9aa188bc10d692c1c10911444d6f45255b10d26ae",
+   "match_unavailable": [],
+   "route_recommended": "direct-implementation",
+   "route_sha256": "c7384574a500c76dceeacff5e865303dd993213f2afc5c5b09182d8e0ec15234"
+  },
+  "claude::consolidate memory": {
+   "match_selected": [],
+   "match_sha256": "db575674b746394896d73a786e0dda55ceabcf06eb4242d278985e0dcd6dc02f",
+   "match_unavailable": [],
+   "route_recommended": "memory-consolidation",
+   "route_sha256": "ece0cc83b2e711b10908dc41d6ff6b368b05abbd38d78854848d71089f5e9753"
+  },
+  "claude::create a worktree for the feature": {
+   "match_selected": [
+    "codebase-historian",
+    "code-verify"
+   ],
+   "match_sha256": "c1b959d721eab1f2d6e06f927ae7c4847be6680723d0a95968b43c507af972d3",
+   "match_unavailable": [],
+   "route_recommended": "workspace-worktree",
+   "route_sha256": "3c78765463ba4ef25ad9bc5f08bb567dfcbc5d3de0bd0b0a7ed0a591affdb2fd"
+  },
+  "claude::debug a failing API test": {
+   "match_selected": [
+    "debugger",
+    "code-verify",
+    "tdd"
+   ],
+   "match_sha256": "1c8b068694680b29d0ba3e2ae5c895ab22886594d0b50987830d2333edddbd04",
+   "match_unavailable": [],
+   "route_recommended": "debugging",
+   "route_sha256": "cd14807b6d611c32861d9c6c2bdfbba6d04da173eac33c7c83c29682210edd8f"
+  },
+  "claude::debug a failing cli test": {
+   "match_selected": [
+    "debugger",
+    "code-verify",
+    "tdd"
+   ],
+   "match_sha256": "14e5da72b17c3482692eb1199dc46183e191f0e9cf32335c8ebf5de4b9a586e0",
+   "match_unavailable": [],
+   "route_recommended": "debugging",
+   "route_sha256": "b0d439fc5b720d763d6580f6084174a36651ee65fa83c4ba357640fbd7a5dc6a"
+  },
+  "claude::fix the pull-to-refresh gesture": {
+   "match_selected": [
+    "code-verify"
+   ],
+   "match_sha256": "533c489344981a58ecd4bd187f8b75f272449b045edf18ed3cd78717d5fba66e",
+   "match_unavailable": [],
+   "route_recommended": "direct-implementation",
+   "route_sha256": "1439b8f4802ea1ef5e5289b5a4a03977b596caed68fa5fac5e39aba0a1ab2097"
+  },
+  "claude::handle the feature request from support": {
+   "match_selected": [],
+   "match_sha256": "30ea5cc96d40b94f6fd133a4704718c29f5b0f3c625aaa717bb9b390e50bfba7",
+   "match_unavailable": [],
+   "route_recommended": "none",
+   "route_sha256": "3cdbcd26d88614fba1dd7fcecbd6f3505a81205d4c498f0beafed9296d1ec182"
+  },
+  "claude::implement the parser change": {
+   "match_selected": [
+    "code-verify"
+   ],
+   "match_sha256": "9725fa3534297117b42067a9dbb59293c94e8fb46ceb428e28ed6673bcf7ecda",
+   "match_unavailable": [],
+   "route_recommended": "direct-implementation",
+   "route_sha256": "e67fabe32fb5d75c613d87b0fb658ef5ba726d9c0934b3b8a1619c6bc1214375"
+  },
+  "claude::prepare the release notes": {
+   "match_selected": [],
+   "match_sha256": "830b85e590b0072121d331ec4e76729b1238ec4c069abacf5e966c0b9b054721",
+   "match_unavailable": [],
+   "route_recommended": "none",
+   "route_sha256": "5fd252b36d6d2040ec60f14a9cebf79a72c7616305f2490077e6a68b2ec2a253"
+  },
+  "claude::promote canonical facts": {
+   "match_selected": [],
+   "match_sha256": "50a0534e756e07ada70d1616f81c1ab04b6371dca3ca3e0f4d85d04520704720",
+   "match_unavailable": [],
+   "route_recommended": "canonical-promotion",
+   "route_sha256": "c314b8647a337ffcef90128f1f9cec03e94fe82251a43482c7c9ba52a0bd07df"
+  },
+  "claude::research the history of this module": {
+   "match_selected": [
+    "codebase-historian"
+   ],
+   "match_sha256": "71554d8b7e0a7b158ee5442c55f52f9310e9b3e7807d5b76dcf1d0a10d68d527",
+   "match_unavailable": [],
+   "route_recommended": "research",
+   "route_sha256": "ec4780b20c41dac0de900cb3a6c97fbf07747029cb8f8aa320890d56efcc2be2"
+  },
+  "claude::review this diff for security": {
+   "match_selected": [
+    "code-review"
+   ],
+   "match_sha256": "15daf2c163e1953ff694fc1d39ac86b2a294a67d25d941bdd98539d7b796450f",
+   "match_unavailable": [],
+   "route_recommended": "code-review",
+   "route_sha256": "9325d5e57ec9bec653e81a259677e91f1e712ef02607d4824a41c32ab0ee04fc"
+  },
+  "claude::set up a multi repository workspace": {
+   "match_selected": [
+    "codebase-historian",
+    "code-verify"
+   ],
+   "match_sha256": "5580f5953bf474a46823413ac289edd942826c750eadaa2050c4af45646441e7",
+   "match_unavailable": [],
+   "route_recommended": "multi-repository",
+   "route_sha256": "11eb352d319fc9b262912fe73f521d3a5f05a719bf2a5af816f0a82818b8eda8"
+  },
+  "claude::summarise the failing github actions run": {
+   "match_selected": [
+    "debugger",
+    "code-verify"
+   ],
+   "match_sha256": "150e561e2c7e3bcc8076725fc0128087a55d098a61627c6bcb2057651f5e8587",
+   "match_unavailable": [],
+   "route_recommended": "debugging",
+   "route_sha256": "31de923c7649bec0880287d7b60140ca8d427736b469e758364e9f8fa2cb51a6"
+  },
+  "claude::tell me a joke": {
+   "match_selected": [],
+   "match_sha256": "0f13ddf4b45663d91596e42b23bbc580a63443a3c3995ec1e1875937785edce0",
+   "match_unavailable": [],
+   "route_recommended": "none",
+   "route_sha256": "42247744ce0f0843ce1e6b9e695c18d8c7e57e94deb022aeb663d5218ad91801"
+  },
+  "claude::triage open pull request comments": {
+   "match_selected": [],
+   "match_sha256": "ddc3da36982fa4ca04f12b85b0c97f04098fc25ac06130660417dab0a8c3bcfd",
+   "match_unavailable": [],
+   "route_recommended": "none",
+   "route_sha256": "d7e9b0ad9b6cf602b6d88d4993c299b5ce3ee754804de26d6b883d573f1d0cab"
+  },
+  "claude::verify lint and tests": {
+   "match_selected": [
+    "codebase-historian",
+    "code-verify"
+   ],
+   "match_sha256": "a6f8b5c49b0e82c7c3c1cade149b02deb45626a310342f77311960edeb18352a",
+   "match_unavailable": [],
+   "route_recommended": "research",
+   "route_sha256": "563e9ac91b4228c814b6d39cd03d7edbe22759ef85fba2c54c9d3cdcee8319bc"
+  },
+  "claude::write a failing test first then implement": {
+   "match_selected": [
+    "code-verify",
+    "tdd"
+   ],
+   "match_sha256": "8437ede84fd8a32993932293d5888079f041e228ff04fa4d2363003d4ce93fba",
+   "match_unavailable": [],
+   "route_recommended": "direct-implementation",
+   "route_sha256": "e46f7294a4b925aef9d0538b95b1d6c274294049854cf0bf4ff5af3d1a5b8543"
+  },
+  "codex::add a cli flag to the parser": {
+   "match_selected": [
+    "code-verify"
+   ],
+   "match_sha256": "cf5f70900f395463de10f2c07375e6db27b5015c6f4bf10dafbf9d63bf0d9457",
+   "match_unavailable": [],
+   "route_recommended": "direct-implementation",
+   "route_sha256": "39a1a733e0b535614c87b17768fa928d2a9c4bce7ac7017e3db912d6f93059aa"
+  },
+  "codex::consolidate memory": {
+   "match_selected": [],
+   "match_sha256": "22a20d57374ff484e2ee2864d9ed172b743fbee26b4c84cac2dce9d0907c55ec",
+   "match_unavailable": [],
+   "route_recommended": "memory-consolidation",
+   "route_sha256": "4f2935084cde17d460ecfeef9f7562ee48cc871124c7b0468ec8535df538156d"
+  },
+  "codex::create a worktree for the feature": {
+   "match_selected": [
+    "codebase-historian",
+    "code-verify"
+   ],
+   "match_sha256": "1184586100324a1af13f9b902bf4e69fe44cc29946e91a11cb164aa59fcf8aac",
+   "match_unavailable": [],
+   "route_recommended": "workspace-worktree",
+   "route_sha256": "2270d6fdbb6c6d8ee47f417afea39d404d7e8b8bcc62585b83cca9f1fef9502d"
+  },
+  "codex::debug a failing API test": {
+   "match_selected": [
+    "debugger",
+    "code-verify",
+    "tdd"
+   ],
+   "match_sha256": "448de20ebdf322de67a82f5bb8a817f65a9d58d0520e14263e3429034def8e09",
+   "match_unavailable": [],
+   "route_recommended": "debugging",
+   "route_sha256": "9e4dfd0aa20cc72b8f6f70947dde1e2a02f99dac2e20130e4e719e5879f64145"
+  },
+  "codex::debug a failing cli test": {
+   "match_selected": [
+    "debugger",
+    "code-verify",
+    "tdd"
+   ],
+   "match_sha256": "9e958f58446582ca86533f3c5a5cb22e011b820a46b06b271cac2737eb64cb18",
+   "match_unavailable": [],
+   "route_recommended": "debugging",
+   "route_sha256": "16438ed32be1c797ec5c91bb5bc024a13c84699bb1fff15c451ed821284c04e8"
+  },
+  "codex::fix the pull-to-refresh gesture": {
+   "match_selected": [
+    "code-verify"
+   ],
+   "match_sha256": "fb6de197af69a6ad6d22234d39de2567986d9ab40c7154133dfe94738d12a0e8",
+   "match_unavailable": [],
+   "route_recommended": "direct-implementation",
+   "route_sha256": "89f348af7a6db2b7ff4457ff3cded265d2ccfc9bbd5b8271ef10c865e3094597"
+  },
+  "codex::handle the feature request from support": {
+   "match_selected": [],
+   "match_sha256": "c8753f0b7001513d0ca2816836f4d74021b3a45ba74a6c6558c0fb56806702b2",
+   "match_unavailable": [],
+   "route_recommended": "none",
+   "route_sha256": "cc250289cef664d7ae2e43f98233cd5ab33b094da5d2d2770dcf1169f5ebe34c"
+  },
+  "codex::implement the parser change": {
+   "match_selected": [
+    "code-verify"
+   ],
+   "match_sha256": "c34543f55547d260caece83fdf43106a80b79e31afcd37dc67bc3a4b97f1d1a8",
+   "match_unavailable": [],
+   "route_recommended": "direct-implementation",
+   "route_sha256": "d1455e3aa38639303193f0df7a3caf047c41012ab05388236be9959edee2230e"
+  },
+  "codex::prepare the release notes": {
+   "match_selected": [],
+   "match_sha256": "31c654b3cc1fada46f51b38be1454f6f3f4d29fe32b09fe77a14e121e39eec08",
+   "match_unavailable": [],
+   "route_recommended": "none",
+   "route_sha256": "b2a6b93271e22993c20bcc57409915c4fbfd7e3bab964fe6b93871ff0487a71a"
+  },
+  "codex::promote canonical facts": {
+   "match_selected": [],
+   "match_sha256": "e99f3b933e7ad4e4f9bb20fbdfeb29091a3640a7e675ded980e855d4a7ac50fa",
+   "match_unavailable": [],
+   "route_recommended": "canonical-promotion",
+   "route_sha256": "98b1619fa1de12f44a25b5cf360409e1e0ce6efe72067f9c7e8b3779f34a474d"
+  },
+  "codex::research the history of this module": {
+   "match_selected": [
+    "codebase-historian"
+   ],
+   "match_sha256": "26fb4cefe4e5b66206f226f700668ab08f5233f03fab36597540a97ffd8ef3c6",
+   "match_unavailable": [],
+   "route_recommended": "research",
+   "route_sha256": "2518f6ff68d18920ad6c6cc3a74d6bab38e6205de79e87311f16a197e46a119a"
+  },
+  "codex::review this diff for security": {
+   "match_selected": [
+    "code-review"
+   ],
+   "match_sha256": "f7d95db793943a6f34cd40519da534d7ff1d498cfca641c66e89304b5a842e69",
+   "match_unavailable": [],
+   "route_recommended": "code-review",
+   "route_sha256": "c5e9ff31cd17abbff35a2e59fd846ea616ccf58882cf46385cb0a2681ea9dff5"
+  },
+  "codex::set up a multi repository workspace": {
+   "match_selected": [
+    "codebase-historian",
+    "code-verify"
+   ],
+   "match_sha256": "0aa58ab0e1eb5e12d93756e42381085971ed964943f3e5e5257a7bcab1a7e497",
+   "match_unavailable": [],
+   "route_recommended": "multi-repository",
+   "route_sha256": "8dcb0117cb7d5e2e3128c0fffdc65644f9c43b06d85e8c9bac2ffb196ee80870"
+  },
+  "codex::summarise the failing github actions run": {
+   "match_selected": [
+    "debugger",
+    "code-verify"
+   ],
+   "match_sha256": "23ecd9f3aa11e8c6ef1bd7853798d756c9973f71cb1e122d080679969a06b719",
+   "match_unavailable": [],
+   "route_recommended": "debugging",
+   "route_sha256": "6976aee434de60820f8dced8ee83eecd5d43c81c4a24f92b4e8667c7d31d8bcb"
+  },
+  "codex::tell me a joke": {
+   "match_selected": [],
+   "match_sha256": "f36c056821fd82a43509e13889ef40b36cf374baa1bd2055b2857b2c32aa6fba",
+   "match_unavailable": [],
+   "route_recommended": "none",
+   "route_sha256": "ed3befade221ac1affba0d1251cf2f62dd3ba5e4c42782d159f43bc9a38843e9"
+  },
+  "codex::triage open pull request comments": {
+   "match_selected": [],
+   "match_sha256": "e0167993277c515a08c82cd2abf9575dee8a2ac00a72c46f6db2f1b8eb89faa2",
+   "match_unavailable": [],
+   "route_recommended": "none",
+   "route_sha256": "34d397e1ef4b72a3813fe8f77e7041a14815ae1d17fa26e1a8694ba76df097ca"
+  },
+  "codex::verify lint and tests": {
+   "match_selected": [
+    "codebase-historian",
+    "code-verify"
+   ],
+   "match_sha256": "84420281b16797b9edbe4b11500dac54feec1a4ef8bf12d8dada303f44408595",
+   "match_unavailable": [],
+   "route_recommended": "research",
+   "route_sha256": "ec0d826c71705323d69be1b5a90c10eed8bbc733674b49c14d42a80ebfa345e8"
+  },
+  "codex::write a failing test first then implement": {
+   "match_selected": [
+    "code-verify",
+    "tdd"
+   ],
+   "match_sha256": "1d5748e4fccd1c69fe5069f1bc9eb4329f96f73a9b5da3929855990f6e647c3d",
+   "match_unavailable": [],
+   "route_recommended": "direct-implementation",
+   "route_sha256": "962ff1f7e20f54e77dc30db857444b5579da576401abbdc65a36ad790e2b92fd"
+  },
+  "copilot::add a cli flag to the parser": {
+   "match_selected": [
+    "code-verify"
+   ],
+   "match_sha256": "fefbcc843ff048c01e3ae36e66b60ba255064418db8e60c2cc88d9b34bf99e68",
+   "match_unavailable": [],
+   "route_recommended": "direct-implementation",
+   "route_sha256": "0246b4aa8c4e636616c2eac359b4b33af8913fa0528f3bd24881fb99d3a61130"
+  },
+  "copilot::consolidate memory": {
+   "match_selected": [],
+   "match_sha256": "e3240bb7cea31d994664724d423e27e070ffc9c370e65b5c649811661cf016dc",
+   "match_unavailable": [],
+   "route_recommended": "memory-consolidation",
+   "route_sha256": "193ebae36cfba3023682a6d89c8002d3859067a10adb206c7f67ece1c0554dde"
+  },
+  "copilot::create a worktree for the feature": {
+   "match_selected": [
+    "codebase-historian",
+    "code-verify"
+   ],
+   "match_sha256": "b2d53b1fd4878f264fde66b265cd9c7d27e2e1dface16322913ded5801190c77",
+   "match_unavailable": [],
+   "route_recommended": "workspace-worktree",
+   "route_sha256": "78aa0aad6c6cd887e047a68e9c6d312914c6efae385fd119940dbd1781db716c"
+  },
+  "copilot::debug a failing API test": {
+   "match_selected": [
+    "debugger",
+    "code-verify",
+    "tdd"
+   ],
+   "match_sha256": "7783585e023e392a4a42666a8dc86d5120d332c3eb462cad89f8695e442a170a",
+   "match_unavailable": [],
+   "route_recommended": "debugging",
+   "route_sha256": "c52dde9a8dff290a79c70b73f5641380f31a3311634313b3d1da0c204aca0838"
+  },
+  "copilot::debug a failing cli test": {
+   "match_selected": [
+    "debugger",
+    "code-verify",
+    "tdd"
+   ],
+   "match_sha256": "fec0459e62839cedfa9a7fac9dff947f1cf7f1e8dd27ae363140c75a0ad16f8a",
+   "match_unavailable": [],
+   "route_recommended": "debugging",
+   "route_sha256": "81d56b2bf0c1105a34257c8acc2a680450dc45c806fa7a3a74683e35f3ea9f29"
+  },
+  "copilot::fix the pull-to-refresh gesture": {
+   "match_selected": [
+    "code-verify"
+   ],
+   "match_sha256": "97be5d647aaab8ec42f7bba735bb4d8bf0f8b52056768fb2d15f2f506bfb2dbc",
+   "match_unavailable": [],
+   "route_recommended": "direct-implementation",
+   "route_sha256": "97ab14e090d61add88754bf43f9f850ededc529c032e776354ca299613ec4142"
+  },
+  "copilot::handle the feature request from support": {
+   "match_selected": [],
+   "match_sha256": "387700d821dc74efac2314729a6dd993560aacb0a7c76768025b09d0232f6185",
+   "match_unavailable": [],
+   "route_recommended": "none",
+   "route_sha256": "c9f8689c18679537fb1aa1da1059efa2c379eedb139ba672b4e8162fab73cdca"
+  },
+  "copilot::implement the parser change": {
+   "match_selected": [
+    "code-verify"
+   ],
+   "match_sha256": "5ab05e481ba398d7b8cf2dd18533ea59492e99043b8d2ee169da8ad077602f4b",
+   "match_unavailable": [],
+   "route_recommended": "direct-implementation",
+   "route_sha256": "0b554c4170bd18587867ea9b2fff452032f23585dae7910e1ce5d24005e9ec06"
+  },
+  "copilot::prepare the release notes": {
+   "match_selected": [],
+   "match_sha256": "47aa353f2bedf202c6293e0b7efdeceb4d2ea2872e862fe388e40ab8afd3dae0",
+   "match_unavailable": [],
+   "route_recommended": "none",
+   "route_sha256": "052dd01895260e53b7fd5e924c46680f6d684e6ee92f65aca5a2521a30a3f3b1"
+  },
+  "copilot::promote canonical facts": {
+   "match_selected": [],
+   "match_sha256": "f9fdcc18bd13de15127f7f9735caba1a16c82b75245ec70a2cc29e5843131a8c",
+   "match_unavailable": [],
+   "route_recommended": "canonical-promotion",
+   "route_sha256": "c4d5812717a49442988eb494db60f28cf81ece2c2113ad0491f1ae886b5ba779"
+  },
+  "copilot::research the history of this module": {
+   "match_selected": [
+    "codebase-historian"
+   ],
+   "match_sha256": "ed043384463418708ee2ad850edbcb342d6480476dcb3dfb30cfa3786a732d66",
+   "match_unavailable": [],
+   "route_recommended": "research",
+   "route_sha256": "4c7e80e7174f2bb5a6d9e9dc4b08f3548c6a3590687c050aff0ac6816c5e466e"
+  },
+  "copilot::review this diff for security": {
+   "match_selected": [
+    "code-review"
+   ],
+   "match_sha256": "4881d1ffa84baa23a41e99c4ce1f02534854af2aeb7f2e132b432fd5a09636a0",
+   "match_unavailable": [],
+   "route_recommended": "code-review",
+   "route_sha256": "59cd3a9edbdb7f2e1a0e32abb27f36a5d93f678df98d7fb698b228aa93d78b7e"
+  },
+  "copilot::set up a multi repository workspace": {
+   "match_selected": [
+    "codebase-historian",
+    "code-verify"
+   ],
+   "match_sha256": "2cde95ab10813145daf664fdd72e9c1b1c7f878e077046b44bd580032d4bcb1e",
+   "match_unavailable": [],
+   "route_recommended": "multi-repository",
+   "route_sha256": "3958c97e0aa73e935bd1016bede515e7244b0879f1a2d42aa1796460cd190b72"
+  },
+  "copilot::summarise the failing github actions run": {
+   "match_selected": [
+    "debugger",
+    "code-verify"
+   ],
+   "match_sha256": "c9cdc0c00d9d704bdc5699018f83f7b20ec9bf8e588c6ed9f19fe1eb74967005",
+   "match_unavailable": [],
+   "route_recommended": "debugging",
+   "route_sha256": "bd3560c99af9a46d7361e482d6beb0a142fb5bd85c8615e17c901f2dfb1f6679"
+  },
+  "copilot::tell me a joke": {
+   "match_selected": [],
+   "match_sha256": "3904acec3821091d3c98c33fb266fef5358da1fe768fc6838af86ffe3bc97473",
+   "match_unavailable": [],
+   "route_recommended": "none",
+   "route_sha256": "660f1bcc4f21faeedc6574bb06ebf780cacbb9d5deefaa98c8e0aa0bc76e1300"
+  },
+  "copilot::triage open pull request comments": {
+   "match_selected": [],
+   "match_sha256": "92fccbb42d505c928e89f3a5c5294dbc56d55af04a29cf9321420e1d35720f43",
+   "match_unavailable": [],
+   "route_recommended": "none",
+   "route_sha256": "6d316e52ca670bb5d7d5d5fb635f807e72748aa9ec5f4f6a1e39f786b1ca3667"
+  },
+  "copilot::verify lint and tests": {
+   "match_selected": [
+    "codebase-historian",
+    "code-verify"
+   ],
+   "match_sha256": "4b12ba9849790b2205fd26cf7c1186689c1bccd8367f34895de7521f22bc3e85",
+   "match_unavailable": [],
+   "route_recommended": "research",
+   "route_sha256": "8e815a7c9d62ba2ada2808f5b0d208d6f4c039087f109c35721ac00a17bac4e9"
+  },
+  "copilot::write a failing test first then implement": {
+   "match_selected": [
+    "code-verify",
+    "tdd"
+   ],
+   "match_sha256": "49f0a6e0bc90c3315de49d3cce86021129f864e6afff1e022eab371e492e5af7",
+   "match_unavailable": [],
+   "route_recommended": "direct-implementation",
+   "route_sha256": "fe92e955e2748ebf977cd90aaa5f26dc8d2e2f38a4fd600a7e04bf2c4805ea8e"
+  },
+  "opencode::add a cli flag to the parser": {
+   "match_selected": [
+    "code-verify"
+   ],
+   "match_sha256": "ce13fc6fbe08b810d837d6f802fa6b951c42e2aaf6a87c8f08014ca078c45df8",
+   "match_unavailable": [],
+   "route_recommended": "direct-implementation",
+   "route_sha256": "570c9f7aeb29b056c65b78c541fe716431a2ba201c4caa8ca14790cc6b79c8ab"
+  },
+  "opencode::consolidate memory": {
+   "match_selected": [],
+   "match_sha256": "7224bd9c864dfc61ddb8958dd72da17ae6651b21d023ee73197d48144d559c2a",
+   "match_unavailable": [],
+   "route_recommended": "memory-consolidation",
+   "route_sha256": "1fb592cfc261b38be4d4e9455d3776685181694f3b11c0354a82082a7dca8a0c"
+  },
+  "opencode::create a worktree for the feature": {
+   "match_selected": [
+    "codebase-historian",
+    "code-verify"
+   ],
+   "match_sha256": "0716c4c22e03f40b6e53fe49c0ed94027ef2d60ea66c1befe3457291ec389eb1",
+   "match_unavailable": [],
+   "route_recommended": "workspace-worktree",
+   "route_sha256": "03036196e0dbe6a381c3a4b1f6943f902c6702ef8b0d3e3d588545ffded4d295"
+  },
+  "opencode::debug a failing API test": {
+   "match_selected": [
+    "debugger",
+    "code-verify",
+    "tdd"
+   ],
+   "match_sha256": "a3c9918ceff2d48d9f20cd51f6fc3c78a5831063816018ca1f31f767d81f6699",
+   "match_unavailable": [],
+   "route_recommended": "debugging",
+   "route_sha256": "4c23392d6968ead28790c04e775df060c5ded80d826dbd2b0682e351e1eae883"
+  },
+  "opencode::debug a failing cli test": {
+   "match_selected": [
+    "debugger",
+    "code-verify",
+    "tdd"
+   ],
+   "match_sha256": "92890d9497a0873d504668886a4446031218a2f4d6bb326927ca27b581126f4b",
+   "match_unavailable": [],
+   "route_recommended": "debugging",
+   "route_sha256": "dd0dc8baa0d08054a4e3d7fad76d339ad64005de349c704e6e5c6ff37ba3a851"
+  },
+  "opencode::fix the pull-to-refresh gesture": {
+   "match_selected": [
+    "code-verify"
+   ],
+   "match_sha256": "9b0cc74c1cfde0e7c9150d3fdf3c16d5ad05564dfa282c2e508dc4589e857dac",
+   "match_unavailable": [],
+   "route_recommended": "direct-implementation",
+   "route_sha256": "02aaf20bdee3be468927b0b7bd2ca6e65b48334d2a896fb4920d953b75d70e13"
+  },
+  "opencode::handle the feature request from support": {
+   "match_selected": [],
+   "match_sha256": "4666bd84cf5b44371ff6ec6dfc3025d44f975c378ee80a1af23e4b84af6f4cc7",
+   "match_unavailable": [],
+   "route_recommended": "none",
+   "route_sha256": "a259ea310a18bc062c587836df10a2898bcd76940b5d4a2de8e6405c0da0d124"
+  },
+  "opencode::implement the parser change": {
+   "match_selected": [
+    "code-verify"
+   ],
+   "match_sha256": "5676ad9f8dd407e20f15fe2ff529111e4378fb2a7c48a6ae2c45277876f21c32",
+   "match_unavailable": [],
+   "route_recommended": "direct-implementation",
+   "route_sha256": "c662d5473bdbdb25405dafe1364d225396cad60a8ce87eb402d4e362e6041d26"
+  },
+  "opencode::prepare the release notes": {
+   "match_selected": [],
+   "match_sha256": "d3824f154a9ef8b3b64c658f44a9b437a6eba9c6dc074ab145fbe510748d2fa5",
+   "match_unavailable": [],
+   "route_recommended": "none",
+   "route_sha256": "1f242d8dcf74b408fcb352cb732441ffe9b8795e06149a48f4bef7be395c756e"
+  },
+  "opencode::promote canonical facts": {
+   "match_selected": [],
+   "match_sha256": "e3348d3a7758caf0d1849f114f5139bf7d919b0b1b8e004cbd674f60abb2a6c1",
+   "match_unavailable": [],
+   "route_recommended": "canonical-promotion",
+   "route_sha256": "9192d868ffb2d8d4916ef50dab600fa7413c4198a2ea9f984efcf729532518f4"
+  },
+  "opencode::research the history of this module": {
+   "match_selected": [
+    "codebase-historian"
+   ],
+   "match_sha256": "60ac19e4c85e7196cdce604165acc84b50d554396162cc838f8c17679447ee26",
+   "match_unavailable": [],
+   "route_recommended": "research",
+   "route_sha256": "6b080c57dde8fa77edfedb06431cf27d83a9e1ea299f758ea2f405e8ebe1d301"
+  },
+  "opencode::review this diff for security": {
+   "match_selected": [
+    "code-review"
+   ],
+   "match_sha256": "cb057fb43e72101d68f762570382bdf31b99f64b6b644bdbf96274827c933157",
+   "match_unavailable": [],
+   "route_recommended": "code-review",
+   "route_sha256": "518d70af29579ecde1c39036c615e6713a81fee4e090f609d99e2f26e01bd5d7"
+  },
+  "opencode::set up a multi repository workspace": {
+   "match_selected": [
+    "codebase-historian",
+    "code-verify"
+   ],
+   "match_sha256": "e4238505f2df1ba31a394844e32b87b3a5a8aff16bff35e67f9d6ae4122b1a97",
+   "match_unavailable": [],
+   "route_recommended": "multi-repository",
+   "route_sha256": "cca5e2de36894cf6aa2460de3265230921ed7b12b28381467b4cf80fbb1cb166"
+  },
+  "opencode::summarise the failing github actions run": {
+   "match_selected": [
+    "debugger",
+    "code-verify"
+   ],
+   "match_sha256": "15d863bbe67532af12a50233d7e2206a63276107c6a03ed3f5c99e1aab766dfb",
+   "match_unavailable": [],
+   "route_recommended": "debugging",
+   "route_sha256": "f4f069e8303b6855dab1969f6338bcc6815de928c3f15b8e235e105a5075df74"
+  },
+  "opencode::tell me a joke": {
+   "match_selected": [],
+   "match_sha256": "496d352a73267644936a8e1cd41ee154ec66c4debe9fe0edd45644009ad798fb",
+   "match_unavailable": [],
+   "route_recommended": "none",
+   "route_sha256": "a367cfcc2b44a00a5ece7b93b91bce5906bd32c3b017b60344f0da192b12eef5"
+  },
+  "opencode::triage open pull request comments": {
+   "match_selected": [],
+   "match_sha256": "58c44a9a800d3ed162cf90c7f8841c87bc4b8f89ae8ceb19a3dfab46b6273f7c",
+   "match_unavailable": [],
+   "route_recommended": "none",
+   "route_sha256": "bc0989b2d31d0633b05038ed80dae156ab34e3a1f894cc09b87ac9822eb354db"
+  },
+  "opencode::verify lint and tests": {
+   "match_selected": [
+    "codebase-historian",
+    "code-verify"
+   ],
+   "match_sha256": "1a620e28bb2fc0bcc194a282d740af1fac7ba13f5829725cb7011265eb3f6944",
+   "match_unavailable": [],
+   "route_recommended": "research",
+   "route_sha256": "60d5df356546afe0c800cc81d28ebc99426d475abce4416ebbe6cffa40944ca2"
+  },
+  "opencode::write a failing test first then implement": {
+   "match_selected": [
+    "code-verify",
+    "tdd"
+   ],
+   "match_sha256": "cdcd293499cb2bfd2e8f8d57d226179a2bb88d736b6c56cbeee437246bcaa30f",
+   "match_unavailable": [],
+   "route_recommended": "direct-implementation",
+   "route_sha256": "0d5264d2b3611d7516205811d41f921e788378a53b0a241805d465f16f940d5c"
+  }
+ },
+ "normalization": "registry absolute paths and per-row registry_source removed; sha256 of json.dumps(sort_keys=True, separators=(',', ':'))",
+ "source_revision": "562869a02ed020888276e088c6e1a7816396682a"
+}
