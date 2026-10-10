@@ -17,6 +17,7 @@ import ssl
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
 from datetime import datetime
 from email import errors as email_errors
 from email import policy
@@ -40,7 +41,10 @@ PLAN_TTL_SECONDS = 10 * 60
 PLAN_VERSION = 1
 LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 WRITE_ACTIONS = frozenset(
-    {"save-draft", "send", "move", "delete", "mark-read"}
+    {
+        "save-draft", "send", "move", "delete", "mark-read",
+        "move-batch", "delete-batch", "create-folder",
+    }
 )
 HEADER_FIELDS = frozenset({"from", "to", "cc", "bcc", "reply-to", "subject"})
 UNTRUSTED_MARKER = {
@@ -200,6 +204,14 @@ def connect_imap(config: BridgeConfig) -> imaplib.IMAP4:
         require_ok(status, "IMAP STARTTLS")
         status, _ = client.login(config.username, config.password)
         require_ok(status, "IMAP authentication")
+        # imaplib caches the pre-login list; Bridge advertises MOVE and
+        # UIDPLUS only after authentication.
+        status, data = client.capability()
+        require_ok(status, "IMAP CAPABILITY")
+        advertised = data[-1] if data else b""
+        if isinstance(advertised, bytes):
+            advertised = advertised.decode("ascii", "ignore")
+        client.capabilities = tuple(str(advertised).upper().split())
         return client
     except Exception:
         try:
@@ -277,17 +289,33 @@ def plan_digest(plan_without_hash: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_json(plan_without_hash)).hexdigest()
 
 
+def _normalize_mailbox_text(value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        raise PlanError(f"{field} must be a string")
+    try:
+        reject_control_characters(value, field)
+    except SafetyError as exc:
+        raise PlanError(str(exc)) from exc
+    if any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value):
+        raise PlanError(f"{field} contains forbidden control characters")
+    value = value.strip()
+    if not value:
+        raise PlanError(f"{field} is required")
+    return value
+
+
 def normalize_operation(action: str, operation: dict[str, Any]) -> dict[str, Any]:
     if action not in WRITE_ACTIONS:
         raise PlanError(f"unsupported write action: {action}")
     if not isinstance(operation, dict):
         raise PlanError("operation must be an object")
-    if action == "mark-read":
-        if set(operation) != {"refs"}:
-            raise PlanError("mark-read operation fields are not canonical")
+    if action in {"mark-read", "move-batch", "delete-batch"}:
+        expected = {"refs"} | ({"destination"} if action == "move-batch" else set())
+        if set(operation) != expected:
+            raise PlanError(f"{action} operation fields are not canonical")
         values = operation.get("refs")
         if not isinstance(values, list) or not 1 <= len(values) <= 500:
-            raise PlanError("mark-read requires between 1 and 500 references")
+            raise PlanError(f"{action} requires between 1 and 500 references")
         refs = [MessageRef.from_dict(value) for value in values]
         mailbox = refs[0].mailbox
         uidvalidity = refs[0].uidvalidity
@@ -296,17 +324,28 @@ def normalize_operation(action: str, operation: dict[str, Any]) -> dict[str, Any
             for ref in refs
         ):
             raise PlanError(
-                "mark-read references must share mailbox and UIDVALIDITY"
+                f"{action} references must share mailbox and UIDVALIDITY"
             )
         uids = [ref.uid for ref in refs]
         if len(set(uids)) != len(uids):
-            raise PlanError("mark-read UIDs must be unique")
+            raise PlanError(f"{action} UIDs must be unique")
         clean: dict[str, Any] = {
             "refs": [
                 MessageRef(mailbox, uidvalidity, uid).to_dict()
                 for uid in sorted(uids)
             ]
         }
+        if action == "move-batch":
+            clean["destination"] = _normalize_mailbox_text(
+                operation["destination"], "destination"
+            )
+    elif action == "create-folder":
+        if set(operation) != {"name"}:
+            raise PlanError("create-folder operation fields are not canonical")
+        name = _normalize_mailbox_text(operation["name"], "folder name")
+        if "/" in name or len(name) > 100:
+            raise PlanError("folder name must be one segment of at most 100 characters")
+        clean = {"name": name}
     elif action in {"move", "delete"}:
         expected = {"ref"} | ({"destination"} if action == "move" else set())
         if set(operation) != expected:
@@ -834,18 +873,40 @@ def _decode_mailbox_name(raw: bytes) -> str:
         return raw.decode("utf-8", "replace")
 
 
-def special_use_mailboxes(client: imaplib.IMAP4) -> dict[str, str]:
-    status, rows = client.list()
+def list_mailboxes(client: imaplib.IMAP4) -> list[dict[str, Any]]:
+    status, rows = client.list('""', "*")
     require_ok(status, "LIST")
-    result: dict[str, str] = {}
+    result: list[dict[str, Any]] = []
     for row in rows or []:
-        if not isinstance(row, bytes):
+        if row is None or row == b"":
             continue
+        literal = None
+        if isinstance(row, tuple):
+            row, literal = row
+        if not isinstance(row, bytes):
+            raise ProtocolError("invalid LIST response")
         match = SPECIAL_USE_RE.match(row)
         if not match:
-            continue
-        name = _decode_mailbox_name(match.group("name"))
-        for flag in match.group("flags").decode("ascii", "ignore").split():
+            raise ProtocolError("invalid LIST response")
+        name = _decode_mailbox_name(
+            literal if literal is not None else match.group("name")
+        )
+        flags = match.group("flags").decode("ascii", "ignore").split()
+        result.append({
+            "name": name,
+            "flags": flags,
+            "selectable": all(flag.casefold() != r"\noselect" for flag in flags),
+        })
+    return result
+
+
+def special_use_mailboxes(
+    client: imaplib.IMAP4, *, mailboxes: list[dict[str, Any]] | None = None
+) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for mailbox in list_mailboxes(client) if mailboxes is None else mailboxes:
+        name = mailbox["name"]
+        for flag in mailbox["flags"]:
             if flag.casefold() in {r"\drafts", r"\trash"}:
                 key = flag.casefold()
                 if key in result and result[key] != name:
@@ -866,9 +927,9 @@ def require_move(client: imaplib.IMAP4) -> None:
         )
 
 
-def verify_move_completion(
-    client: imaplib.IMAP4, data: Any, source_uid: int
-) -> tuple[int, int]:
+def _move_completion_mappings(
+    client: imaplib.IMAP4, data: Any
+) -> Iterator[tuple[int, str, str]]:
     tagged_specimens: list[bytes] = []
     for item in data or []:
         if isinstance(item, tuple):
@@ -876,27 +937,18 @@ def verify_move_completion(
         if isinstance(item, bytes):
             tagged_specimens.append(item)
 
-    def validated_mapping(match: re.Match[bytes]) -> tuple[int, int] | None:
-        uidvalidity = int(match.group(1))
-        source_set = match.group(2).decode("ascii")
-        destination_set = match.group(3).decode("ascii")
-        if (
-            uidvalidity > 0
-            and source_set == str(source_uid)
-            and destination_set.isdigit()
-            and int(destination_set) > 0
-        ):
-            return uidvalidity, int(destination_set)
-        return None
-
     for item in tagged_specimens:
         match = re.search(
             rb"(?:\[)?COPYUID\s+(\d+)\s+([0-9:,]+)\s+([0-9:,]+)",
             item,
             flags=re.IGNORECASE,
         )
-        if match and (mapping := validated_mapping(match)):
-            return mapping
+        if match:
+            yield (
+                int(match.group(1)),
+                match.group(2).decode("ascii"),
+                match.group(3).decode("ascii"),
+            )
 
     response_method = getattr(client, "response", None)
     if callable(response_method):
@@ -908,12 +960,48 @@ def verify_move_completion(
             match = re.fullmatch(
                 rb"\s*(\d+)\s+([0-9:,]+)\s+([0-9:,]+)\s*", item
             )
-            if match and (mapping := validated_mapping(match)):
-                return mapping
+            if match:
+                yield (
+                    int(match.group(1)),
+                    match.group(2).decode("ascii"),
+                    match.group(3).decode("ascii"),
+                )
+
+
+def verify_move_completion(
+    client: imaplib.IMAP4, data: Any, source_uid: int
+) -> tuple[int, int]:
+    for uidvalidity, source_set, destination_set in _move_completion_mappings(
+        client, data
+    ):
+        if (
+            uidvalidity > 0
+            and source_set == str(source_uid)
+            and destination_set.isdigit()
+            and int(destination_set) > 0
+        ):
+            return uidvalidity, int(destination_set)
     raise ProtocolError(
         "MOVE completion is ambiguous: missing or mismatched COPYUID; "
         "confirmation token remains consumed"
     )
+
+
+def verify_batch_move_completion(
+    client: imaplib.IMAP4, data: Any, source_uids: list[int]
+) -> tuple[int, list[int]]:
+    for uidvalidity, source_set, destination_set in _move_completion_mappings(
+        client, data
+    ):
+        source = expand_uid_set(source_set)
+        destination = expand_uid_set(destination_set)
+        if (
+            uidvalidity > 0
+            and source == set(source_uids)
+            and len(destination) == len(source_uids)
+        ):
+            return uidvalidity, sorted(destination)
+    raise ProtocolError("MOVE completion is ambiguous: missing or mismatched COPYUID")
 
 
 def default_ledger_path() -> Path:
@@ -1096,6 +1184,170 @@ def apply_delete(
         "destination": trash,
         "destination_uidvalidity": destination_uidvalidity,
         "destination_uid": destination_uid,
+    }
+
+
+def _same_mailbox(left: str, right: str) -> bool:
+    return left == right or left.upper() == right.upper() == "INBOX"
+
+
+def _batch_destination(
+    client: imaplib.IMAP4, action: str, operation: dict[str, Any]
+) -> str:
+    mailboxes = list_mailboxes(client)
+    source = operation["refs"][0]["mailbox"]
+    if action == "delete-batch":
+        destination = special_use_mailboxes(client, mailboxes=mailboxes).get(r"\trash")
+        if not destination:
+            raise SafetyError("Bridge did not expose a special-use Trash mailbox")
+    else:
+        destination = operation["destination"]
+    matches = [
+        mailbox for mailbox in mailboxes
+        if _same_mailbox(mailbox["name"], destination)
+    ]
+    if len(matches) != 1 or not matches[0]["selectable"]:
+        raise SafetyError("destination must exist and be selectable and unambiguous")
+    if _same_mailbox(source, destination):
+        raise SafetyError("destination must differ from source mailbox")
+    if action == "move-batch":
+        flags = {flag.casefold() for flag in matches[0]["flags"]}
+        forbidden = {r"\trash", r"\drafts", r"\sent", r"\all", r"\junk", r"\flagged"}
+        if (
+            flags & forbidden
+            or destination.startswith("Labels/")
+            or not (
+                destination.upper() == "INBOX"
+                or r"\archive" in flags
+                or destination.startswith("Folders/")
+            )
+        ):
+            raise SafetyError("destination is not permitted for move-batch")
+    return destination
+
+
+def _ambiguous_write_result(action: str, **details: Any) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "ambiguous",
+        "action": action,
+        **details,
+        "retry_prohibited": True,
+        "message": (
+            "Write completion could not be verified. Do not retry this plan; "
+            "inspect current mailbox state and create a fresh plan."
+        ),
+    }
+
+
+def _apply_batch_move(
+    client: imaplib.IMAP4,
+    plan: dict[str, Any],
+    supplied_hash: str,
+    *,
+    action: str,
+    ledger_path: str | Path | None = None,
+) -> dict[str, Any]:
+    operation = verify_plan(
+        plan, expected_action=action, supplied_hash=supplied_hash
+    )
+    require_move(client)
+    destination = _batch_destination(client, action, operation)
+    refs = [MessageRef.from_dict(value) for value in operation["refs"]]
+    requested = [ref.uid for ref in refs]
+    uid_set = compact_uid_set(requested)
+    verify_ref(client, refs[0], readonly=False)
+    if set(requested) - fetch_present_uids(client, uid_set):
+        raise StaleMessageError(
+            "one or more message UIDs no longer exist; list/search again before acting"
+        )
+    reserve_plan(plan, ledger_path=ledger_path)
+    try:
+        status, data = client.uid("MOVE", uid_set, imap_mailbox_arg(destination))
+        require_ok(status, "UID MOVE")
+        destination_uidvalidity, destination_uids = verify_batch_move_completion(
+            client, data, requested
+        )
+    except Exception:
+        return _ambiguous_write_result(
+            action, refs=operation["refs"], destination=destination
+        )
+    return {
+        "ok": True,
+        "status": "deleted" if action == "delete-batch" else "moved",
+        "action": action,
+        "refs": operation["refs"],
+        "destination": destination,
+        "destination_uidvalidity": destination_uidvalidity,
+        "destination_uids": destination_uids,
+    }
+
+
+def apply_move_batch(
+    client: imaplib.IMAP4,
+    plan: dict[str, Any],
+    supplied_hash: str,
+    *,
+    ledger_path: str | Path | None = None,
+) -> dict[str, Any]:
+    return _apply_batch_move(
+        client, plan, supplied_hash, action="move-batch", ledger_path=ledger_path
+    )
+
+
+def apply_delete_batch(
+    client: imaplib.IMAP4,
+    plan: dict[str, Any],
+    supplied_hash: str,
+    *,
+    ledger_path: str | Path | None = None,
+) -> dict[str, Any]:
+    return _apply_batch_move(
+        client, plan, supplied_hash, action="delete-batch", ledger_path=ledger_path
+    )
+
+
+def apply_create_folder(
+    client: imaplib.IMAP4,
+    plan: dict[str, Any],
+    supplied_hash: str,
+    *,
+    ledger_path: str | Path | None = None,
+) -> dict[str, Any]:
+    operation = verify_plan(
+        plan, expected_action="create-folder", supplied_hash=supplied_hash
+    )
+    mailbox = "Folders/" + operation["name"]
+    existing = list_mailboxes(client)
+    if any(entry["name"] == mailbox for entry in existing):
+        raise SafetyError("folder already exists")
+    # Proton rejects a folder whose name matches any label or folder,
+    # wherever it sits (409, code 2500).
+    wanted = operation["name"].casefold()
+    if any(
+        entry["name"].split("/", 1)[0] in {"Labels", "Folders"}
+        and entry["name"].rsplit("/", 1)[-1].casefold() == wanted
+        for entry in existing
+    ):
+        raise SafetyError(
+            f"a label or folder named {operation['name']!r} already exists"
+        )
+    reserve_plan(plan, ledger_path=ledger_path)
+    try:
+        status, _ = client.create(imap_mailbox_arg(mailbox))
+        require_ok(status, "CREATE")
+        matches = [
+            entry for entry in list_mailboxes(client) if entry["name"] == mailbox
+        ]
+        if len(matches) != 1 or not matches[0]["selectable"]:
+            return _ambiguous_write_result("create-folder", mailbox=mailbox)
+    except Exception:
+        return _ambiguous_write_result("create-folder", mailbox=mailbox)
+    return {
+        "ok": True,
+        "status": "created",
+        "action": "create-folder",
+        "mailbox": mailbox,
     }
 
 
@@ -1437,6 +1689,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status")
+    sub.add_parser("mailboxes")
     listing = sub.add_parser("list")
     listing.add_argument("--mailbox", default="INBOX")
     listing.add_argument("--limit", type=int, default=20)
@@ -1466,13 +1719,17 @@ def build_parser() -> argparse.ArgumentParser:
     delete = sub.add_parser("plan-delete")
     add_ref_arguments(delete)
     add_apply_arguments(sub.add_parser("apply-delete"))
-    mark_read = sub.add_parser("plan-mark-read")
-    mark_read.add_argument("--mailbox", required=True)
-    mark_read.add_argument("--uidvalidity", required=True, type=int)
-    mark_read.add_argument(
-        "--uid", required=True, action="append", type=int
-    )
-    add_apply_arguments(sub.add_parser("apply-mark-read"))
+    for action in ("mark-read", "move-batch", "delete-batch"):
+        batch = sub.add_parser(f"plan-{action}")
+        batch.add_argument("--mailbox", required=True)
+        batch.add_argument("--uidvalidity", required=True, type=int)
+        batch.add_argument("--uid", required=True, action="append", type=int)
+        if action == "move-batch":
+            batch.add_argument("--destination", required=True)
+        add_apply_arguments(sub.add_parser(f"apply-{action}"))
+    folder = sub.add_parser("plan-create-folder")
+    folder.add_argument("--name", required=True)
+    add_apply_arguments(sub.add_parser("apply-create-folder"))
     return parser
 
 
@@ -1501,7 +1758,7 @@ def execute(
         action = command.removeprefix("plan-")
         if action in {"save-draft", "send"}:
             operation = _message_operation(args)
-        elif action == "mark-read":
+        elif action in {"mark-read", "move-batch", "delete-batch"}:
             operation = {
                 "refs": [
                     MessageRef(
@@ -1510,6 +1767,10 @@ def execute(
                     for uid in args.uid
                 ]
             }
+            if action == "move-batch":
+                operation["destination"] = args.destination
+        elif action == "create-folder":
+            operation = {"name": args.name}
         else:
             operation = {
                 "ref": MessageRef(
@@ -1541,6 +1802,8 @@ def execute(
             _close_smtp(smtp_client)
     imap_client = connect_imap(config)
     try:
+        if command == "mailboxes":
+            return {"ok": True, "mailboxes": list_mailboxes(imap_client)}
         if command == "list":
             return list_messages(imap_client, args.mailbox, limit=args.limit)
         if command in {"search", "triage"}:
@@ -1582,6 +1845,12 @@ def execute(
             return apply_delete(imap_client, plan, args.plan_hash)
         if command == "apply-mark-read":
             return apply_mark_read(imap_client, plan, args.plan_hash)
+        if command == "apply-move-batch":
+            return apply_move_batch(imap_client, plan, args.plan_hash)
+        if command == "apply-delete-batch":
+            return apply_delete_batch(imap_client, plan, args.plan_hash)
+        if command == "apply-create-folder":
+            return apply_create_folder(imap_client, plan, args.plan_hash)
         raise SafetyError("unsupported command")
     finally:
         _close_imap(imap_client)

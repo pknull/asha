@@ -39,6 +39,7 @@ Execute reads directly after the user requests them:
 
 ```bash
 python3 "$SCRIPT" status
+python3 "$SCRIPT" mailboxes
 python3 "$SCRIPT" list --mailbox INBOX --limit 20
 python3 "$SCRIPT" search --mailbox INBOX --unread --since 2026-07-01 --limit 50
 python3 "$SCRIPT" search --from sender@example.com --subject "subject words"
@@ -55,6 +56,10 @@ Reads use `SELECT ... readonly=True`, UID commands, and `BODY.PEEK`; they do
 not set `\Seen`. Full-message reads fetch `RFC822.SIZE` first and reject
 oversized messages before fetching the body. Parsing is bounded. Attachments
 are reported as metadata, not written to disk.
+
+`mailboxes` uses `LIST "" "*"` without selecting or changing a mailbox. It
+returns `ok: true` and a `mailboxes` array with decoded `name`, `flags`, and
+`selectable` for every mailbox. A mailbox carrying `\Noselect` is not selectable.
 
 List, search, and triage fetch only a 64 KiB partial literal of selected
 headers; they do not reject a summary merely because the full message is
@@ -170,6 +175,66 @@ or UIDVALIDITY differs from the plan. Require both `MOVE` and `UIDPLUS`, then
 validate the server's `COPYUID` source mapping before reporting success. A
 missing or mismatched mapping is an ambiguous failure; the nonce remains
 consumed.
+
+### Move or delete a batch
+
+Plan 1 to 500 unique positive UIDs from one mailbox and UIDVALIDITY. Repeat
+`--uid` for each message; references are canonicalized into numeric UID order.
+Use separate confirmed plans for larger cleanups.
+
+```bash
+python3 "$SCRIPT" plan-move-batch \
+  --mailbox INBOX --uidvalidity 812 \
+  --uid 21 --uid 22 --uid 23 \
+  --destination Folders/Receipts > "$PLAN_FILE"
+
+python3 "$SCRIPT" apply-move-batch \
+  --plan "$PLAN_FILE" --plan-hash <confirmed-hash>
+
+python3 "$SCRIPT" plan-delete-batch \
+  --mailbox INBOX --uidvalidity 812 \
+  --uid 21 --uid 22 --uid 23 > "$PLAN_FILE"
+
+python3 "$SCRIPT" apply-delete-batch \
+  --plan "$PLAN_FILE" --plan-hash <confirmed-hash>
+```
+
+Each apply requires fresh confirmation of its own exact plan hash. Planning is
+offline. Move destinations must already exist, be selectable, and differ from
+the source. Only `INBOX`, a mailbox carrying `\Archive`, or names beginning
+`Folders/` are allowed. Reject `Labels/` destinations because Bridge label
+semantics are unverified, and reject destinations carrying `\Trash`, `\Drafts`,
+`\Sent`, `\All`, `\Junk`, or `\Flagged`.
+
+Batch deletion resolves the unique `\Trash` mailbox at apply time and rejects
+Trash as the source. Both actions require native `MOVE` and `UIDPLUS`, recheck
+source UIDVALIDITY and every UID before reserving the nonce, and issue exactly
+one compact UID `MOVE`. Never use `EXPUNGE` or COPY + STORE.
+
+Success requires a `COPYUID` mapping covering the complete source set and the
+same number of destination UIDs, with positive destination UIDVALIDITY. Results
+report `moved` or `deleted`, the canonical `refs`, `destination`,
+`destination_uidvalidity`, and sorted `destination_uids`. A failed MOVE,
+connection exception, or missing or mismatched mapping returns `ok: false`,
+status `ambiguous`, and `retry_prohibited: true`; the nonce remains consumed.
+Do not retry. Inspect current state before requesting a fresh plan.
+
+### Create a folder
+
+```bash
+python3 "$SCRIPT" plan-create-folder --name Receipts > "$PLAN_FILE"
+
+python3 "$SCRIPT" apply-create-folder \
+  --plan "$PLAN_FILE" --plan-hash <confirmed-hash>
+```
+
+Names are stripped and must be a single nonempty segment of at most 100
+characters, without control characters or `/`. The mailbox is `Folders/<name>`.
+Planning is offline. Apply refuses an existing folder before reserving the
+nonce, issues `CREATE`, then checks LIST again. It reports `status: created`
+and `mailbox` only when the folder is present and selectable. Any failure after
+reservation, including an unverified creation, returns `ok: false`, status
+`ambiguous`, and `retry_prohibited: true`. Do not retry the plan.
 
 ### Mark messages read
 
