@@ -50,7 +50,8 @@ plugin's version, detailed usage, inventory, prerequisites, and safety
 boundaries:
 [Session](plugins/session/README.md), [Code](plugins/code/README.md),
 [Write](plugins/write/README.md), [Panel](plugins/panel/README.md),
-[RP](plugins/rp/README.md), [Image](plugins/image/README.md),
+[RP](plugins/rp/README.md), [RPG](plugins/rpg/README.md),
+[Image](plugins/image/README.md),
 [Admin](plugins/admin/README.md), [Security](plugins/security/README.md),
 [Asha identity](plugins/asha/README.md), and [Test](plugins/test/README.md).
 
@@ -266,6 +267,7 @@ lifecycle callback into a semantic save.
 | **Development** | `code` | Code review, orchestration patterns, TDD, and guarded issue processing |
 | **Creative** | `write` | Fiction writing, prose craft, continuity, and style analysis |
 | **Creative** | `rp` | Live roleplay lifecycle, continuity gating, and canon ratification |
+| **Tabletop** | `rpg` | Tabletop RPG library management and system tooling outside live play |
 | **Image** | `image` | Local ComfyUI workflows and on-demand paid fal.ai generation |
 | **Integrations** | `admin` | Todoist, grounded search, computation, knowledge, and mail integrations |
 | **Security** | `security` | Web-application security review patterns |
@@ -282,6 +284,7 @@ The owning guide below is the catalogue for each plugin.
 | `code` | `/code:*` or rendered `code-*` skills | Implementation orchestration, debugging, review, verification, PostgreSQL work | [Code guide](plugins/code/README.md) |
 | `write` | `/write:*` or rendered `write-*` skills | Fiction state, drafting workflows, editorial review, style analysis, export | [Write guide](plugins/write/README.md) |
 | `rp` | `/rp:*` or rendered `rp-*` skills | Live roleplay lifecycle, continuity gates, canon ratification | [RP guide](plugins/rp/README.md) |
+| `rpg` | Name the required skill | DriveThruRPG library audit, fetch and placement; unclaimed backer copies | [RPG guide](plugins/rpg/README.md) |
 | `image` | `image-generation` or `image-fal` skill | Stable Diffusion prompts and ComfyUI workflows (local first); priced, user-approved fal.ai images, sprites, textures, 3D, rigging, audio and video | [Image guide](plugins/image/README.md) |
 | `admin` | Name the required skill | Todoist, Gemini, Wolfram, BookStack, and Proton Mail operations | [Admin guide](plugins/admin/README.md) |
 | `security` | `security-review` skill | Security-sensitive implementation and review | [Security guide](plugins/security/README.md) |
@@ -450,6 +453,7 @@ asha/
 │   ├── image/                    # skills/ (fal, generation)
 │   ├── panel/                    # panel workflows, characters, and templates
 │   ├── rp/                       # live-roleplay lifecycle and continuity gates
+│   ├── rpg/                      # skills/ (dtrpg); tabletop tooling outside live play
 │   ├── security/                 # skills/ (security-review)
 │   ├── session/                  # Memory, policy, loop, and workspace tools
 │   ├── test/                     # installer canary (ping command/skill/agent, stop hook)
@@ -516,7 +520,7 @@ To propose new plugins or improvements:
 
 ## License
 
-Individual plugins licensed separately. See each plugin's LICENSE file (MIT throughout: admin, asha, code, image, panel, rp, security, session, test, write).
+Individual plugins licensed separately. See each plugin's LICENSE file (MIT throughout: admin, asha, code, image, panel, rp, rpg, security, session, test, write).
 
 ---
 
@@ -533,6 +537,7 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 - Code workflows: `plugins/code/README.md`
 - Writing workflows: `plugins/write/README.md`
 - Image generation: `plugins/image/README.md`
+- Tabletop RPG tooling: `plugins/rpg/README.md`
 - Session & memory: `plugins/session/README.md`
 - Using the portable subset without Asha:
   [docs/standalone-reuse.md](docs/standalone-reuse.md)
