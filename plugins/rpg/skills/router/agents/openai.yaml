@@ -1,0 +1,4 @@
+interface:
+  display_name: "RPG Router"
+  short_description: "Pick the right RPG skill for a rules or play task"
+  default_prompt: "Use $rpg-router to pick the skills for this RPG request."
