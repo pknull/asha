@@ -61,6 +61,7 @@ class DtrpgTests(unittest.TestCase):
         self.env = mock.patch.dict(os.environ, {"DTRPG_STATE_DIR": str(self.state)})
         self.env.start()
         self.addCleanup(self.env.stop)
+        os.environ.pop("DTRPG_LIBRARY_ROOT", None)
 
     def save(self, name, value):
         path = self.base / name
@@ -190,6 +191,24 @@ class DtrpgTests(unittest.TestCase):
         _, filtered, _ = self.cli("audit", "--root", str(self.root), "--library-json", saved, "--status", "missing,stale")
         self.assertEqual(filtered["summary"], result["summary"])
         self.assertEqual(len(filtered["files"]), 3)
+
+    def test_root_comes_from_env_and_flag_overrides_it(self):
+        saved = self.save("library.json", {"products": []})
+        other = self.base / "other"
+        other.mkdir()
+        with mock.patch.dict(os.environ, {"DTRPG_LIBRARY_ROOT": str(self.root)}):
+            code, result, _ = self.cli("audit", "--library-json", saved)
+            self.assertEqual((code, result["root"]), (0, str(self.root.resolve())))
+            _, result, _ = self.cli("audit", "--root", str(other), "--library-json", saved)
+        self.assertEqual(result["root"], str(other.resolve()))
+
+    def test_unset_root_fails_only_commands_that_read_the_tree(self):
+        saved = self.save("library.json", {"products": []})
+        code, error, _ = self.cli("audit", "--library-json", saved)
+        self.assertEqual(code, 2)
+        self.assertTrue(error["error"].startswith("DTRPG_LIBRARY_ROOT not set"))
+        code, _, _ = self.cli("library", "--library-json", saved)
+        self.assertEqual(code, 0)
 
     def test_staging_inside_root_and_symlink_rejected(self):
         for path in (self.root, self.root / "nested"):

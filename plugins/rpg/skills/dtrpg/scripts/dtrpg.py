@@ -24,7 +24,7 @@ import time
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 
-DEFAULT_ROOT = "~/Nextcloud/Documents/RPG"
+ROOT_ENV = "DTRPG_LIBRARY_ROOT"
 DEFAULT_STAGING = "~/Downloads/dtrpg-staging"
 STATUSES = ("ignored", "present", "stale", "present_by_size", "missing")
 RETRY_STATUSES = {429, 500, 502, 503, 504}
@@ -509,7 +509,7 @@ def build_parser():
     for command in ("library", "audit", "fetch", "place", "claims"):
         child = sub.add_parser(command)
         child.add_argument("--library-json")
-        child.add_argument("--root", default=DEFAULT_ROOT)
+        child.add_argument("--root")
         child.add_argument("--staging")
         if command in {"audit", "fetch"}:
             child.add_argument("--status", default="missing,stale" if command == "fetch" else None)
@@ -526,9 +526,18 @@ def build_parser():
     return parser
 
 
+def library_root(root):
+    root = root or os.environ.get(ROOT_ENV)
+    if not root:
+        raise CLIError(f"{ROOT_ENV} not set; export it or pass --root")
+    return root
+
+
 def execute(args):
     staging = args.staging or DEFAULT_STAGING
-    staging_path(args.root, staging)
+    if args.command in {"audit", "fetch", "place"}:
+        args.root = library_root(args.root)
+        staging_path(args.root, staging)
     statuses = None
     if getattr(args, "status", None) is not None:
         statuses = {s.strip() for s in args.status.split(",")}
