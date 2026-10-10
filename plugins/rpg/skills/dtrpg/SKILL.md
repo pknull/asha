@@ -28,7 +28,9 @@ folders.
   unset, stop and say so. Never ask for the key in chat and never read the
   secrets file. In a background job, source the bootstrap in a subshell:
   `( set +x; source ~/Code/asha/bin/asha-env-bootstrap.sh >/dev/null 2>&1; "$PY" "$SCRIPT" ... )`.
-- Library root defaults to `~/Nextcloud/Documents/RPG`; staging defaults to
+- The library root comes from `DTRPG_LIBRARY_ROOT`, set in
+  `~/.asha/secrets.env` beside the token, or from `--root`. Audit, fetch and
+  place stop when neither is set. Staging defaults to
   `~/Downloads/dtrpg-staging` and must stay outside the root.
 - Personal state lives in `~/.asha/dtrpg/` (override with `DTRPG_STATE_DIR`),
   never in this repo:
