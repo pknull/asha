@@ -44,6 +44,7 @@ class FakeImap:
         list_rows=None,
     ):
         self.capabilities = tuple(capability.split())
+        self.post_login_capability = None
         self.calls = []
         self.untagged_responses = {}
         self.uidvalidity = uidvalidity
@@ -55,7 +56,7 @@ class FakeImap:
             b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
             b"message body"
         )
-        self.list_rows = list_rows or [
+        self.list_rows = list_rows if list_rows is not None else [
             b'(\\HasNoChildren \\Drafts) "/" "Drafts"',
             b'(\\HasNoChildren \\Trash) "/" "Trash"',
         ]
@@ -68,6 +69,13 @@ class FakeImap:
     def login(self, username, password):
         self.calls.append(("login", username, password))
         return "OK", [b"authenticated"]
+
+    def capability(self):
+        self.calls.append(("capability",))
+        advertised = self.post_login_capability
+        if advertised is None:
+            advertised = b" ".join(self.capabilities)
+        return "OK", [advertised]
 
     def select(self, mailbox="INBOX", readonly=False):
         self.calls.append(("select", mailbox, readonly))
@@ -116,9 +124,14 @@ class FakeImap:
         self.calls.append(("enable", capability))
         return "OK", [b"UTF8=ACCEPT enabled"]
 
-    def list(self):
-        self.calls.append(("list",))
+    def list(self, *args):
+        self.calls.append(("list", *args))
         return "OK", self.list_rows
+
+    def create(self, mailbox):
+        self.calls.append(("create", mailbox))
+        self.list_rows.append(f'() "/" {mailbox}'.encode("ascii"))
+        return "OK", [b"created"]
 
     def append(self, mailbox, flags, date_time, message):
         self.calls.append(("append", mailbox, flags, date_time, message))
@@ -154,7 +167,7 @@ class FakeSmtp:
 
 
 class BatchImap(FakeImap):
-    """Protocol-shaped fake for batch UID FETCH/STORE/FLAGS operations."""
+    """Protocol-shaped fake for batch UID FETCH/STORE/FLAGS/MOVE operations."""
 
     def __init__(
         self,
@@ -173,12 +186,21 @@ class BatchImap(FakeImap):
             if mark_after_store is not None
             else set(self.uids)
         )
+        self.move_status = "OK"
+        self.move_response = b"[COPYUID 900 21:23 99:101] moved"
+        self.list_rows.extend([
+            b'() "/" "INBOX"',
+            b'(\\Archive) "/" "Archive"',
+            b'() "/" "Folders/X"',
+        ])
 
     def uid(self, command, *args):
         self.calls.append(("uid", command, *args))
         command = command.upper()
         uid_set = args[0] if args else ""
         requested = proton_mail.expand_uid_set(uid_set)
+        if command == "MOVE":
+            return self.move_status, [self.move_response]
         if command == "STORE":
             if self.store_status != "OK":
                 return self.store_status, [b"STORE failed"]
@@ -226,6 +248,502 @@ class ProtonMailAcceptanceTests(unittest.TestCase):
     def apply_kwargs(self):
         return {"ledger_path": self.ledger}
 
+    def batch_operation(self, action="move-batch", mailbox="INBOX"):
+        operation = {
+            "refs": [
+                {"mailbox": mailbox, "uidvalidity": 812, "uid": uid}
+                for uid in (23, 21, 22)
+            ]
+        }
+        if action == "move-batch":
+            operation["destination"] = "Folders/X"
+        return operation
+
+    def test_new_batch_plans_validate_references(self):
+        for action in ("move-batch", "delete-batch"):
+            bad_refs = [
+                [], [{"mailbox": "INBOX", "uidvalidity": 812, "uid": 0}],
+                [{"mailbox": "INBOX", "uidvalidity": 812, "uid": uid}
+                 for uid in range(1, 502)],
+            ]
+            for field, value in (
+                ("uid", 23), ("uid", True), ("uid", "21"),
+                ("mailbox", "Archive"), ("uidvalidity", 999),
+            ):
+                refs = self.batch_operation(action)["refs"]
+                refs[1][field] = value
+                bad_refs.append(refs)
+            for refs in bad_refs:
+                with self.subTest(action=action, refs=refs[:2]):
+                    operation = self.batch_operation(action)
+                    operation["refs"] = refs
+                    with self.assertRaises(proton_mail.PlanError):
+                        proton_mail.create_plan(action, operation)
+            plan = proton_mail.create_plan(action, self.batch_operation(action))
+            self.assertEqual(
+                [ref["uid"] for ref in plan["operation"]["refs"]], [21, 22, 23]
+            )
+            plan["operation"]["refs"].reverse()
+            plan["plan_hash"] = proton_mail.plan_digest({
+                key: value for key, value in plan.items() if key != "plan_hash"
+            })
+            with self.assertRaisesRegex(proton_mail.PlanError, "canonical"):
+                proton_mail.verify_plan(
+                    plan, expected_action=action, supplied_hash=plan["plan_hash"]
+                )
+
+    def test_move_batch_destination_validation(self):
+        for destination in ("", "  ", None, 123, "X\r", "\nX", "X\0", "X\t", "X\x7f"):
+            with self.subTest(destination=destination):
+                operation = self.batch_operation()
+                operation["destination"] = destination
+                with self.assertRaises(proton_mail.PlanError):
+                    proton_mail.create_plan("move-batch", operation)
+        operation = self.batch_operation()
+        operation["destination"] = " Folders/X "
+        self.assertEqual(
+            proton_mail.create_plan("move-batch", operation)["operation"]["destination"],
+            "Folders/X",
+        )
+
+    def test_move_batch_cli_round_trip_is_offline(self):
+        stdout = io.StringIO()
+        with mock.patch.object(proton_mail, "connect_imap") as imap, \
+                mock.patch.object(proton_mail, "connect_smtp") as smtp, \
+                mock.patch.object(proton_mail.BridgeConfig, "from_env") as env, \
+                redirect_stdout(stdout):
+            status = proton_mail.main([
+                "plan-move-batch", "--mailbox", "INBOX", "--uidvalidity", "812",
+                "--uid", "23", "--uid", "21", "--uid", "22",
+                "--destination", "Folders/X",
+            ])
+        self.assertEqual(status, 0)
+        imap.assert_not_called()
+        smtp.assert_not_called()
+        env.assert_not_called()
+        plan = proton_mail.load_plan(stdout.getvalue())
+        operation = proton_mail.verify_plan(
+            plan, expected_action="move-batch", supplied_hash=plan["plan_hash"]
+        )
+        self.assertEqual([ref["uid"] for ref in operation["refs"]], [21, 22, 23])
+        self.assertEqual(operation["destination"], "Folders/X")
+
+    def test_batch_move_success_and_destination_policy(self):
+        for destination, source in (
+            ("Folders/X", "INBOX"), ("Archive", "INBOX"), ("INBOX", "Folders/X"),
+        ):
+            with self.subTest(destination=destination):
+                imap = BatchImap()
+                operation = self.batch_operation(mailbox=source)
+                operation["destination"] = destination
+                plan = proton_mail.create_plan("move-batch", operation)
+                original_uid = imap.uid
+
+                def checked_uid(command, *args):
+                    if command == "MOVE":
+                        self.assertIn(plan["nonce"], self.ledger.read_text())
+                    else:
+                        if self.ledger.exists():
+                            self.assertNotIn(plan["nonce"], self.ledger.read_text())
+                    return original_uid(command, *args)
+
+                imap.uid = checked_uid
+                result = proton_mail.apply_move_batch(
+                    imap, plan, plan["plan_hash"], **self.apply_kwargs()
+                )
+                self.assertEqual(result, {
+                    "ok": True, "status": "moved", "action": "move-batch",
+                    "refs": plan["operation"]["refs"], "destination": destination,
+                    "destination_uidvalidity": 900, "destination_uids": [99, 100, 101],
+                })
+                self.assertEqual(
+                    [call for call in imap.calls if call[:2] == ("uid", "MOVE")],
+                    [("uid", "MOVE", "21:23", destination)],
+                )
+                self.assertIn(("select", source, False), imap.calls)
+                self.assertIn(("uid", "FETCH", "21:23", "(UID)"), imap.calls)
+
+    def test_move_batch_policy_failures_leave_ledger_untouched(self):
+        for destination, flags, exists in (
+            ("Trash", r"\Trash", True), ("Labels/X", r"\Archive", True),
+            ("Sent", r"\Sent", True), ("Folders/X", r"\Noselect", True),
+            ("INBOX", "", True), ("inbox", "", True), ("Missing", "", False),
+            ("Other", "", True),
+            *(("Folders/X", flag, True) for flag in (
+                r"\Trash", r"\Drafts", r"\Sent", r"\All", r"\Junk", r"\Flagged",
+            )),
+        ):
+            with self.subTest(destination=destination, flags=flags):
+                imap = BatchImap()
+                imap.list_rows = (
+                    [f'({flags}) "/" "{destination}"'.encode()] if exists else []
+                )
+                operation = self.batch_operation()
+                operation["destination"] = destination
+                plan = proton_mail.create_plan("move-batch", operation)
+                with self.assertRaises(proton_mail.SafetyError):
+                    proton_mail.apply_move_batch(
+                        imap, plan, plan["plan_hash"], **self.apply_kwargs()
+                    )
+                self.assertFalse(self.ledger.exists())
+                self.assertFalse(any(call[0] in ("select", "uid") for call in imap.calls))
+
+    def test_batch_moves_reject_stale_refs_and_missing_capabilities_before_reserve(self):
+        for action in ("move-batch", "delete-batch"):
+            for failure in ("validity", "missing", "MOVE", "UIDPLUS"):
+                with self.subTest(action=action, failure=failure):
+                    imap = BatchImap(
+                        uidvalidity=999 if failure == "validity" else 812,
+                        uids=(21, 23) if failure == "missing" else (21, 22, 23),
+                    )
+                    if failure in ("MOVE", "UIDPLUS"):
+                        imap.capabilities = tuple(
+                            value for value in imap.capabilities if value != failure.encode()
+                        )
+                    plan = proton_mail.create_plan(action, self.batch_operation(action))
+                    apply = getattr(proton_mail, "apply_" + action.replace("-", "_"))
+                    error = (
+                        proton_mail.SafetyError if failure in ("MOVE", "UIDPLUS")
+                        else proton_mail.StaleMessageError
+                    )
+                    with self.assertRaises(error):
+                        apply(imap, plan, plan["plan_hash"], **self.apply_kwargs())
+                    self.assertFalse(self.ledger.exists())
+                    self.assertFalse(any(call[:2] == ("uid", "MOVE") for call in imap.calls))
+
+    def test_batch_move_ambiguous_results_consume_nonce(self):
+        for action in ("move-batch", "delete-batch"):
+            for response, status in (
+                (b"[COPYUID 900 21:22 99:101]", "OK"),
+                (b"[COPYUID 900 21:23 99:100]", "OK"),
+                (b"[COPYUID 0 21:23 99:101]", "OK"),
+                (b"moved", "OK"), (b"failed", "NO"), (b"failed", "BAD"),
+                (b"[COPYUID 900 21:23 99:101]", "exception"),
+            ):
+                with self.subTest(action=action, response=response, status=status):
+                    imap = BatchImap()
+                    imap.move_response, imap.move_status = response, status
+                    if status == "exception":
+                        original_uid = imap.uid
+
+                        def fail_move(command, *args):
+                            if command == "MOVE":
+                                raise OSError("connection lost")
+                            return original_uid(command, *args)
+
+                        imap.uid = fail_move
+                    plan = proton_mail.create_plan(action, self.batch_operation(action))
+                    apply = getattr(proton_mail, "apply_" + action.replace("-", "_"))
+                    result = apply(imap, plan, plan["plan_hash"], **self.apply_kwargs())
+                    self.assertFalse(result["ok"])
+                    self.assertEqual(result["status"], "ambiguous")
+                    self.assertEqual(result["action"], action)
+                    self.assertEqual(result["refs"], plan["operation"]["refs"])
+                    self.assertTrue(result["retry_prohibited"])
+                    self.assertIn(plan["nonce"], self.ledger.read_text())
+                    with self.assertRaisesRegex(proton_mail.PlanError, "used"):
+                        apply(BatchImap(), plan, plan["plan_hash"], **self.apply_kwargs())
+
+    def test_batch_copyuid_stdlib_payload_and_noncontiguous_sets(self):
+        imap = BatchImap(uids=(21, 22, 24))
+        imap.move_response = b"moved"
+        imap.response = mock.Mock(return_value=("COPYUID", [b"901 21:22,24 99,101:102"]))
+        operation = self.batch_operation()
+        operation["refs"][0]["uid"] = 24
+        plan = proton_mail.create_plan("move-batch", operation)
+        result = proton_mail.apply_move_batch(
+            imap, plan, plan["plan_hash"], **self.apply_kwargs()
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["destination_uids"], [99, 101, 102])
+        self.assertEqual(result["destination_uidvalidity"], 901)
+        self.assertIn(("uid", "MOVE", "21:22,24", "Folders/X"), imap.calls)
+        imap.response.assert_called_once_with("COPYUID")
+
+    def test_delete_batch_resolves_trash_without_expunge_or_fallback(self):
+        imap = BatchImap()
+        imap.list_rows = [b'(\\Trash) "/" "Deleted Items"']
+        plan = proton_mail.create_plan("delete-batch", self.batch_operation("delete-batch"))
+        result = proton_mail.apply_delete_batch(
+            imap, plan, plan["plan_hash"], **self.apply_kwargs()
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "deleted")
+        self.assertEqual(result["destination"], "Deleted Items")
+        self.assertEqual(
+            [call for call in imap.calls if call[:2] == ("uid", "MOVE")],
+            [("uid", "MOVE", "21:23", '"Deleted Items"')],
+        )
+        self.assertFalse(any(
+            str(value).upper() in {"EXPUNGE", "COPY", "STORE"}
+            for call in imap.calls for value in call
+        ))
+
+    def test_delete_batch_rejects_trash_source_absent_or_ambiguous_trash(self):
+        for source, rows in (
+            ("Trash", [b'(\\Trash) "/" "Trash"']),
+            ("INBOX", []),
+            ("INBOX", [b'(\\Trash) "/" "Trash"', b'(\\Trash) "/" "Deleted"']),
+            ("INBOX", [b'(\\Trash \\Noselect) "/" "Trash"']),
+        ):
+            with self.subTest(source=source, rows=rows):
+                imap = BatchImap()
+                imap.list_rows = rows
+                plan = proton_mail.create_plan(
+                    "delete-batch", self.batch_operation("delete-batch", source)
+                )
+                with self.assertRaises(proton_mail.SafetyError):
+                    proton_mail.apply_delete_batch(
+                        imap, plan, plan["plan_hash"], **self.apply_kwargs()
+                    )
+                self.assertFalse(self.ledger.exists())
+                self.assertFalse(any(call[0] in ("select", "uid") for call in imap.calls))
+
+    def test_create_folder_name_validation(self):
+        for name in ("", " ", "a/b", "x" * 101, "\nx", "x\r", "x\0", "x\t", "x\x7f", None, 2):
+            with self.subTest(name=name):
+                with self.assertRaises(proton_mail.PlanError):
+                    proton_mail.create_plan("create-folder", {"name": name})
+        for name in ("x" * 100, "旅行 & Receipts"):
+            plan = proton_mail.create_plan("create-folder", {"name": f" {name} "})
+            self.assertEqual(plan["operation"], {"name": name})
+
+    def test_create_folder_refuses_existing_before_reservation(self):
+        imap = FakeImap(list_rows=[b'(\\Noselect) "/" "Folders/X"'])
+        plan = proton_mail.create_plan("create-folder", {"name": "X"})
+        with self.assertRaisesRegex(proton_mail.SafetyError, "folder already exists"):
+            proton_mail.apply_create_folder(
+                imap, plan, plan["plan_hash"], **self.apply_kwargs()
+            )
+        self.assertFalse(self.ledger.exists())
+        self.assertEqual(imap.calls, [("list", '""', "*")])
+
+    def test_create_folder_refuses_name_shared_with_label_before_reservation(self):
+        # Proton rejects a folder whose name matches any label or folder
+        # (409, code 2500), wherever it sits in the hierarchy.
+        for row in (
+            b'(\\Marked) "/" "Labels/Bills"',
+            b'(\\Marked) "/" "Labels/bills"',
+            b'(\\Unmarked) "/" "Folders/Parent/Bills"',
+        ):
+            with self.subTest(row=row):
+                imap = FakeImap(list_rows=[row])
+                plan = proton_mail.create_plan("create-folder", {"name": "Bills"})
+                with self.assertRaisesRegex(
+                    proton_mail.SafetyError, "label or folder named"
+                ):
+                    proton_mail.apply_create_folder(
+                        imap, plan, plan["plan_hash"], **self.apply_kwargs()
+                    )
+                self.assertFalse(self.ledger.exists())
+                self.assertEqual(imap.calls, [("list", '""', "*")])
+
+    def test_create_folder_verifies_list_after_create(self):
+        imap = FakeImap(list_rows=[])
+        name = '旅行 & "Receipts"'
+        plan = proton_mail.create_plan("create-folder", {"name": name})
+        original_create = imap.create
+
+        def checked_create(mailbox):
+            self.assertIn(plan["nonce"], self.ledger.read_text())
+            return original_create(mailbox)
+
+        imap.create = checked_create
+        result = proton_mail.apply_create_folder(
+            imap, plan, plan["plan_hash"], **self.apply_kwargs()
+        )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(result["action"], "create-folder")
+        self.assertEqual(result["mailbox"], "Folders/" + name)
+        self.assertEqual(imap.calls, [
+            ("list", '""', "*"),
+            ("create", proton_mail.imap_mailbox_arg("Folders/" + name)),
+            ("list", '""', "*"),
+        ])
+
+    def test_create_folder_unverified_or_failed_create_is_ambiguous(self):
+        for failure in ("absent", "noselect", "NO", "exception", "list-error"):
+            with self.subTest(failure=failure):
+                imap = FakeImap(list_rows=[])
+                plan = proton_mail.create_plan("create-folder", {"name": "X"})
+
+                def create(mailbox):
+                    imap.calls.append(("create", mailbox))
+                    if failure == "exception":
+                        raise OSError("connection lost")
+                    if failure == "noselect":
+                        imap.list_rows = [b'(\\Noselect) "/" "Folders/X"']
+                    if failure == "list-error":
+                        imap.list = mock.Mock(side_effect=OSError("connection lost"))
+                    return ("NO" if failure == "NO" else "OK"), [b"done"]
+
+                imap.create = create
+                result = proton_mail.apply_create_folder(
+                    imap, plan, plan["plan_hash"], **self.apply_kwargs()
+                )
+                self.assertFalse(result["ok"])
+                self.assertEqual(result["status"], "ambiguous")
+                self.assertTrue(result["retry_prohibited"])
+                self.assertIn(plan["nonce"], self.ledger.read_text())
+                with self.assertRaisesRegex(proton_mail.PlanError, "used"):
+                    proton_mail.apply_create_folder(
+                        FakeImap(), plan, plan["plan_hash"], **self.apply_kwargs()
+                    )
+
+    def test_mailboxes_decodes_names_and_selectability_via_cli(self):
+        name = "Folders/旅行 & Receipts"
+        imap = FakeImap(list_rows=[
+            b'(\\HasChildren \\Noselect) "/" "Folders"',
+            f'(\\HasNoChildren) "/" "{proton_mail.encode_mailbox(name)}"'.encode(),
+            b'() NIL INBOX',
+        ])
+        with mock.patch.object(proton_mail, "connect_imap", return_value=imap):
+            result = proton_mail.execute(
+                proton_mail.build_parser().parse_args(["mailboxes"]), config()
+            )
+        self.assertEqual(result, {"ok": True, "mailboxes": [
+            {"name": "Folders", "flags": [r"\HasChildren", r"\Noselect"], "selectable": False},
+            {"name": name, "flags": [r"\HasNoChildren"], "selectable": True},
+            {"name": "INBOX", "flags": [], "selectable": True},
+        ]})
+        self.assertEqual(imap.calls, [("list", '""', "*"), ("logout",)])
+
+    def test_new_actions_expire_before_network_or_reservation(self):
+        for action in ("move-batch", "delete-batch", "create-folder"):
+            with self.subTest(action=action):
+                operation = (
+                    {"name": "X"} if action == "create-folder" else self.batch_operation(action)
+                )
+                plan = proton_mail.create_plan(action, operation, now=100, ttl_seconds=10)
+                imap = BatchImap()
+                apply = getattr(proton_mail, "apply_" + action.replace("-", "_"))
+                with self.assertRaisesRegex(proton_mail.PlanError, "expired"):
+                    apply(imap, plan, plan["plan_hash"], **self.apply_kwargs())
+                self.assertEqual(imap.calls, [])
+                self.assertFalse(self.ledger.exists())
+
+    def test_new_apply_cli_dispatches_and_exits_nonzero_on_ambiguity(self):
+        for action in ("move-batch", "delete-batch", "create-folder"):
+            with self.subTest(action=action):
+                operation = (
+                    {"name": "X"} if action == "create-folder" else self.batch_operation(action)
+                )
+                plan = proton_mail.create_plan(action, operation)
+                imap = BatchImap()
+                imap.move_status = "NO"
+                if action == "create-folder":
+                    imap.list_rows = []
+                imap.create = mock.Mock(return_value=("NO", [b"failed"]))
+                stdout = io.StringIO()
+                with mock.patch.object(proton_mail, "connect_imap", return_value=imap), \
+                        mock.patch.object(proton_mail.BridgeConfig, "from_env", return_value=config()), \
+                        mock.patch.object(proton_mail, "default_ledger_path", return_value=self.ledger), \
+                        redirect_stdout(stdout):
+                    status = proton_mail.main([
+                        "apply-" + action, "--plan", json.dumps(plan),
+                        "--plan-hash", plan["plan_hash"],
+                    ])
+                self.assertEqual(status, 1)
+                self.assertEqual(json.loads(stdout.getvalue())["status"], "ambiguous")
+                self.assertIn(("logout",), imap.calls)
+
+    def test_delete_batch_and_create_folder_planning_cli_are_offline(self):
+        for argv, action, expected in (
+            (
+                ["plan-delete-batch", "--mailbox", "INBOX", "--uidvalidity", "812",
+                 "--uid", "22", "--uid", "21"],
+                "delete-batch",
+                {"refs": [
+                    {"mailbox": "INBOX", "uidvalidity": 812, "uid": uid}
+                    for uid in (21, 22)
+                ]},
+            ),
+            (
+                ["plan-create-folder", "--name", " Receipts "],
+                "create-folder", {"name": "Receipts"},
+            ),
+        ):
+            with self.subTest(action=action):
+                with mock.patch.object(proton_mail, "connect_imap") as connect:
+                    plan = proton_mail.execute(proton_mail.build_parser().parse_args(argv))
+                connect.assert_not_called()
+                self.assertEqual(plan["action"], action)
+                self.assertEqual(plan["operation"], expected)
+
+    def test_batch_move_boundary_sizes(self):
+        for count in (1, 500):
+            with self.subTest(count=count):
+                uids = list(range(1, count + 1))
+                operation = {
+                    "refs": [
+                        {"mailbox": "INBOX", "uidvalidity": 812, "uid": uid}
+                        for uid in reversed(uids)
+                    ],
+                    "destination": "Folders/X",
+                }
+                plan = proton_mail.create_plan("move-batch", operation)
+                imap = BatchImap(uids=uids)
+                source = "1" if count == 1 else f"1:{count}"
+                destination = "1001" if count == 1 else f"1001:{1000 + count}"
+                imap.move_response = f"[COPYUID 900 {source} {destination}] moved".encode()
+                result = proton_mail.apply_move_batch(
+                    imap, plan, plan["plan_hash"], **self.apply_kwargs()
+                )
+                self.assertTrue(result["ok"])
+                self.assertEqual(result["destination_uids"], list(range(1001, 1001 + count)))
+                self.assertEqual(
+                    [call for call in imap.calls if call[:2] == ("uid", "MOVE")],
+                    [("uid", "MOVE", source, "Folders/X")],
+                )
+
+    def test_new_actions_reject_noncanonical_fields_and_rehashed_names(self):
+        for action in ("move-batch", "delete-batch", "create-folder"):
+            with self.subTest(action=action):
+                operation = (
+                    {"name": "X"} if action == "create-folder" else self.batch_operation(action)
+                )
+                with self.assertRaises(proton_mail.PlanError):
+                    proton_mail.create_plan(action, {**operation, "extra": True})
+                plan = proton_mail.create_plan(action, operation)
+                if action == "create-folder":
+                    plan["operation"]["name"] = " X "
+                elif action == "move-batch":
+                    plan["operation"]["destination"] = " Folders/X "
+                else:
+                    plan["operation"]["refs"][0]["extra"] = True
+                plan["plan_hash"] = proton_mail.plan_digest({
+                    key: value for key, value in plan.items() if key != "plan_hash"
+                })
+                imap = BatchImap()
+                apply = getattr(proton_mail, "apply_" + action.replace("-", "_"))
+                with self.assertRaisesRegex(proton_mail.PlanError, "canonical"):
+                    apply(imap, plan, plan["plan_hash"], **self.apply_kwargs())
+                self.assertEqual(imap.calls, [])
+                self.assertFalse(self.ledger.exists())
+
+    def test_mailboxes_literal_names_and_list_failure(self):
+        imap = FakeImap(list_rows=[(b'() "/" {9}', b"Folders/X"), b""])
+        self.assertEqual(proton_mail.list_mailboxes(imap), [
+            {"name": "Folders/X", "flags": [], "selectable": True},
+        ])
+        imap.list = mock.Mock(return_value=("NO", [b"unavailable"]))
+        with self.assertRaises(proton_mail.ProtocolError):
+            proton_mail.list_mailboxes(imap)
+
+    def test_preflight_list_failure_does_not_reserve_or_create(self):
+        for rows in ([b"malformed LIST row"], None):
+            with self.subTest(rows=rows):
+                imap = FakeImap()
+                imap.list = mock.Mock(return_value=("OK" if rows else "NO", rows))
+                plan = proton_mail.create_plan("create-folder", {"name": "X"})
+                with self.assertRaises(proton_mail.ProtocolError):
+                    proton_mail.apply_create_folder(
+                        imap, plan, plan["plan_hash"], **self.apply_kwargs()
+                    )
+                self.assertFalse(self.ledger.exists())
+                self.assertFalse(imap.calls)
+
     def test_bridge_rejects_non_loopback_hosts(self):
         for host in ["example.com", "127.0.0.2", "0.0.0.0"]:
             with self.subTest(host=host):
@@ -246,6 +764,32 @@ class ProtonMailAcceptanceTests(unittest.TestCase):
         self.assertIsInstance(fake.calls[0][1], ssl.SSLContext)
         self.assertEqual(fake.calls[0][1].verify_mode, ssl.CERT_REQUIRED)
         self.assertTrue(fake.calls[0][1].check_hostname)
+
+    def test_connect_refreshes_capabilities_advertised_after_login(self):
+        # Bridge advertises MOVE and UIDPLUS only once authenticated; imaplib
+        # keeps the pre-login list unless asked again.
+        fake = FakeImap(capability=b"IMAP4rev1 STARTTLS AUTH=PLAIN")
+        fake.post_login_capability = b"IMAP4rev1 MOVE STARTTLS UIDPLUS UNSELECT"
+        with mock.patch.object(
+            proton_mail.imaplib, "IMAP4", lambda **kwargs: fake
+        ):
+            client = proton_mail.connect_imap(config())
+
+        self.assertEqual(
+            [call[0] for call in fake.calls[:3]],
+            ["starttls", "login", "capability"],
+        )
+        proton_mail.require_move(client)
+        self.assertIn("UIDPLUS", proton_mail._capabilities(client))
+
+    def test_connect_fails_closed_when_capability_refresh_fails(self):
+        fake = FakeImap()
+        fake.capability = lambda: ("NO", [b"unavailable"])
+        with mock.patch.object(
+            proton_mail.imaplib, "IMAP4", lambda **kwargs: fake
+        ):
+            with self.assertRaises(proton_mail.ProtonMailError):
+                proton_mail.connect_imap(config())
 
     def test_smtp_authentication_occurs_only_after_verified_starttls(self):
         fake = FakeSmtp()
@@ -1366,6 +1910,15 @@ class ProtonMailAcceptanceTests(unittest.TestCase):
             "partial delivery",
             "Do not retry",
             "plan-mark-read",
+            "mailboxes",
+            "plan-move-batch",
+            "apply-move-batch",
+            "plan-delete-batch",
+            "apply-delete-batch",
+            "plan-create-folder",
+            "apply-create-folder",
+            "destination_uids",
+            "Labels/",
             "+FLAGS.SILENT",
             "1 to 500",
         ):
