@@ -52,7 +52,8 @@ boundaries:
 [Write](plugins/write/README.md), [Panel](plugins/panel/README.md),
 [RP](plugins/rp/README.md), [RPG](plugins/rpg/README.md),
 [Image](plugins/image/README.md),
-[Admin](plugins/admin/README.md), [Security](plugins/security/README.md),
+[Admin](plugins/admin/README.md), [DevOps](plugins/devops/README.md),
+[Security](plugins/security/README.md),
 [Asha identity](plugins/asha/README.md), and [Test](plugins/test/README.md).
 
 ---
@@ -270,6 +271,7 @@ lifecycle callback into a semantic save.
 | **Tabletop** | `rpg` | Tabletop RPG rules and mechanics help (odds, design, encounters, builds, rulings, oracles) and library management |
 | **Image** | `image` | Local ComfyUI workflows and on-demand paid fal.ai generation |
 | **Integrations** | `admin` | Todoist, grounded search, computation, knowledge, and mail integrations |
+| **Infrastructure** | `devops` | Owned-host inspection, read-only UniFi discovery, and explicitly authorized infrastructure changes |
 | **Security** | `security` | Web-application security review patterns |
 | **Tooling** | `test` | Installer canary primitives |
 
@@ -287,6 +289,7 @@ The owning guide below is the catalogue for each plugin.
 | `rpg` | Name the required skill, or `rpg-router` | Exact odds, mechanic and encounter design, character checks, rulings and oracles for any system; DriveThruRPG library audit, fetch and placement | [RPG guide](plugins/rpg/README.md) |
 | `image` | `image-generation` or `image-fal` skill | Stable Diffusion prompts and ComfyUI workflows (local first); priced, user-approved fal.ai images, sprites, textures, 3D, rigging, audio and video | [Image guide](plugins/image/README.md) |
 | `admin` | Name the required skill | Todoist, Gemini, Wolfram, BookStack, and Proton Mail operations | [Admin guide](plugins/admin/README.md) |
+| `devops` | `devops-inspect`, `devops-unifi`, or `devops-change` skill | Inspect owned hosts, read UniFi inventory and health, or execute authorized changes with preflight, recovery, and verification | [DevOps guide](plugins/devops/README.md) |
 | `security` | `security-review` skill | Security-sensitive implementation and review | [Security guide](plugins/security/README.md) |
 | `asha` | `asha <harness>`; `asha-reference` when needed | Compact identity and task-selected private reference material | [Identity guide](plugins/asha/README.md) |
 | `test` | `/test:ping` or rendered canary skills | Installer verification only | [Test guide](plugins/test/README.md) |
@@ -450,6 +453,7 @@ asha/
 │   ├── admin/                    # skills/ (bookstack, gemini, proton-mail, todoist, wolfram)
 │   ├── asha/                     # compact identity templates + on-demand reference skill
 │   ├── code/                     # development workflows and specialists
+│   ├── devops/                   # skills/ (inspect, unifi, change); infrastructure procedures
 │   ├── image/                    # skills/ (fal, generation)
 │   ├── panel/                    # panel workflows, characters, and templates
 │   ├── rp/                       # live-roleplay lifecycle and continuity gates
@@ -520,7 +524,7 @@ To propose new plugins or improvements:
 
 ## License
 
-Individual plugins licensed separately. See each plugin's LICENSE file (MIT throughout: admin, asha, code, image, panel, rp, rpg, security, session, test, write).
+Individual plugins licensed separately. See each plugin's LICENSE file (MIT throughout: admin, asha, code, devops, image, panel, rp, rpg, security, session, test, write).
 
 ---
 
@@ -535,6 +539,7 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
   [docs/managed-sessions.md](docs/managed-sessions.md)
 - Panel system: `plugins/panel/README.md`
 - Code workflows: `plugins/code/README.md`
+- Infrastructure procedures: `plugins/devops/README.md`
 - Writing workflows: `plugins/write/README.md`
 - Image generation: `plugins/image/README.md`
 - Tabletop RPG tooling: `plugins/rpg/README.md`
