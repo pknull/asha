@@ -36,6 +36,9 @@ chmod +x "$HOME_DIR/bin/codex"
 # render is the chair file (identity + operational + brief).
 MODEL_FILE="$HOME_DIR/.asha/cache/instructions-codex-chair.md"
 COORDINATOR_MODEL_FILE="$HOME_DIR/.asha/cache/instructions-codex.md"
+# Persona rides developer_instructions as a TOML string; model_instructions_file
+# would replace Codex's built-in instructions.
+dev_arg() { printf 'developer_instructions=%s' "$(jq -n --rawfile f "$1" '$f')"; }
 
 run_codex() {
   local cwd="$1" managed="$2" coordinator="${3:-}"
@@ -79,12 +82,12 @@ git -C "$GIT_ROOT" init -q
 echo "--- unmanaged launch ---"
 run_codex "$GIT_ROOT/nested/workspace" 0
 assert_argv "unmanaged argv is unchanged" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" PAYLOAD
+  -c "$(dev_arg "$MODEL_FILE")" PAYLOAD
 
 echo "--- managed launch in a Git repository ---"
 run_codex "$GIT_ROOT/nested/workspace" 1
 assert_argv "managed argv trusts the Git toplevel" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" \
+  -c "$(dev_arg "$MODEL_FILE")" \
   -c "projects={\"$GIT_ROOT\"={trust_level=\"trusted\"}}" PAYLOAD
 
 echo "--- managed launch outside a Git repository ---"
@@ -94,7 +97,7 @@ run_codex "$PLAIN_ROOT" 1
 escaped_plain="${PLAIN_ROOT//\\/\\\\}"
 escaped_plain="${escaped_plain//\"/\\\"}"
 assert_argv "managed argv trusts and TOML-escapes the plain cwd" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" \
+  -c "$(dev_arg "$MODEL_FILE")" \
   -c "projects={\"$escaped_plain\"={trust_level=\"trusted\"}}" PAYLOAD
 
 echo "--- coordinator launch ---"
@@ -104,18 +107,18 @@ COORDINATOR_ROOT="$WORK/coordinator-root"
 mkdir -p "$COORDINATOR_ROOT"
 run_codex "$COORDINATOR_ROOT" 0 tok123
 assert_argv "coordinator argv trusts the cwd without any unattended posture" \
-  -c "model_instructions_file=\"$COORDINATOR_MODEL_FILE\"" \
+  -c "$(dev_arg "$COORDINATOR_MODEL_FILE")" \
   -c "projects={\"$COORDINATOR_ROOT\"={trust_level=\"trusted\"}}" PAYLOAD
 
 echo "--- default launch has no unattended posture ---"
 run_codex "$GIT_ROOT/nested/workspace" 0
 assert_argv "default argv has no coordinator posture" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" PAYLOAD
+  -c "$(dev_arg "$MODEL_FILE")" PAYLOAD
 
 echo "--- managed worker has trust without unattended posture ---"
 run_codex "$GIT_ROOT/nested/workspace" 1
 assert_argv "managed worker argv has trust without coordinator posture" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" \
+  -c "$(dev_arg "$MODEL_FILE")" \
   -c "projects={\"$GIT_ROOT\"={trust_level=\"trusted\"}}" PAYLOAD
 
 echo ""
@@ -127,13 +130,33 @@ echo "--- managed app-server conversation ---"
   bash "$DISPATCHER" codex app-server --listen stdio:// --disable multi_agent \
   >/dev/null 2>"$WORK/stderr")
 assert_argv "managed app-server retains identity without coordinator execution overrides" \
-  -c "model_instructions_file=\"$COORDINATOR_MODEL_FILE\"" \
+  -c "$(dev_arg "$COORDINATOR_MODEL_FILE")" \
   app-server --listen stdio:// --disable multi_agent
 if rg -q 'SOUL' "$COORDINATOR_MODEL_FILE" && rg -q 'OPERATION RULES' "$COORDINATOR_MODEL_FILE"; then
   ok "managed app-server receives identity and operational instructions"
 else
   fail "managed app-server receives identity and operational instructions"
 fi
+
+echo "--- developer_instructions carries the render byte for byte ---"
+# jq 1.7's raw reader mangled a multibyte character split across a 4 KiB read.
+cp "$HOME_DIR/.asha/soul.md" "$WORK/soul.md.orig"
+python3 -c 'import sys; open(sys.argv[1], "w", encoding="utf-8").write("a" * 4093 + "— straddles a read boundary\n")' \
+  "$HOME_DIR/.asha/soul.md"
+run_codex "$GIT_ROOT/nested/workspace" 0
+if python3 - "$CAPTURE" "$MODEL_FILE" <<'PY'
+import json, sys
+args = open(sys.argv[1], "rb").read().split(b"\0")
+value = next(a for a in args if a.startswith(b"developer_instructions="))
+decoded = json.loads(value[len(b"developer_instructions="):].decode("utf-8"))
+raise SystemExit(0 if decoded == open(sys.argv[2], encoding="utf-8").read() else 1)
+PY
+then
+  ok "developer_instructions decodes to exactly the instruction file"
+else
+  fail "developer_instructions decodes to exactly the instruction file"
+fi
+mv "$WORK/soul.md.orig" "$HOME_DIR/.asha/soul.md"
 
 echo ""
 echo "--- shared app-server daemon (#100) ---"
@@ -164,87 +187,87 @@ DAEMON_CODEX="$HOME_DIR/bin/codex-daemon"
 
 run_daemon_codex "$DAEMON_CODEX" "" PAYLOAD
 assert_argv "chair TUI launch runs without the shared daemon" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" --no-daemon PAYLOAD
+  -c "$(dev_arg "$MODEL_FILE")" --no-daemon PAYLOAD
 
 run_daemon_codex "$DAEMON_CODEX" "" resume thread-1 PAYLOAD
 assert_argv "native resume takes its own --no-daemon" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" resume --no-daemon thread-1 PAYLOAD
+  -c "$(dev_arg "$MODEL_FILE")" resume --no-daemon thread-1 PAYLOAD
 
 run_daemon_codex "$DAEMON_CODEX" "" --no-daemon PAYLOAD
 assert_argv "an explicit --no-daemon (Room argv) is not duplicated" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" --no-daemon PAYLOAD
+  -c "$(dev_arg "$MODEL_FILE")" --no-daemon PAYLOAD
 
 run_daemon_codex "$DAEMON_CODEX" "" resume thread-1 --no-daemon -m gpt-5.5 PAYLOAD
 assert_argv "an explicit resume --no-daemon is not duplicated" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" resume thread-1 --no-daemon -m gpt-5.5 PAYLOAD
+  -c "$(dev_arg "$MODEL_FILE")" resume thread-1 --no-daemon -m gpt-5.5 PAYLOAD
 
 run_daemon_codex "$DAEMON_CODEX" tok123 PAYLOAD
 assert_argv "coordinator TUI launch runs without the shared daemon" \
-  -c "model_instructions_file=\"$COORDINATOR_MODEL_FILE\"" \
+  -c "$(dev_arg "$COORDINATOR_MODEL_FILE")" \
   -c "projects={\"$GIT_ROOT\"={trust_level=\"trusted\"}}" \
   --no-daemon PAYLOAD
 
 run_daemon_codex "$DAEMON_CODEX" "" exec PAYLOAD
 assert_argv "non-interactive subcommands are left alone" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" exec PAYLOAD
+  -c "$(dev_arg "$MODEL_FILE")" exec PAYLOAD
 
 run_daemon_codex "$DAEMON_CODEX" "" app-server --listen stdio://
 assert_argv "the private structured app-server is left alone" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" app-server --listen stdio://
+  -c "$(dev_arg "$MODEL_FILE")" app-server --listen stdio://
 
 run_daemon_codex "$DAEMON_CODEX" "" --remote ws://127.0.0.1:1 PAYLOAD
 assert_argv "a remote TUI (which Codex refuses with --no-daemon) is left alone" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" --remote ws://127.0.0.1:1 PAYLOAD
+  -c "$(dev_arg "$MODEL_FILE")" --remote ws://127.0.0.1:1 PAYLOAD
 
 run_daemon_codex "$DAEMON_CODEX" "" --remote=ws://127.0.0.1:1
 assert_argv "a remote TUI given as --remote=URL is left alone" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" --remote=ws://127.0.0.1:1
+  -c "$(dev_arg "$MODEL_FILE")" --remote=ws://127.0.0.1:1
 
 run_daemon_codex "$DAEMON_CODEX" "" --enable f -c x=y agents
 assert_argv "a subcommand after leading options is still recognised" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" --enable f -c x=y agents
+  -c "$(dev_arg "$MODEL_FILE")" --enable f -c x=y agents
 
 # Codex's own grammar decides TUI versus subcommand: option values, resume
 # arguments and prompt text that happen to spell a subcommand stay TUI launches.
 run_daemon_codex "$DAEMON_CODEX" "" -p review hello
 assert_argv "a profile named like a subcommand is still a TUI launch" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" --no-daemon -p review hello
+  -c "$(dev_arg "$MODEL_FILE")" --no-daemon -p review hello
 
 run_daemon_codex "$DAEMON_CODEX" "" resume review
 assert_argv "a conversation named like a subcommand is still resumed without the daemon" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" resume --no-daemon review
+  -c "$(dev_arg "$MODEL_FILE")" resume --no-daemon review
 
 run_daemon_codex "$DAEMON_CODEX" "" -- review
 assert_argv "prompt text after -- is never a subcommand" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" --no-daemon -- review
+  -c "$(dev_arg "$MODEL_FILE")" --no-daemon -- review
 
 run_daemon_codex "$DAEMON_CODEX" "" -m gpt-5.5 -c 'x="exec"' --search apply
 assert_argv "a real subcommand after options and flags is left alone" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" -m gpt-5.5 -c 'x="exec"' --search apply
+  -c "$(dev_arg "$MODEL_FILE")" -m gpt-5.5 -c 'x="exec"' --search apply
 
 run_daemon_codex "$DAEMON_CODEX" "" -i a.png b.png
 assert_argv "variadic image values are not mistaken for a subcommand or prompt" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" --no-daemon -i a.png b.png
+  -c "$(dev_arg "$MODEL_FILE")" --no-daemon -i a.png b.png
 
 run_daemon_codex "$DAEMON_CODEX" "" hello --remote ws://127.0.0.1:1
 assert_argv "--remote after the prompt still leaves the launch alone" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" hello --remote ws://127.0.0.1:1
+  -c "$(dev_arg "$MODEL_FILE")" hello --remote ws://127.0.0.1:1
 
 run_daemon_codex "$DAEMON_CODEX" "" -- --remote
 assert_argv "--remote as prompt text after -- does not disable the fix" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" --no-daemon -- --remote
+  -c "$(dev_arg "$MODEL_FILE")" --no-daemon -- --remote
 
 run_daemon_codex "$DAEMON_CODEX" "" -mgpt-5.5 exec
 assert_argv "an attached short option value is not a positional" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" -mgpt-5.5 exec
+  -c "$(dev_arg "$MODEL_FILE")" -mgpt-5.5 exec
 
 run_daemon_codex "$HOME_DIR/bin/codex" "" --no-daemon PAYLOAD
 assert_argv "a Codex without the flag (pre-0.157) never receives it" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" PAYLOAD
+  -c "$(dev_arg "$MODEL_FILE")" PAYLOAD
 
 run_daemon_codex "$HOME_DIR/bin/codex" "" resume thread-1 --no-daemon PAYLOAD
 assert_argv "a pre-0.157 resume also drops the flag" \
-  -c "model_instructions_file=\"$MODEL_FILE\"" resume thread-1 PAYLOAD
+  -c "$(dev_arg "$MODEL_FILE")" resume thread-1 PAYLOAD
 
 echo "=== Codex Trust Override Test Summary ==="
 echo "Passed: $PASS"

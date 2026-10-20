@@ -81,8 +81,9 @@ instructions_file() {
       printf '%s\n' "$arg"
       return 0
     fi
-    if [[ "$arg" =~ ^model_instructions_file=\"(.*)\"$ ]]; then
-      printf '%s\n' "${BASH_REMATCH[1]}"
+    if [[ "$arg" == developer_instructions=* ]]; then
+      jq -j . <<<"${arg#developer_instructions=}" >"$WORK/codex-developer-instructions.md"
+      printf '%s\n' "$WORK/codex-developer-instructions.md"
       return 0
     fi
     previous="$arg"
@@ -162,7 +163,7 @@ fi
 run_harness codex ASHA_PERSONA=0
 codex_worker_file="$(instructions_file || true)"
 if [[ $LAST_STATUS -eq 0 && -s "$CAPTURE" && "$codex_worker_file" != *chair* ]] \
-   && ! argv_joined | grep -Eq 'model_instructions_file=.*chair' \
+   && ! argv_joined | grep -q 'model_instructions_file' \
    && { [[ -z "$codex_worker_file" ]] \
         || { [[ -f "$codex_worker_file" ]] \
              && ! grep -Fq 'SOUL' "$codex_worker_file" \
@@ -227,13 +228,16 @@ else
 fi
 rmdir "$claude_chair_path"
 
+# Each role renders its own cache file, and the launch carries exactly that
+# file's text.
 run_harness codex
-codex_chair_file="$(instructions_file)"
+codex_chair_file="$WORK/codex-chair-launch.md"
+cp "$(instructions_file)" "$codex_chair_file" 2>/dev/null || true
 run_harness codex ASHA_COORDINATOR_LAUNCH=tok123
 codex_coordinator_file="$(instructions_file)"
-if [[ "$codex_chair_file" == *chair* && -f "$codex_chair_file" ]] \
+if cmp -s "$codex_chair_file" "$HOME_DIR/.asha/cache/instructions-codex-chair.md" \
    && grep -Fq "orchestrator's chair" "$codex_chair_file" \
-   && [[ "$codex_coordinator_file" != *chair* && -f "$codex_coordinator_file" ]] \
+   && cmp -s "$codex_coordinator_file" "$HOME_DIR/.asha/cache/instructions-codex.md" \
    && ! grep -Fq "orchestrator's chair" "$codex_coordinator_file"; then
   ok "codex chair and coordinator launches use role-distinct files"
 else

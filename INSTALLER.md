@@ -137,16 +137,21 @@ successful removal whilst leaving live workflows behind.
 ```
 
 **No persona overlay.** The `asha codex` launch path regenerates the capped hot
-identity, renders the operational layer separately, combines them for Codex's
-single-file instruction seam, and injects the result through a CLI override:
+identity, renders the operational layer separately, combines them into one
+render, and passes its text as a CLI override:
 
 ```bash
 # bin/asha (codex branch)
 identity-merge.sh ~/.asha/cache/instructions.md
 operational-merge.sh <temporary-file>
 # combined output: ~/.asha/cache/instructions-codex.md
-exec codex -c "model_instructions_file=\"<combined-or-identity-file>\"" "$@"
+exec codex -c "developer_instructions=<combined-or-identity render as a TOML string>" "$@"
 ```
+
+`developer_instructions` adds a developer message and keeps Codex's built-in
+instructions. Asha does not use `model_instructions_file`: that field replaces
+the built-in instructions, and upstream marks it "STRONGLY DISCOURAGED"
+(codex-rs `config_toml.rs`, rust-v0.162.1).
 
 The operational layer has one budget for every harness,
 `plugins/session/hooks/handlers/operational-budget.sh`: `operation.md` is capped
@@ -178,7 +183,7 @@ MCP configuration, projects, and sessions are single-instance.
 dir named in `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` (scanning
 `<dir>/.github/instructions/**/*.instructions.md`). The `asha copilot` launch path
 (per-launch and scoped, so plain `copilot` stays persona-free — parity with
-Claude's `--append-system-prompt-file` and Codex's `model_instructions_file`):
+Claude's `--append-system-prompt-file` and Codex's launch-time `developer_instructions`):
 
 ```bash
 # bin/asha (copilot branch)
@@ -252,9 +257,9 @@ So `/panel-system:panel` (Claude) and the prompt `panel-system-panel.md`
 
 | Layer | Claude | Codex | Copilot | OpenCode |
 |---|---|---|---|---|
-| Identity assertion | `--append-system-prompt-file` | `model_instructions_file` | `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` | `OPENCODE_CONFIG_CONTENT.instructions` |
+| Identity assertion | `--append-system-prompt-file` | `developer_instructions` (launch `-c`) | `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` | `OPENCODE_CONFIG_CONTENT.instructions` |
 | Scope | wrapper only | wrapper only | wrapper only | wrapper only |
-| Delivery | launch-time identity file; operation via SessionStart | launch-time combined file | launch-time instruction directory with separate files | launch-time combined file |
+| Delivery | launch-time identity file; operation via SessionStart | launch-time combined render as `developer_instructions` | launch-time instruction directory with separate files | launch-time combined file |
 | Orchestrator stance | combined chair file (default on) | combined chair file (default on) | chair instructions file (default on) | combined chair file (default on) |
 
 Every wrapped no-argument launch — bare `asha` or an explicit `asha
@@ -283,14 +288,14 @@ default (on) applies silently; `ASHA_ORCHESTRATOR_STANCE=0` is the
 dependable per-launch kill switch. Plain harness commands never receive
 the stance.
 
-Codex has no `--append-system-prompt-file` equivalent at the CLI, and
-its `model_instructions_file` config field accepts only a single file
-path (no `[include]` directive). The dispatcher handles both gaps:
+Codex has no `--append-system-prompt-file` equivalent at the CLI.
 identity-merge.sh concatenates the repository assertion
 `identity/asha-identity-system-prompt.md` plus the three user-owned hot files
 `~/.asha/{soul,voice,keeper}.md` into a capped file. It never includes the
-cold reference corpus or `keeper-voice.md`. The dispatcher then
-`-c model_instructions_file=...` injects it at launch. No on-disk
+cold reference corpus or `keeper-voice.md`. The dispatcher then passes the
+render's text as `-c developer_instructions=...`, a TOML string, at launch.
+Codex adds it as a developer message and keeps its built-in instructions;
+`model_instructions_file` would replace them. No on-disk
 overlay; both `codex` and `asha codex` use the same `~/.codex/`. Extended
 identity and Keeper calibration under `~/.asha/reference/` load only through
 the `asha-reference` skill and remain private task context.
@@ -452,7 +457,8 @@ config without reinstalling. Step 7-revised replaced it with a
 `-c model_instructions_file="..."` CLI flag on every `asha codex` launch —
 no overlay, no copy, no drift. Identity is regenerated on launch via
 `identity-merge.sh` (idempotent; only rewrites the cached file when sources
-have changed).
+have changed). The flag later moved to `-c developer_instructions=...`, which
+keeps Codex's built-in instructions instead of replacing them.
 
 Side effect: `asha codex` and plain `codex` share the same session
 history under `~/.codex/sessions/`. If you want them visually separated,

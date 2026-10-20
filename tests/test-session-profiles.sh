@@ -108,8 +108,9 @@ instructions_file() {
     if [[ "$previous" == "--append-system-prompt-file" ]]; then
       printf '%s\n' "$arg"; return 0
     fi
-    if [[ "$arg" =~ ^model_instructions_file=\"(.*)\"$ ]]; then
-      printf '%s\n' "${BASH_REMATCH[1]}"; return 0
+    if [[ "$arg" == developer_instructions=* ]]; then
+      jq -j . <<<"${arg#developer_instructions=}" >"$WORK/codex-developer-instructions.md"
+      printf '%s\n' "$WORK/codex-developer-instructions.md"; return 0
     fi
     previous="$arg"
   done <"$CAPTURE"
@@ -154,7 +155,7 @@ fi
 
 run_harness codex ASHA_SESSION_PROFILE=worker ASHA_PERSONA=1 ASHA_ROOM_ID=fixture-room
 CODEX_ARGS="$(argv_joined | tr '\n' ' ')"
-if launched && ! grep -qE 'model_instructions_file|trust_level|approval_policy|sandbox_mode' <<<"$CODEX_ARGS"; then
+if launched && ! grep -qE 'developer_instructions|model_instructions_file|trust_level|approval_policy|sandbox_mode' <<<"$CODEX_ARGS"; then
   ok "codex worker preserves native trust and policy without Asha instructions"
 else
   fail "codex worker carries neither identity nor operational instructions ($CODEX_ARGS; stderr: $(cat "$WORK/stderr"))"
@@ -183,7 +184,7 @@ fi
 # The profile has to be strictly lighter than the legacy ASHA_PERSONA=0
 # worker, which still receives the operational layer where it is file-based.
 run_harness codex ASHA_PERSONA=0
-if argv_joined | grep -q 'instructions-codex-operational\.md'; then
+if instructions_contain 'Asha Operational Layer' && ! instructions_contain 'SOUL'; then
   ok "legacy codex ASHA_PERSONA=0 still carries the operational layer"
 else
   fail "legacy codex ASHA_PERSONA=0 still carries the operational layer ($(argv_joined | tr '\n' ' '))"

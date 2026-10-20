@@ -7,7 +7,7 @@
 #   3. ~/.asha/voice.md                                (expression style)
 #   4. ~/.asha/keeper.md                               (user calibration)
 #
-# Output: a single markdown file usable as Codex's `model_instructions_file`.
+# Output: a single markdown file; asha codex passes its text as `developer_instructions`.
 # The generated hot layer is capped at 24 KiB by default. Extended identity
 # history and writing-voice specimens remain on-demand references and are not
 # concatenated here.

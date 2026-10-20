@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased — SessionStart within the hook output cap, visible learnings loss, Codex developer instructions (session 2.11.0)
+
+- SessionStart stays within the hook output cap. Claude Code replaces any hook
+  output string over 10,000 characters with a file path and a 2,000-character
+  preview it never asks the model to read (since Claude Code 2.1.89). Asha emitted
+  Memory, `operation.md` and active learnings as one string, which in mature
+  projects passed the cap, so the operational layer and learnings never reached
+  Claude. The handler now admits labelled blocks in order within 9,500 bytes
+  (which also stays under Codex's 2,500-token hook spill) and names any omitted
+  block, with where to read it, at the start of its output.
+- Active learnings are never lost silently. A render that drops learnings past
+  the 3,000-byte budget names how many it omitted and where they live, and the
+  active index uses the same selection. A learnings set that cannot be rendered
+  (an invalid record, a pending transition journal) is reported in SessionStart
+  and in the file-based operational layer instead of arriving empty. The dead
+  re-truncation of rendered learnings in `operational-merge.sh` is gone.
+- `asha codex` passes its identity and operational render as
+  `-c developer_instructions=...` (a TOML string) instead of
+  `model_instructions_file`. The latter replaces Codex's built-in instructions,
+  and upstream marks it "STRONGLY DISCOURAGED"; `developer_instructions` adds a
+  developer message and keeps them. The cache files under `~/.asha/cache/` are
+  unchanged. The value is encoded with `jq --rawfile`, because jq 1.7's raw
+  reader (`-Rs`) mangles a multibyte character split across a 4 KiB read. It
+  rides a launch argument, so `/proc/PID/cmdline` shows the identity and
+  operational text to other local users while the session runs.
+- `validate-plugins` Test 2c checks that every `subagent_type` in plugin sources
+  names a shipped agent, a harness built-in or a vault-local `character:<name>`
+  agent. It flags the dangling `rp-invariants-extractor` spawn that 13ae833
+  fixed.
+- Docs: the persona seam rows in `CLAUDE.md`, `INSTALLER.md`, `README.md` and
+  `docs/harness-enforcement.md` (whose Persona row was stale for all four
+  harnesses), the capability registry, and the learnings section of
+  `docs/memory-architecture.md` ("activation measures recurrence, not effect").
+
 ## Unreleased — bulk-owner walk indexes, dependency plans, GitHub CLI foundation, standalone reuse (session 2.10.0, code 1.7.0)
 
 - Bulk owner start and stop (#122): `session list` and `session admission

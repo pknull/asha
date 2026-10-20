@@ -9,7 +9,7 @@ contract is portability of behavior, not identical primitives.
 |---|---|---|---|---|
 | Commands | Native slash commands | Rendered skills | Rendered skills | Native commands |
 | Agents | Markdown agents | TOML custom agents | `.agent.md` files | Native agents |
-| Persona | SessionStart context | Developer-instruction render | Agent instructions | Plugin context |
+| Persona | Append-system-prompt file | `developer_instructions` (launch `-c`) | Custom instructions directory | Wrapper `instructions` array |
 | Policy guard | Native `PreToolUse` | Native hooks/rules where supported | `preToolUse` adapter | `tool.execute.before` adapter |
 | Recovery state | Native prompt/tool/session hooks | Native prompt/tool/session hooks | `asha-recovery.json` hooks | Direct plugin callbacks |
 | Semantic Memory publication | Explicit `/session:save` | Explicit session save skill | Explicit session save skill | Explicit session save command |

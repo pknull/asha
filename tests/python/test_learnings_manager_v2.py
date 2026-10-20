@@ -117,6 +117,30 @@ class LearningLifecycleTests(unittest.TestCase):
         self.assertLessEqual(len(rendered.encode()), 80)
         self.assertIn("disk-pressure", rendered)
 
+    def write_active(self, learning_id, trigger, action):
+        record = {"type": "learning", "id": learning_id, "trigger": trigger, "action": action,
+                  "state": "active", "created": "2026-01-01", "updated": "2026-01-01",
+                  "retirement_reason": "", "evidence": []}
+        path = self.bundle / "active" / f"{learning_id}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("---\n" + json.dumps(record) + f"\n---\n\n# {learning_id}\n")
+
+    def test_render_active_names_learnings_the_byte_cap_drops(self):
+        for i in range(3):
+            self.write_active(f"cap-{i}", "t " * 60, "a " * 60)
+        rendered = lm.render_active(400)
+        self.assertLessEqual(len(rendered.encode()), 400)
+        self.assertIn("cap-0", rendered)
+        self.assertNotIn("cap-2", rendered)
+        self.assertIn("Omitted 2 of 3 active learnings", rendered)
+        lm.rebuild_index(400)
+        index = (self.bundle / "active/index.md").read_text()
+        self.assertIn("Omitted 2 of 3 active learnings", index)
+
+    def test_render_active_within_the_byte_cap_has_no_omission_note(self):
+        self.write_active("small", "t", "a")
+        self.assertEqual("- small: when t; a", lm.render_active(3000))
+
     def test_candidate_expiry_moves_old_record_to_retired(self):
         learning = self.propose()
         learning.updated = (date.today() - timedelta(days=91)).isoformat()

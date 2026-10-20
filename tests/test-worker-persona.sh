@@ -90,26 +90,41 @@ else
 fi
 
 # --- codex ---
+# Codex instructions ride developer_instructions as a TOML string, never
+# model_instructions_file, which would replace Codex's built-in instructions.
+codex_instructions() {
+  local arg
+  while IFS= read -r -d '' arg; do
+    [[ "$arg" == developer_instructions=* ]] || continue
+    jq -r . <<<"${arg#developer_instructions=}"
+    return 0
+  done <"$CAPTURE"
+  return 1
+}
 run_harness codex 0 ASHA_CONTROL_MANAGED=1
 CODEX_ARGS="$(argv_joined | tr '\n' ' ')"
-if [[ -s "$CAPTURE" ]] && ! grep -q 'instructions-codex\.md\|instructions\.md' <<<"$CODEX_ARGS" \
+CODEX_TEXT="$(codex_instructions || true)"
+if [[ -s "$CAPTURE" ]] && [[ "$CODEX_TEXT" != *SOUL* ]] \
+   && ! grep -q 'model_instructions_file' <<<"$CODEX_ARGS" \
    && grep -q 'projects=' <<<"$CODEX_ARGS"; then
-  ok "codex ASHA_PERSONA=0 keeps the trust override and drops the identity file"
+  ok "codex ASHA_PERSONA=0 keeps the trust override and drops the identity"
 else
-  fail "codex ASHA_PERSONA=0 keeps the trust override and drops the identity file ($CODEX_ARGS)"
+  fail "codex ASHA_PERSONA=0 keeps the trust override and drops the identity ($CODEX_ARGS)"
 fi
-if grep -q 'instructions-codex-operational\.md' <<<"$CODEX_ARGS"; then
+if [[ "$CODEX_TEXT" == *"OPERATION RULES"* ]]; then
   ok "codex ASHA_PERSONA=0 carries the operational layer only"
 else
   fail "codex ASHA_PERSONA=0 carries the operational layer only ($CODEX_ARGS)"
 fi
 run_harness codex "" ASHA_CONTROL_MANAGED=1
-# The persona default now carries the orchestrator stance: the combined
-# render is the role-distinct chair file, which still contains the identity.
-if argv_joined | grep -q 'instructions-codex-chair\.md'; then
-  ok "codex default keeps the identity model_instructions_file (chair render)"
+# The persona default carries the orchestrator stance: the combined render
+# holds the identity, the operational layer and the chair brief.
+CODEX_TEXT="$(codex_instructions || true)"
+if [[ "$CODEX_TEXT" == *SOUL* && "$CODEX_TEXT" == *"OPERATION RULES"* ]] \
+   && ! argv_joined | grep -q 'model_instructions_file'; then
+  ok "codex default carries the identity through developer_instructions (chair render)"
 else
-  fail "codex default keeps the identity model_instructions_file (chair render) ($(argv_joined | tr '\n' ' '); stderr: $(cat "$WORK/stderr"))"
+  fail "codex default carries the identity through developer_instructions (chair render) ($(argv_joined | tr '\n' ' '); stderr: $(cat "$WORK/stderr"))"
 fi
 
 # --- copilot ---

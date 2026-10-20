@@ -619,15 +619,8 @@ def list_state(state: str | None = None) -> list[Learning]:
 
 
 def render_active(max_bytes: int = 3000) -> str:
-    lines: list[str] = []
     with _global_lock(recover=False):
-        for learning in _list_state_unlocked("active"):
-            line = f"- {learning.id}: when {learning.trigger}; {learning.action}"
-            candidate = "\n".join([*lines, line])
-            if len(candidate.encode("utf-8")) > max_bytes:
-                break
-            lines.append(line)
-    return "\n".join(lines)
+        return "\n".join(_select_active_lines(_list_state_unlocked("active"), max_bytes))
 
 
 def _rebuild_index_unlocked(max_bytes: int = 3000) -> None:
@@ -635,14 +628,27 @@ def _rebuild_index_unlocked(max_bytes: int = 3000) -> None:
     _atomic(_secure_learning_child("active/index.md", create_parents=True), content)
 
 
-def _render_active_index(learnings: Iterable[Learning], max_bytes: int = 3000) -> str:
+def _select_active_lines(learnings: Iterable[Learning], max_bytes: int) -> list[str]:
+    """Longest id-ordered prefix within max_bytes; a dropped tail is named, never silent."""
     lines = [f"- {item.id}: when {item.trigger}; {item.action}"
              for item in sorted(learnings, key=lambda item: item.id)]
-    selected: list[str] = []
+    if len("\n".join(lines).encode("utf-8")) <= max_bytes:
+        return lines
+    # prefix[k] is the byte size of the first k lines joined by newlines.
+    prefix = [0]
     for line in lines:
-        if len("\n".join([*selected, line]).encode("utf-8")) > max_bytes:
-            break
-        selected.append(line)
+        prefix.append(prefix[-1] + len(line.encode("utf-8")) + (1 if len(prefix) > 1 else 0))
+    note = ""
+    for keep in range(len(lines) - 1, -1, -1):
+        note = (f"[Omitted {len(lines) - keep} of {len(lines)} active learnings over the "
+                f"{max_bytes}-byte budget; read them in {learnings_dir() / 'active'}.]")
+        if prefix[keep] + (1 if keep else 0) + len(note.encode("utf-8")) <= max_bytes:
+            return [*lines[:keep], note]
+    return [note]
+
+
+def _render_active_index(learnings: Iterable[Learning], max_bytes: int = 3000) -> str:
+    selected = _select_active_lines(learnings, max_bytes)
     return "# Active learnings\n\n" + ("\n".join(selected) or "No active learnings.") + "\n"
 
 

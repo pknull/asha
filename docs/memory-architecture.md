@@ -88,8 +88,11 @@ from `.asha/config.json`, kind, and reviewed reason. Explicit save resolves
 available native environment seams, with Copilot recovery as a fallback. Duplicate
 `(session_id, project_id)` evidence does not count twice. Activation requires
 three distinct positive sessions across two projects. This automatic gate is a
-user-controlled corroboration heuristic, not a security boundary. Only active learnings are
-rendered at SessionStart. SessionStart runs candidate expiry, moving records
+user-controlled corroboration heuristic, not a security boundary. Activation
+measures recurrence, not effect: nothing checks that an active learning improves
+outcomes. Only active learnings are rendered at SessionStart, within a
+3,000-byte budget; learnings past it, and a render that fails, are named rather
+than dropped silently. SessionStart runs candidate expiry, moving records
 older than 90 days to retired; no record
 is silently deleted. Contradiction is an explicit transition back to candidate;
 retirement is explicit and keeps the record.
@@ -167,7 +170,10 @@ path for private Memory; this setting does not change Git save behavior.
 ## Harness seams
 
 - Claude reads `hooks.json` directly and receives context in native
-  `SessionStart` output.
+  `SessionStart` output. Claude Code replaces any hook output string over
+  10,000 characters with a file path and a 2,000-character preview, so the
+  handler admits context blocks in order within 9,500 bytes and names any
+  omitted block first.
 - Codex renders the supported shared hooks to an installer-owned `hooks.json`,
   recorded in the generated-artifact ledger, and receives the same startup
   context from the shared handler. Its native `config.toml` keeps only the hooks

@@ -65,7 +65,7 @@ Plugins live in `plugins/<name>/`. The installer symlinks byte-compatible primit
 | Harness | Mount root | Persona injection |
 |---|---|---|
 | **Claude Code** | `~/.claude/*` (skills, agents, hooks, settings.json entries) | `asha claude` injects the hot identity via `--append-system-prompt-file`; SessionStart supplies the operational layer |
-| **OpenAI Codex** | `~/.codex/*` (skill directories, TOML custom agents, hooks, rules) | `asha codex` supplies one launch-time `model_instructions_file` containing hot identity plus the operational layer |
+| **OpenAI Codex** | `~/.codex/*` (skill directories, TOML custom agents, hooks, rules) | `asha codex` supplies launch-time `developer_instructions` containing hot identity plus the operational layer |
 | **GitHub Copilot CLI** | `~/.copilot/*` (skills, agents, hook JSON) | `asha copilot` wires separate identity and operational instruction files through `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` |
 | **OpenCode** | `${XDG_CONFIG_HOME:-~/.config}/opencode/*` (skills, commands, agents, plugin) | `asha opencode` appends a combined identity and operational file through `OPENCODE_CONFIG_CONTENT` |
 
@@ -151,7 +151,7 @@ At a glance: skills, agents, persona, the operational layer, explicit `/session:
 
 **Output styles are retired.** The former `output-styles` plugin (`/style` + 8 style files) was Claude-only by design and was retired in the 2026-07-10 ecosystem audit — Claude's native output-style switching covers the need, and the other harnesses never had an equivalent Asha seam.
 
-**Persona is injected at each harness's real seam.** Claude uses `--append-system-prompt-file`; Codex uses `model_instructions_file`; Copilot uses `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`; OpenCode uses `OPENCODE_CONFIG_CONTENT.instructions`. Every mechanism is wrapper-scoped, so the plain harness remains persona-free.
+**Persona is injected at each harness's real seam.** Claude uses `--append-system-prompt-file`; Codex uses launch-time `developer_instructions`; Copilot uses `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`; OpenCode uses `OPENCODE_CONFIG_CONTENT.instructions`. Every mechanism is wrapper-scoped, so the plain harness remains persona-free.
 
 The hot identity is the repository assertion in
 `identity/asha-identity-system-prompt.md` plus three user-owned files:
@@ -163,7 +163,7 @@ private and is never copied into project or workspace Memory.
 **The operational layer reaches all four.** `~/.asha/operation.md` plus a
 capped rendering of active `~/.asha/learnings/` records load at session start.
 Candidates and retired records are never injected as instructions. Claude receives the layer through SessionStart, Codex through
-`model_instructions_file`, Copilot through its custom instructions directory,
+`developer_instructions`, Copilot through its custom instructions directory,
 and OpenCode through the wrapper-scoped instructions array. Files are generated
 by `identity/operational-merge.sh` with the same budgets.
 
