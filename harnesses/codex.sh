@@ -21,7 +21,7 @@
 #                                  be relied upon as the enforcement boundary
 #
 # No persona overlay. asha-codex injects persona via `codex -c
-# model_instructions_file=...` so plain codex and asha-codex share ~/.codex/.
+# developer_instructions=...` so plain codex and asha-codex share ~/.codex/.
 #
 # Plugins skipped entirely (Claude-only): none currently
 # Hook events Codex doesn't support: SessionEnd, PostToolUseFailure, Setup (dropped;

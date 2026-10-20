@@ -178,7 +178,7 @@ exec_copilot() {
   fi
 
   # Persona injection — per-launch scoped, mirroring claude's
-  # --append-system-prompt-file and codex's model_instructions_file. Copilot CLI
+  # --append-system-prompt-file and codex's developer_instructions. Copilot CLI
   # (>=1.0.x) auto-loads instructions from any dir named in
   # COPILOT_CUSTOM_INSTRUCTIONS_DIRS, scanning <dir>/.github/instructions/**/*.instructions.md.
   # Wiring it through the launch env (not a committed project file) keeps plain
@@ -361,7 +361,7 @@ launch() {
       exec "$executable" "$@"
       ;;
     codex)
-      local base instr op_merge op_tmp brief trust_root escaped_root
+      local base instr instr_arg op_merge op_tmp brief trust_root escaped_root
       local operational_applies=0 brief_applies=0
       local -a trust_args=()
       # Every TUI launch runs without Codex's shared app-server daemon, whose
@@ -381,24 +381,42 @@ launch() {
           trust_args=(-c "projects={\"$escaped_root\"={trust_level=\"trusted\"}}")
         fi
       fi
+      # model_instructions_file would replace Codex's built-in instructions
+      # (upstream: "STRONGLY DISCOURAGED"); developer_instructions adds a
+      # developer message and keeps them. -c parses the value as TOML, and a
+      # JSON string is a valid TOML basic string. --rawfile, not -Rs: jq 1.7's
+      # raw reader mangles a multibyte character split across a 4 KiB read.
+      # The value rides argv, so /proc/PID/cmdline shows it to local users.
+      codex_instructions_arg() {
+        local value
+        value="$(jq -n --rawfile instructions "$1" '$instructions' 2>/dev/null)" || {
+          info "warn: Codex instructions could not be encoded; launching without them"
+          return 1
+        }
+        if (( $(printf '%s' "$value" | wc -c) > 120000 )); then
+          info "warn: Codex instructions exceed one launch argument; launching without them"
+          return 1
+        fi
+        printf 'developer_instructions=%s' "$value"
+      }
       if ! asha_persona_enabled; then
         # Control-managed worker: operational layer only (Codex has no reliable
         # SessionStart injection), trust override kept, no identity render.
         instr="$ASHA_HOME/cache/instructions-codex-operational.md"
-        if asha_render_operational_layer "$instr"; then
-          exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "$@"
+        if asha_render_operational_layer "$instr" && instr_arg="$(codex_instructions_arg "$instr")"; then
+          exec "$executable" -c "$instr_arg" "${trust_args[@]}" "$@"
         fi
         exec "$executable" "${trust_args[@]}" "$@"
       fi
       base="${ASHA_INSTRUCTIONS_FILE:-$ASHA_HOME/cache/instructions.md}"
       instr="$base"
       if [[ -x "$MERGE_SCRIPT" ]] && "$MERGE_SCRIPT" "$base"; then
-        # Operational layer (operation.md + learnings) — codex takes a single
-        # model_instructions_file and its SessionStart hook does NOT reliably
-        # inject (verified: codex exec doesn't deliver it; same unreliable hook
-        # path as PreToolUse/unified_exec). So fold operational into the same
-        # file as the identity — the channel we know works. Combined file is
-        # regenerated each launch; canonical instructions.md stays identity-only.
+        # Operational layer (operation.md + learnings): Codex's SessionStart
+        # hook does NOT reliably inject (verified: codex exec doesn't deliver
+        # it; same unreliable hook path as PreToolUse/unified_exec). So fold
+        # operational into the identity render, the channel we know works.
+        # The combined file is regenerated each launch; canonical
+        # instructions.md stays identity-only.
         op_merge="$IDENTITY_DIR/operational-merge.sh"
         if [[ -x "$op_merge" ]]; then
           op_tmp="$(mktemp)"
@@ -433,14 +451,17 @@ launch() {
             fi
           } > "$instr" 2>/dev/null; then
             [[ -z "${op_tmp:-}" ]] || rm -f "$op_tmp"
-            exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "$@"
+          else
+            [[ -z "${op_tmp:-}" ]] || rm -f "$op_tmp"
+            info "warn: combined instructions render failed; launching with identity only"
+            instr="$base"
           fi
-          [[ -z "${op_tmp:-}" ]] || rm -f "$op_tmp"
-          info "warn: combined instructions render failed; launching with identity only"
-          exec "$executable" -c "model_instructions_file=\"$base\"" "${trust_args[@]}" "$@"
         fi
         [[ -z "${op_tmp:-}" ]] || rm -f "$op_tmp"
-        exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "$@"
+        if instr_arg="$(codex_instructions_arg "$instr")"; then
+          exec "$executable" -c "$instr_arg" "${trust_args[@]}" "$@"
+        fi
+        exec "$executable" "${trust_args[@]}" "$@"
       fi
       info "warn: identity merge failed; launching plain codex"
       exec "$executable" "${trust_args[@]}" "$@"

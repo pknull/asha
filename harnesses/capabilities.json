@@ -51,7 +51,9 @@
           "support": "native",
           "surface": "settings.json",
           "verifier": "doctor:hook-paths",
-          "limitations": []
+          "limitations": [
+            "Claude Code replaces any hook output string over 10,000 characters with a file path and a 2,000-character preview it never asks the model to read (since 2.1.89; per string, not raisable). SessionStart therefore admits context blocks in order within 9,500 bytes and names any omitted block first (verifier: tests/test-hooks.sh)"
+          ]
         },
         "subagents": {
           "support": "native",
@@ -215,9 +217,11 @@
         },
         "persona": {
           "support": "native",
-          "surface": "model_instructions_file",
+          "surface": "developer_instructions (launch-time -c TOML string)",
           "verifier": "launch-wrapper",
           "limitations": [
+            "model_instructions_file is not used: it replaces Codex's built-in instructions, and upstream marks it STRONGLY DISCOURAGED (codex-rs config_toml.rs, rust-v0.162.1). developer_instructions adds a developer message and keeps them (verifier: tests/test-codex-trust.sh)",
+            "The render rides a launch argument, so /proc/PID/cmdline shows identity and operational text to other local users for the session's lifetime; it is capped at 120,000 bytes",
             "ASHA_PERSONA=0 (set by Control for managed workers) skips the identity render; the operational layer still loads where it is file-based, and plain launches are unchanged (verifier: tests/test-worker-persona.sh)",
             "ASHA_SESSION_PROFILE=chair|room|worker is the launcher's explicit statement and outranks ASHA_PERSONA; an absent or unrecognized value is legacy behaviour (verifier: tests/test-session-profiles.sh)"
           ]
@@ -240,7 +244,7 @@
         },
         "session-profile": {
           "support": "native",
-          "surface": "bin/asha reads ASHA_SESSION_PROFILE: chair and room fold identity and the operational layer into model_instructions_file (chair adds the brief); worker passes no model_instructions_file at all and inherits native project trust, permissions and sandbox settings",
+          "surface": "bin/asha reads ASHA_SESSION_PROFILE: chair and room fold identity and the operational layer into developer_instructions (chair adds the brief); worker passes no developer_instructions at all and inherits native project trust, permissions and sandbox settings",
           "verifier": "tests:test-session-profiles + tests:test-session-hub-hooks",
           "limitations": [
             "Installed Asha skills, commands and agents stay discoverable in a worker; only the automatic context injection is removed",

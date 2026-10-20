@@ -4,6 +4,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd -P "$(dirname "$0")" >/dev/null 2>&1 && pwd)" || { echo '{}'; exit 0; }
 source "$SCRIPT_DIR/common.sh" 2>/dev/null || { echo '{}'; exit 0; }
 source "$SCRIPT_DIR/harness-response.sh" 2>/dev/null || true
+source "$SCRIPT_DIR/operational-budget.sh" 2>/dev/null || { echo '{}'; exit 0; }
 # A worker session carries no Asha context; the Control session bridge in
 # control-event.sh is a separate hook entry and is unaffected by this exit.
 asha_worker_session && { echo '{}'; exit 0; }
@@ -38,8 +39,8 @@ if [[ ! -f "$PROJECT_DIR/Work/markers/silence" && -n "$PYTHON_CMD" \
     --project-dir "$PROJECT_DIR" >/dev/null 2>&1 || true
 fi
 
-CONTEXT=""
-append_context() { [[ -z "$1" ]] || CONTEXT="${CONTEXT:+$CONTEXT$'\n\n'}$1"; }
+ASHA_CONTEXT_LABELS=() ASHA_CONTEXT_BLOCKS=()
+append_context() { [[ -z "$2" ]] || { ASHA_CONTEXT_LABELS+=("$1"); ASHA_CONTEXT_BLOCKS+=("$2"); }; }
 
 # Every initialized project reads the last explicit publication through the
 # shared lock. This is orientation only: the block is labelled background
@@ -59,9 +60,9 @@ if [[ -n "$PYTHON_CMD" && -f "$PLUGIN_ROOT/tools/memory_v2.py" ]]; then
   PUBLICATION_CONTEXT="$("$PYTHON_CMD" "$PLUGIN_ROOT/tools/memory_v2.py" startup-context \
     --project-dir "$PROJECT_DIR" --scope "$PUBLICATION_SCOPE" 2>/dev/null || true)"
   if [[ -n "$PUBLICATION_CONTEXT" ]]; then
-    append_context "$PUBLICATION_CONTEXT"
+    append_context "published Memory v2 (activeContext.md, decisions.md)" "$PUBLICATION_CONTEXT"
   else
-    append_context "<system-reminder>Published $PUBLICATION_SCOPE Memory v2 is unavailable or invalid; run /session:status before relying on prior state.</system-reminder>"
+    append_context "Memory status" "<system-reminder>Published $PUBLICATION_SCOPE Memory v2 is unavailable or invalid; run /session:status before relying on prior state.</system-reminder>"
   fi
 fi
 
@@ -78,7 +79,7 @@ if [[ "${ASHA_WS_INJECT:-1}" != "0" \
     WS_CONTEXT_FLAG="--context"
     [[ -n "$WORKSPACE_ROOT" && "$WORKSPACE_ROOT" == "$PROJECT_DIR" ]] \
       && WS_CONTEXT_FLAG="--context-metadata"
-    append_context "$("$PYTHON_CMD" "$PLUGIN_ROOT/tools/workspace_status.py" \
+    append_context "workspace context" "$("$PYTHON_CMD" "$PLUGIN_ROOT/tools/workspace_status.py" \
       "$WS_CONTEXT_FLAG" --start "$PROJECT_DIR" 2>/dev/null || true)"
   fi
 fi
@@ -87,7 +88,6 @@ fi
 # Copilot, and OpenCode receive the same layer from their wrapper-managed
 # instruction file; injecting it again here doubles authoritative context.
 if [[ "$HARNESS" == "claude" ]]; then
-  source "$SCRIPT_DIR/operational-budget.sh"
   OPERATION_FILE="${ASHA_HOME:-$HOME/.asha}/operation.md"
   CORE_MD="$PLUGIN_ROOT/modules/CORE.md"
   REMINDER=""
@@ -101,15 +101,18 @@ if [[ "$HARNESS" == "claude" ]]; then
     OPERATION_TEXT="$(asha_budget_truncate "$(cat "$OPERATION_SOURCE")" \
       "$ASHA_OPERATION_MAX_BYTES" "$(basename "$OPERATION_SOURCE")")"
     printf -v REMINDER '<system-reminder>\nAsha-managed project. Operational guidelines loaded.\n\n%s\n</system-reminder>' "$OPERATION_TEXT"
-    append_context "$REMINDER"
+    append_context "operational guidelines ($OPERATION_SOURCE)" "$REMINDER"
   fi
 
   # Only active learnings acquire authority at start.
   if [[ -n "$PYTHON_CMD" && -f "$PLUGIN_ROOT/tools/learnings_manager.py" ]]; then
-    ACTIVE="$("$PYTHON_CMD" "$PLUGIN_ROOT/tools/learnings_manager.py" render-active --max-bytes "$ASHA_LEARNINGS_MAX_BYTES" 2>/dev/null || true)"
-    if [[ -n "$ACTIVE" ]]; then
-      printf -v REMINDER '<system-reminder>\nActive reviewed learnings:\n\n%s\n</system-reminder>' "$ACTIVE"
-      append_context "$REMINDER"
+    if ACTIVE="$("$PYTHON_CMD" "$PLUGIN_ROOT/tools/learnings_manager.py" render-active --max-bytes "$ASHA_LEARNINGS_MAX_BYTES" 2>/dev/null)"; then
+      if [[ -n "$ACTIVE" ]]; then
+        printf -v REMINDER '<system-reminder>\nActive reviewed learnings:\n\n%s\n</system-reminder>' "$ACTIVE"
+        append_context "active learnings (${ASHA_HOME:-$HOME/.asha}/learnings/active/)" "$REMINDER"
+      fi
+    else
+      append_context "learnings status" "<system-reminder>$ASHA_LEARNINGS_RENDER_FAILED</system-reminder>"
     fi
   fi
 fi
@@ -123,9 +126,10 @@ if [[ -n "$RECOVERY_HINT" ]] && printf '%s' "$RECOVERY_HINT" | jq -e '
     (if ((.prompt // "") | length) > 0 then "prompt hint: " + .prompt + "\n" else "" end) +
     (if ((.paths // []) | length) > 0 then "touched paths: " + (.paths | join(", ")) + "\n" else "" end) +
     (if ((.blocker // "") | length) > 0 then "blocker: " + .blocker else "" end)' 2>/dev/null || true)"
-  append_context "$SUMMARY"
+  append_context "recovery hint" "$SUMMARY"
 fi
 
+CONTEXT="$(asha_hook_context_join)"
 if [[ -z "$CONTEXT" ]]; then
   echo '{}'
 elif [[ "$HARNESS" == "copilot" ]]; then

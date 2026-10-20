@@ -55,10 +55,10 @@ LEARNINGS_CONTENT=""
   OPERATION_CONTENT="$(asha_budget_truncate "$(cat "$OPERATION_FILE")" "$ASHA_OPERATION_MAX_BYTES" "operation.md")"
 
 # Candidates and retired records do not acquire authority by existing.
+# render-active bounds and labels its own output; a failure is reported.
 if [[ -d "$LEARNINGS_DIR" && -f "$LEARNINGS_MANAGER" && -n "$PYTHON_CMD" ]]; then
-  RENDERED_ACTIVE="$("$PYTHON_CMD" "$LEARNINGS_MANAGER" render-active --max-bytes "$ASHA_LEARNINGS_MAX_BYTES" 2>/dev/null || true)"
-  [[ -n "$RENDERED_ACTIVE" ]] && \
-    LEARNINGS_CONTENT="$(asha_budget_truncate "$RENDERED_ACTIVE" "$ASHA_LEARNINGS_MAX_BYTES" "active learnings")"
+  LEARNINGS_CONTENT="$("$PYTHON_CMD" "$LEARNINGS_MANAGER" render-active --max-bytes "$ASHA_LEARNINGS_MAX_BYTES" 2>/dev/null)" \
+    || LEARNINGS_CONTENT="$ASHA_LEARNINGS_RENDER_FAILED"
 fi
 
 # Fall back to CORE.md if operation.md doesn't exist yet.

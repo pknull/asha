@@ -82,8 +82,8 @@ refuses the imported mount with a dependency-and-remedy message. See
 ## Harness injection
 
 The dispatcher regenerates the same compact merge, then uses each harness's
-native seam: Claude's append-system-prompt file, Codex's
-`model_instructions_file`, Copilot's custom-instructions directory, or
+native seam: Claude's append-system-prompt file, Codex's launch-time
+`developer_instructions`, Copilot's custom-instructions directory, or
 OpenCode's wrapper-scoped instructions. Operational rules and active learnings
 are merged separately.
 

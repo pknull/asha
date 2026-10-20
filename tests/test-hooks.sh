@@ -57,6 +57,103 @@ if [[ "$OUT" == *'\n'* ]]; then
 else
   ok "SessionStart renders real newlines rather than literal backslash-n delimiters"
 fi
+[[ "$OUT" != *"Omitted from this SessionStart"* ]] \
+  && ok "SessionStart within the hook output ceiling carries no omission notice" \
+  || fail "SessionStart within the hook output ceiling carries no omission notice"
+
+# Claude Code replaces any hook output string over 10,000 characters with a file
+# path and a 2,000-character preview it never asks the model to read. A mature
+# project's Memory, operation.md and learnings together exceed that, so the
+# hook must stay under the ceiling and name what it left out up front.
+BIG_PROJECT="$WORK/big-project" BIG_HOME="$WORK/big-home"
+mkdir -p "$BIG_PROJECT/.asha" "$BIG_PROJECT/Memory" "$BIG_PROJECT/Work/markers" \
+  "$BIG_HOME/.asha/learnings/active"
+printf '{"initialized":true,"memory_version":2,"project_id":"big-project"}\n' > "$BIG_PROJECT/.asha/config.json"
+python3 - "$BIG_PROJECT" "$BIG_HOME/.asha" <<'PY'
+import json, pathlib, sys
+project, asha = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+state = " ".join(["Verified state sentence for the oversized fixture."] * 45)
+(project / "Memory/activeContext.md").write_text(
+    f"# Objective\nBig.\n\n# State\n\n{state}\n\n# Next\n\n- N\n\n# Blockers\n\n- None\n")
+(project / "Memory/decisions.md").write_text(
+    "# Decisions\n\n" + "".join(f"- Decision {i} keeps the fixture over its excerpt.\n" for i in range(80)))
+(asha / "operation.md").write_text("big-operation-sentinel\n" + "Operational rule text. " * 120)
+for i in range(6):
+    record = {"type": "learning", "id": f"big-learning-{i}", "trigger": "t " * 120,
+              "action": "a " * 100, "state": "active", "created": "2026-01-01",
+              "updated": "2026-01-01", "retirement_reason": "", "evidence": []}
+    (asha / f"learnings/active/big-learning-{i}.md").write_text(
+        "---\n" + json.dumps(record) + "\n---\n\n# big-learning-" + str(i) + "\n")
+PY
+BIG_OUT="$(printf '%s' '{"session_id":"big-1","cwd":"'"$BIG_PROJECT"'"}' | HOME="$BIG_HOME" \
+  CLAUDE_PROJECT_DIR="$BIG_PROJECT" CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" \
+  ASHA_HARNESS=claude "$HANDLERS/session-start.sh")"
+BIG_BYTES="$(printf '%s' "$BIG_OUT" | wc -c | tr -d '[:space:]')"
+(( BIG_BYTES <= 9500 )) \
+  && ok "SessionStart stays within the 9,500-byte hook output ceiling ($BIG_BYTES bytes)" \
+  || fail "SessionStart stays within the 9,500-byte hook output ceiling ($BIG_BYTES bytes)"
+[[ "${BIG_OUT:0:2000}" == *"Omitted from this SessionStart"*"active learnings"* ]] \
+  && ok "SessionStart names omitted blocks inside the first 2,000 characters" \
+  || fail "SessionStart names omitted blocks inside the first 2,000 characters"
+[[ "$BIG_OUT" == *"Published repository Memory v2"* && "$BIG_OUT" == *big-operation-sentinel* ]] \
+  && ok "SessionStart keeps Memory and operation.md ahead of learnings under the ceiling" \
+  || fail "SessionStart keeps Memory and operation.md ahead of learnings under the ceiling"
+
+# The notice reserves its own size, not a flat allowance: a block that fits
+# beside the notice is kept even when the total sits just under the ceiling.
+NEAR_CAP="$(source "$HANDLERS/operational-budget.sh"
+  ASHA_CONTEXT_LABELS=(memory operation learnings)
+  ASHA_CONTEXT_BLOCKS=("memory-$(printf 'm%.0s' $(seq 1 6490))" "operation-$(printf 'o%.0s' $(seq 1 2770))" \
+    "learnings-$(printf 'l%.0s' $(seq 1 2700))")
+  asha_hook_context_join)"
+NEAR_CAP_BYTES="$(printf '%s' "$NEAR_CAP" | wc -c | tr -d '[:space:]')"
+[[ "$NEAR_CAP" == *operation-* && "$NEAR_CAP" != *learnings-* \
+   && "${NEAR_CAP:0:400}" == *"Omitted from this SessionStart"*learnings* ]] && (( NEAR_CAP_BYTES <= 9500 )) \
+  && ok "the ceiling keeps a block that fits beside the notice ($NEAR_CAP_BYTES bytes)" \
+  || fail "the ceiling keeps a block that fits beside the notice ($NEAR_CAP_BYTES bytes)"
+# A block that fits alone but not beside the notice forces a retry: the
+# retry drops it, names it, and keeps what still fits.
+RETRY_OUT="$(source "$HANDLERS/operational-budget.sh"
+  ASHA_CONTEXT_LABELS=(memory hint)
+  ASHA_CONTEXT_BLOCKS=("memory-$(printf 'm%.0s' $(seq 1 9393))" "hint-$(printf 'h%.0s' $(seq 1 195))")
+  asha_hook_context_join)"
+RETRY_BYTES="$(printf '%s' "$RETRY_OUT" | wc -c | tr -d '[:space:]')"
+[[ "$RETRY_OUT" == *hint-* && "$RETRY_OUT" != *memory-* \
+   && "${RETRY_OUT:0:400}" == *"Omitted from this SessionStart"*memory* ]] && (( RETRY_BYTES <= 9500 )) \
+  && ok "the ceiling retries when the notice does not fit beside the admitted blocks ($RETRY_BYTES bytes)" \
+  || fail "the ceiling retries when the notice does not fit beside the admitted blocks ($RETRY_BYTES bytes)"
+# When no arrangement fits beside its notice, every block is named rather than
+# any being dropped silently (a reviewer's counterexample).
+EXHAUSTED_OUT="$(source "$HANDLERS/operational-budget.sh"
+  ASHA_CONTEXT_LABELS=("L0-$(printf 'a%.0s' $(seq 1 67))" "L1-$(printf 'b%.0s' $(seq 1 18))" \
+    "L2-$(printf 'c%.0s' $(seq 1 58))" "L3-$(printf 'd%.0s' $(seq 1 23))" "L4-$(printf 'e%.0s' $(seq 1 7))")
+  ASHA_CONTEXT_BLOCKS=("$(printf 'A%.0s' $(seq 1 9237))" "$(printf 'B%.0s' $(seq 1 9188))" \
+    "$(printf 'C%.0s' $(seq 1 7834))" "$(printf 'D%.0s' $(seq 1 27))" "E")
+  asha_hook_context_join)"
+EXHAUSTED_BYTES="$(printf '%s' "$EXHAUSTED_OUT" | wc -c | tr -d '[:space:]')"
+EXHAUSTED_OK=1
+for label in L0 L1 L2 L3 L4; do
+  block="${label/L/}"; block="$(printf '%s' ABCDE | cut -c$((block + 1)))"
+  [[ "$EXHAUSTED_OUT" == *"$label-"* || "$EXHAUSTED_OUT" == *"$block$block"* || "$label" == L4 && "$EXHAUSTED_OUT" == *E* ]] || EXHAUSTED_OK=0
+done
+(( EXHAUSTED_OK == 1 && EXHAUSTED_BYTES <= 9500 )) \
+  && ok "every block is delivered or named when no arrangement fits ($EXHAUSTED_BYTES bytes)" \
+  || fail "every block is delivered or named when no arrangement fits ($EXHAUSTED_BYTES bytes)"
+
+# One unreadable record makes the whole active set unrenderable; that must be
+# said, not delivered as an empty learnings layer.
+printf 'not a learning record\n' > "$BIG_HOME/.asha/learnings/active/broken.md"
+BROKEN_OUT="$(printf '%s' '{"session_id":"big-2","cwd":"'"$BIG_PROJECT"'"}' | HOME="$BIG_HOME" \
+  CLAUDE_PROJECT_DIR="$BIG_PROJECT" CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" \
+  ASHA_HARNESS=claude "$HANDLERS/session-start.sh")"
+[[ "$BROKEN_OUT" == *"Active learnings could not be rendered"* ]] \
+  && ok "SessionStart reports an unrenderable learnings set" \
+  || fail "SessionStart reports an unrenderable learnings set"
+env -u ASHA_HOME HOME="$BIG_HOME" bash "$REPO_ROOT/identity/operational-merge.sh" "$WORK/broken-operational.md" >/dev/null 2>&1
+grep -q "Active learnings could not be rendered" "$WORK/broken-operational.md" 2>/dev/null \
+  && ok "operational-merge reports an unrenderable learnings set" \
+  || fail "operational-merge reports an unrenderable learnings set"
+mv "$BIG_HOME/.asha/learnings/active/broken.md" "$WORK/broken.md"
 check "SessionStart writes a bounded project-local snapshot" test -f "$PROJECT/Work/session-state/claude-start-1.json"
 [[ $(wc -c < "$PROJECT/Work/session-state/claude-start-1.json") -le 2048 ]] \
   && ok "SessionStart snapshot respects 2 KiB cap" || fail "SessionStart snapshot respects 2 KiB cap"

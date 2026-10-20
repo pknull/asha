@@ -293,6 +293,23 @@ for path in agent_files:
     if "model" in data and data["model"] not in {"haiku", "sonnet", "opus"}:
         errors.append(f"{display}: model must be one of haiku, sonnet, opus")
 
+# A spawn must name an agent that exists: a shipped agent, a harness built-in,
+# or a vault-local character agent (character:<name>) that the project supplies.
+agent_names = set()
+for path in agent_files:
+    match = re.search(r"^name:\s*['\"]?([A-Za-z0-9:-]+)", path.read_text(encoding="utf-8"), re.M)
+    if match:
+        agent_names.add(match.group(1))
+builtin_agents = {"general-purpose", "Explore", "Plan", "claude"}
+spawn_pattern = re.compile(r"subagent_type[\"'`]?\s*[:=]\s*[\"'`]?([A-Za-z0-9_:-]+)")
+for path in sorted(root.glob("plugins/**/*.md")):
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        for target in spawn_pattern.findall(line):
+            if (target not in agent_names and target not in builtin_agents
+                    and not re.fullmatch(r"character:[A-Za-z0-9-]+", target)):
+                errors.append(f"{path.relative_to(root)}:{lineno}: subagent_type "
+                              f"'{target}' names no shipped or built-in agent")
+
 if errors:
     print("\n".join(errors))
     raise SystemExit(1)
