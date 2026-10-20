@@ -5,6 +5,7 @@ set -uo pipefail
 # Sandbox hermeticity: an operator shell exporting these must not leak in.
 # A hub worker running this suite from inside its own session would otherwise
 # leak its profile and session identity into every handler under test.
+unset CLAUDE_CONFIG_DIR CLAUDE_HOME CLAUDE_SETTINGS 2>/dev/null || true
 unset ASHA_HOME XDG_STATE_HOME XDG_DATA_HOME ASHA_SESSION_PROFILE \
       ASHA_HUB_SESSION_ID ASHA_HUB_GENERATION ASHA_ROOM_ID 2>/dev/null || true
 
@@ -24,6 +25,13 @@ printf '{"initialized":true,"memory_version":2,"project_id":"project-test"}\n' >
 printf '# Objective\nO\n# State\nS\n# Next\n- N\n# Blockers\n- None\n' > "$PROJECT/Memory/activeContext.md"
 printf '# Decisions\n- D\n' > "$PROJECT/Memory/decisions.md"
 printf 'operation-v2-sentinel\n' > "$HOME_DIR/.asha/operation.md"
+# As `asha install claude` does: the operational entry is registered.
+register_operational_entry() {
+  mkdir -p "$1/.claude"
+  jq -n --arg c "$REPO_ROOT/plugins/session/hooks/handlers/operational-context.sh" \
+    '{hooks:{SessionStart:[{hooks:[{type:"command",command:$c}]}]}}' > "$1/.claude/settings.json"
+}
+register_operational_entry "$HOME_DIR"
 
 run_hook() {
   local hook="$1" payload="$2" harness="${3:-claude}"
@@ -35,7 +43,26 @@ run_hook() {
 echo "--- Memory v2 hooks ---"
 
 OUT="$(run_hook session-start.sh '{"session_id":"start-1","cwd":"'"$PROJECT"'"}')"
-[[ "$OUT" == *operation-v2-sentinel* ]] && ok "SessionStart injects operational context" || fail "SessionStart injects operational context"
+OPS_OUT="$(run_hook operational-context.sh '{"session_id":"start-1","cwd":"'"$PROJECT"'"}')"
+# Claude's operational layer rides its own SessionStart entry: Claude Code caps
+# each hook output string at 10,000 characters, and Memory needs most of one.
+[[ "$OPS_OUT" == *operation-v2-sentinel* ]] && ok "the operational entry injects operation.md on Claude" || fail "the operational entry injects operation.md on Claude"
+[[ "$OUT" != *operation-v2-sentinel* ]] && ok "the Memory entry no longer repeats operation.md" || fail "the Memory entry no longer repeats operation.md"
+for harness in codex opencode copilot; do
+  [[ "$(run_hook operational-context.sh '{"session_id":"ops-'"$harness"'","cwd":"'"$PROJECT"'"}' "$harness")" == '{}' ]] \
+    && ok "the operational entry is silent on $harness (its wrapper file carries the layer)" \
+    || fail "the operational entry is silent on $harness (its wrapper file carries the layer)"
+done
+[[ "$(printf '%s' '{"session_id":"ops-worker","cwd":"'"$PROJECT"'"}' | HOME="$HOME_DIR" CLAUDE_PROJECT_DIR="$PROJECT" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" ASHA_HARNESS=claude ASHA_SESSION_PROFILE=worker \
+    "$HANDLERS/operational-context.sh")" == '{}' ]] \
+  && ok "the operational entry is silent for a worker" \
+  || fail "the operational entry is silent for a worker"
+jq -e '.hooks.SessionStart | any(._asha_harnesses == ["claude"]
+    and any(.hooks[]?; (.command // "") | endswith("/hooks/handlers/operational-context.sh")))' \
+  "$REPO_ROOT/plugins/session/hooks/hooks.json" >/dev/null 2>&1 \
+  && ok "hooks.json registers the operational entry for Claude only" \
+  || fail "hooks.json registers the operational entry for Claude only"
 [[ "$OUT" == *"Published repository Memory v2"* && "$OUT" == *"-- activeContext.md --"* \
    && "$OUT" == *"-- decisions.md --"* && "$OUT" == *"- D"* ]] \
   && ok "SessionStart injects the coherent repository publication" \
@@ -63,12 +90,13 @@ fi
 
 # Claude Code replaces any hook output string over 10,000 characters with a file
 # path and a 2,000-character preview it never asks the model to read. A mature
-# project's Memory, operation.md and learnings together exceed that, so the
-# hook must stay under the ceiling and name what it left out up front.
+# project's Memory, operation.md and learnings together exceed that, so they
+# ride separate entries, each within the ceiling.
 BIG_PROJECT="$WORK/big-project" BIG_HOME="$WORK/big-home"
 mkdir -p "$BIG_PROJECT/.asha" "$BIG_PROJECT/Memory" "$BIG_PROJECT/Work/markers" \
   "$BIG_HOME/.asha/learnings/active"
 printf '{"initialized":true,"memory_version":2,"project_id":"big-project"}\n' > "$BIG_PROJECT/.asha/config.json"
+register_operational_entry "$BIG_HOME"
 python3 - "$BIG_PROJECT" "$BIG_HOME/.asha" <<'PY'
 import json, pathlib, sys
 project, asha = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
@@ -85,19 +113,34 @@ for i in range(6):
     (asha / f"learnings/active/big-learning-{i}.md").write_text(
         "---\n" + json.dumps(record) + "\n---\n\n# big-learning-" + str(i) + "\n")
 PY
-BIG_OUT="$(printf '%s' '{"session_id":"big-1","cwd":"'"$BIG_PROJECT"'"}' | HOME="$BIG_HOME" \
-  CLAUDE_PROJECT_DIR="$BIG_PROJECT" CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" \
-  ASHA_HARNESS=claude "$HANDLERS/session-start.sh")"
+big_hook() {
+  printf '%s' '{"session_id":"'"$2"'","cwd":"'"$BIG_PROJECT"'"}' | HOME="$BIG_HOME" \
+    CLAUDE_PROJECT_DIR="$BIG_PROJECT" CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" \
+    ASHA_HARNESS=claude "$HANDLERS/$1"
+}
+BIG_OUT="$(big_hook session-start.sh big-1)"
+BIG_OPS="$(big_hook operational-context.sh big-1)"
 BIG_BYTES="$(printf '%s' "$BIG_OUT" | wc -c | tr -d '[:space:]')"
-(( BIG_BYTES <= 9500 )) \
-  && ok "SessionStart stays within the 9,500-byte hook output ceiling ($BIG_BYTES bytes)" \
-  || fail "SessionStart stays within the 9,500-byte hook output ceiling ($BIG_BYTES bytes)"
-[[ "${BIG_OUT:0:2000}" == *"Omitted from this SessionStart"*"active learnings"* ]] \
-  && ok "SessionStart names omitted blocks inside the first 2,000 characters" \
-  || fail "SessionStart names omitted blocks inside the first 2,000 characters"
-[[ "$BIG_OUT" == *"Published repository Memory v2"* && "$BIG_OUT" == *big-operation-sentinel* ]] \
-  && ok "SessionStart keeps Memory and operation.md ahead of learnings under the ceiling" \
-  || fail "SessionStart keeps Memory and operation.md ahead of learnings under the ceiling"
+BIG_OPS_BYTES="$(printf '%s' "$BIG_OPS" | wc -c | tr -d '[:space:]')"
+(( BIG_BYTES <= 9500 && BIG_OPS_BYTES <= 9500 )) \
+  && ok "each SessionStart entry stays within the 9,500-byte ceiling ($BIG_BYTES, $BIG_OPS_BYTES bytes)" \
+  || fail "each SessionStart entry stays within the 9,500-byte ceiling ($BIG_BYTES, $BIG_OPS_BYTES bytes)"
+[[ "$BIG_OUT" == *"Published repository Memory v2"* && "$BIG_OPS" == *big-operation-sentinel* \
+   && "$BIG_OPS" == *big-learning-5* && "$BIG_OUT$BIG_OPS" != *"Omitted from this SessionStart"* ]] \
+  && ok "Memory, operation.md and every learning arrive in full across the two entries" \
+  || fail "Memory, operation.md and every learning arrive in full across the two entries"
+
+# The ceiling itself: blocks that do not fit are named before anything else.
+CEILING_OUT="$(source "$HANDLERS/operational-budget.sh"
+  big="$(printf 'x%.0s' $(seq 1 6000))"
+  ASHA_CONTEXT_LABELS=(first second third) ASHA_CONTEXT_BLOCKS=("alpha-$big" "beta-$big" "gamma")
+  asha_hook_context_join)"
+CEILING_BYTES="$(printf '%s' "$CEILING_OUT" | wc -c | tr -d '[:space:]')"
+[[ "${CEILING_OUT:0:2000}" == *"Omitted from this SessionStart"*second* \
+   && "$CEILING_OUT" == *alpha-* && "$CEILING_OUT" == *gamma && "$CEILING_OUT" != *beta-* ]] \
+  && (( CEILING_BYTES <= 9500 )) \
+  && ok "the hook ceiling admits what fits and names the rest first ($CEILING_BYTES bytes)" \
+  || fail "the hook ceiling admits what fits and names the rest first ($CEILING_BYTES bytes)"
 
 # The notice reserves its own size, not a flat allowance: a block that fits
 # beside the notice is kept even when the total sits just under the ceiling.
@@ -143,9 +186,7 @@ done
 # One unreadable record makes the whole active set unrenderable; that must be
 # said, not delivered as an empty learnings layer.
 printf 'not a learning record\n' > "$BIG_HOME/.asha/learnings/active/broken.md"
-BROKEN_OUT="$(printf '%s' '{"session_id":"big-2","cwd":"'"$BIG_PROJECT"'"}' | HOME="$BIG_HOME" \
-  CLAUDE_PROJECT_DIR="$BIG_PROJECT" CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" \
-  ASHA_HARNESS=claude "$HANDLERS/session-start.sh")"
+BROKEN_OUT="$(big_hook operational-context.sh big-2)"
 [[ "$BROKEN_OUT" == *"Active learnings could not be rendered"* ]] \
   && ok "SessionStart reports an unrenderable learnings set" \
   || fail "SessionStart reports an unrenderable learnings set"
@@ -154,6 +195,95 @@ grep -q "Active learnings could not be rendered" "$WORK/broken-operational.md" 2
   && ok "operational-merge reports an unrenderable learnings set" \
   || fail "operational-merge reports an unrenderable learnings set"
 mv "$BIG_HOME/.asha/learnings/active/broken.md" "$WORK/broken.md"
+
+# Claude may run the two SessionStart entries in parallel. A pending transition
+# journal must not make the operational entry's render fail when it wins the
+# race against the Memory entry's expiry, which replays the journal.
+HOME="$BIG_HOME" python3 - "$REPO_ROOT/plugins/session/tools" "$BIG_HOME" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import learnings_manager as lm
+learning = lm.Learning(id="journal-pending", trigger="t", action="a", state="active",
+                       created="2026-01-01", updated="2026-01-01")
+content = lm._render(learning)
+root = Path(sys.argv[2]) / ".asha/learnings"
+(root / ".transactions").mkdir(parents=True, exist_ok=True)
+(root / ".transactions/journal-pending.json").write_text(json.dumps({
+    "version": 2, "name": "journal-pending.md", "state": "active", "content": content,
+    "content_sha256": hashlib.sha256(content.encode()).hexdigest()}))
+PY
+JOURNAL_OPS="$(big_hook operational-context.sh big-3)"
+[[ "$JOURNAL_OPS" == *journal-pending* && "$JOURNAL_OPS" != *"could not be rendered"* ]] \
+  && ok "the operational entry recovers a pending learnings journal before rendering" \
+  || fail "the operational entry recovers a pending learnings journal before rendering"
+
+# Until `asha install claude` registers the operational entry, the Memory entry
+# keeps delivering the layer, so an upgrade never drops it.
+mv "$HOME_DIR/.claude/settings.json" "$WORK/settings.json.registered"
+UNREGISTERED_OUT="$(run_hook session-start.sh '{"session_id":"unregistered","cwd":"'"$PROJECT"'"}')"
+mv "$WORK/settings.json.registered" "$HOME_DIR/.claude/settings.json"
+[[ "$UNREGISTERED_OUT" == *operation-v2-sentinel* && "$UNREGISTERED_OUT" == *"Published repository Memory v2"* ]] \
+  && ok "an unregistered operational entry falls back to the Memory entry" \
+  || fail "an unregistered operational entry falls back to the Memory entry"
+# At a mature project's Memory size the fallback still delivers operation.md,
+# and names the learnings it had no room for.
+mv "$BIG_HOME/.claude/settings.json" "$WORK/big-settings.json.registered"
+BIG_FALLBACK="$(big_hook session-start.sh big-4)"
+mv "$WORK/big-settings.json.registered" "$BIG_HOME/.claude/settings.json"
+BIG_FALLBACK_BYTES="$(printf '%s' "$BIG_FALLBACK" | wc -c | tr -d '[:space:]')"
+[[ "$BIG_FALLBACK" == *big-operation-sentinel* \
+   && "${BIG_FALLBACK:0:2000}" == *"Omitted from this SessionStart"*"active learnings"* ]] \
+  && (( BIG_FALLBACK_BYTES <= 9500 )) \
+  && ok "the fallback keeps operation.md at mature Memory size and names what it omits ($BIG_FALLBACK_BYTES bytes)" \
+  || fail "the fallback keeps operation.md at mature Memory size and names what it omits ($BIG_FALLBACK_BYTES bytes)"
+# Registration read from Claude's own config dir counts: no second delivery.
+mkdir -p "$WORK/claude-config"
+mv "$HOME_DIR/.claude/settings.json" "$WORK/claude-config/settings.json"
+CONFIG_DIR_OUT="$(printf '%s' '{"session_id":"config-dir","cwd":"'"$PROJECT"'"}' | HOME="$HOME_DIR" \
+  CLAUDE_PROJECT_DIR="$PROJECT" CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" ASHA_HARNESS=claude \
+  CLAUDE_CONFIG_DIR="$WORK/claude-config" "$HANDLERS/session-start.sh")"
+mv "$WORK/claude-config/settings.json" "$HOME_DIR/.claude/settings.json"
+[[ "$CONFIG_DIR_OUT" != *operation-v2-sentinel* && "$CONFIG_DIR_OUT" == *"Published repository Memory v2"* ]] \
+  && ok "a registration under CLAUDE_CONFIG_DIR suppresses the fallback" \
+  || fail "a registration under CLAUDE_CONFIG_DIR suppresses the fallback"
+# Claude reads only $CLAUDE_CONFIG_DIR/settings.json when it is set, so a
+# registration elsewhere must not suppress the fallback.
+mkdir -p "$WORK/claude-config-empty"
+MISMATCH_OUT="$(printf '%s' '{"session_id":"config-mismatch","cwd":"'"$PROJECT"'"}' | HOME="$HOME_DIR" \
+  CLAUDE_PROJECT_DIR="$PROJECT" CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" ASHA_HARNESS=claude \
+  CLAUDE_CONFIG_DIR="$WORK/claude-config-empty" "$HANDLERS/session-start.sh")"
+[[ "$MISMATCH_OUT" == *operation-v2-sentinel* ]] \
+  && ok "a registration outside CLAUDE_CONFIG_DIR does not suppress the fallback" \
+  || fail "a registration outside CLAUDE_CONFIG_DIR does not suppress the fallback"
+# An empty CLAUDE_CONFIG_DIR means the default settings file, as in Claude.
+EMPTY_CONFIG_OUT="$(printf '%s' '{"session_id":"config-empty","cwd":"'"$PROJECT"'"}' | HOME="$HOME_DIR" \
+  CLAUDE_PROJECT_DIR="$PROJECT" CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" ASHA_HARNESS=claude \
+  CLAUDE_CONFIG_DIR="" "$HANDLERS/session-start.sh")"
+[[ "$EMPTY_CONFIG_OUT" != *operation-v2-sentinel* && "$EMPTY_CONFIG_OUT" == *"Published repository Memory v2"* ]] \
+  && ok "an empty CLAUDE_CONFIG_DIR reads the default settings file" \
+  || fail "an empty CLAUDE_CONFIG_DIR reads the default settings file"
+# HOME unset with ASHA_HOME set must not abort the hook under set -u.
+NO_HOME_OUT="$(printf '%s' '{"session_id":"no-home","cwd":"'"$PROJECT"'"}' | env -u HOME \
+  ASHA_HOME="$HOME_DIR/.asha" CLAUDE_PROJECT_DIR="$PROJECT" CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" \
+  ASHA_HARNESS=claude "$HANDLERS/session-start.sh")"; NO_HOME_RC=$?
+[[ $NO_HOME_RC -eq 0 && "$NO_HOME_OUT" == *"Published repository Memory v2"* ]] \
+  && ok "SessionStart survives an unset HOME" \
+  || fail "SessionStart survives an unset HOME (rc=$NO_HOME_RC)"
+# The fallback is Claude's: Codex carries the layer in its wrapper file.
+mv "$HOME_DIR/.claude/settings.json" "$WORK/settings.json.registered"
+CODEX_UNREGISTERED="$(run_hook session-start.sh '{"session_id":"codex-unregistered","cwd":"'"$PROJECT"'"}' codex)"
+mv "$WORK/settings.json.registered" "$HOME_DIR/.claude/settings.json"
+[[ "$CODEX_UNREGISTERED" != *operation-v2-sentinel* && "$CODEX_UNREGISTERED" == *"Published repository Memory v2"* ]] \
+  && ok "the fallback never runs for Codex" \
+  || fail "the fallback never runs for Codex"
+for marker in COPILOT_CLI OPENCODE; do
+  [[ "$(printf '%s' '{"session_id":"ops-env","cwd":"'"$PROJECT"'"}' | env -u ASHA_HARNESS HOME="$HOME_DIR" \
+      CLAUDE_PROJECT_DIR="$PROJECT" CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" "$marker=1" \
+      "$HANDLERS/operational-context.sh")" == '{}' ]] \
+    && ok "the operational entry is silent when $marker=1 identifies another harness" \
+    || fail "the operational entry is silent when $marker=1 identifies another harness"
+done
 check "SessionStart writes a bounded project-local snapshot" test -f "$PROJECT/Work/session-state/claude-start-1.json"
 [[ $(wc -c < "$PROJECT/Work/session-state/claude-start-1.json") -le 2048 ]] \
   && ok "SessionStart snapshot respects 2 KiB cap" || fail "SessionStart snapshot respects 2 KiB cap"
@@ -669,9 +799,8 @@ jq -e '.hooks.Stop[]
 
 CONTROL_REACHABLE=1
 while read -r native _control_event; do
-  jq -e --arg native "$native" '.hooks[$native][]
-    | any(.hooks[]?; (.command // "")
-      | endswith("control-event.sh " + $native))' "$HOOKS" >/dev/null 2>&1 \
+  jq -e --arg native "$native" 'any(.hooks[$native][]; any(.hooks[]?; (.command // "")
+      | endswith("control-event.sh " + $native)))' "$HOOKS" >/dev/null 2>&1 \
     || CONTROL_REACHABLE=0
 done <<'EOF'
 SessionStart session-start

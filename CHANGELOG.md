@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — Claude's operational layer on its own SessionStart entry (session 2.12.0)
+
+- Claude receives `operation.md` and active learnings from a Claude-only
+  SessionStart entry, `operational-context.sh`, instead of sharing one hook
+  output string with project Memory. Claude Code caps each hook output string at
+  10,000 characters, so a mature project's Memory and operational layer together
+  no longer fit one entry; separately, each fits under the 9,500-byte ceiling and
+  both arrive in full. Codex, Copilot and OpenCode are unchanged: their wrapper
+  file carries the layer, and the entry is not rendered for them. Rerun
+  `asha install claude` to register the entry; until then the Memory entry
+  carries `operation.md` and learnings as separate blocks under the same
+  ceiling, naming whichever it has no room for, and `asha doctor` reports the
+  unregistered hook. The operational entry runs candidate expiry before it
+  renders, so a pending learnings journal is replayed whichever entry Claude
+  starts first.
+
 ## Unreleased — SessionStart within the hook output cap, visible learnings loss, Codex developer instructions (session 2.11.0)
 
 - SessionStart stays within the hook output cap. Claude Code replaces any hook

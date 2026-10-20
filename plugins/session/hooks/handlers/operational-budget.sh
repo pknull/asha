@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # operational-budget.sh — the one budget for Asha's operational layer.
 #
-# Sourced by session-start.sh (Claude's SessionStart seam) and by
-# identity/operational-merge.sh (the file that Codex, Copilot and OpenCode
+# Sourced by session-start.sh and operational-context.sh (Claude's SessionStart
+# seams) and by identity/operational-merge.sh (the file that Codex, Copilot and OpenCode
 # read), so every harness receives byte-identical operational text. Budgets are
 # UTF-8 bytes; truncation never splits a character and always says so.
 
@@ -50,6 +50,38 @@ asha_hook_context_join() {
   done
   printf '<system-reminder>Omitted from this SessionStart to stay within the hook output cap: %s. Read them from disk if the task needs them.</system-reminder>' "$omitted" \
     | head -c "$ASHA_HOOK_CONTEXT_MAX_BYTES" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null
+}
+
+# Appends Claude's operational layer through the caller's append_context:
+# operation.md (or CORE.md) and active learnings as separate blocks, so the
+# ceiling keeps one when it cannot keep both. Expects PROJECT_DIR, PLUGIN_ROOT
+# and PYTHON_CMD. Expiry runs first: it replays a pending learnings journal,
+# which the read-only render refuses, whichever SessionStart entry runs first.
+asha_append_operational_context() {
+  local manager="$PLUGIN_ROOT/tools/learnings_manager.py" asha_dir="${ASHA_HOME:-$HOME/.asha}"
+  local op_source="" text block active
+  if [[ ! -f "$PROJECT_DIR/Work/markers/silence" && -n "$PYTHON_CMD" && -f "$manager" ]]; then
+    "$PYTHON_CMD" "$manager" expire --project-dir "$PROJECT_DIR" >/dev/null 2>&1 || true
+  fi
+  if [[ -f "$asha_dir/operation.md" ]]; then
+    op_source="$asha_dir/operation.md"
+  elif [[ -f "$PLUGIN_ROOT/modules/CORE.md" ]]; then
+    op_source="$PLUGIN_ROOT/modules/CORE.md"
+  fi
+  if [[ -n "$op_source" ]]; then
+    text="$(asha_budget_truncate "$(cat "$op_source")" "$ASHA_OPERATION_MAX_BYTES" "$(basename "$op_source")")"
+    printf -v block '<system-reminder>\nAsha-managed project. Operational guidelines loaded.\n\n%s\n</system-reminder>' "$text"
+    append_context "operational guidelines ($op_source)" "$block"
+  fi
+  # Only active learnings acquire authority at start.
+  [[ -n "$PYTHON_CMD" && -f "$manager" ]] || return 0
+  if active="$("$PYTHON_CMD" "$manager" render-active --max-bytes "$ASHA_LEARNINGS_MAX_BYTES" 2>/dev/null)"; then
+    [[ -n "$active" ]] || return 0
+    printf -v block '<system-reminder>\nActive reviewed learnings:\n\n%s\n</system-reminder>' "$active"
+    append_context "active learnings ($asha_dir/learnings/active/)" "$block"
+  else
+    append_context "learnings status" "<system-reminder>$ASHA_LEARNINGS_RENDER_FAILED</system-reminder>"
+  fi
 }
 
 # $1 content, $2 byte budget, $3 label. Prints the content, or its longest

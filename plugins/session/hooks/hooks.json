@@ -12,6 +12,16 @@
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/control-event.sh SessionStart"
           }
         ]
+      },
+      {
+        "_asha_harnesses": ["claude"],
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/operational-context.sh"
+          }
+        ],
+        "description": "Claude operational layer; each SessionStart string stays within the 10,000-character hook output cap"
       }
     ],
     "PreToolUse": [

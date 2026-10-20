@@ -52,7 +52,7 @@
           "surface": "settings.json",
           "verifier": "doctor:hook-paths",
           "limitations": [
-            "Claude Code replaces any hook output string over 10,000 characters with a file path and a 2,000-character preview it never asks the model to read (since 2.1.89; per string, not raisable). SessionStart therefore admits context blocks in order within 9,500 bytes and names any omitted block first (verifier: tests/test-hooks.sh)"
+            "Claude Code replaces any hook output string over 10,000 characters with a file path and a 2,000-character preview it never asks the model to read (since 2.1.89; per string, not raisable). Memory and the operational layer therefore ride separate SessionStart entries (session-start.sh, operational-context.sh), and each admits context blocks in order within 9,500 bytes, naming any omitted block first (verifier: tests/test-hooks.sh)"
           ]
         },
         "subagents": {

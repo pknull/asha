@@ -171,9 +171,11 @@ path for private Memory; this setting does not change Git save behavior.
 
 - Claude reads `hooks.json` directly and receives context in native
   `SessionStart` output. Claude Code replaces any hook output string over
-  10,000 characters with a file path and a 2,000-character preview, so the
-  handler admits context blocks in order within 9,500 bytes and names any
-  omitted block first.
+  10,000 characters with a file path and a 2,000-character preview, so Memory
+  and the operational layer (`operation.md` plus active learnings) ride
+  separate entries, `session-start.sh` and the Claude-only
+  `operational-context.sh`. Each admits context blocks in order within 9,500
+  bytes and names any omitted block first.
 - Codex renders the supported shared hooks to an installer-owned `hooks.json`,
   recorded in the generated-artifact ledger, and receives the same startup
   context from the shared handler. Its native `config.toml` keeps only the hooks
