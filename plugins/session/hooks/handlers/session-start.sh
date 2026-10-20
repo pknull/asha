@@ -84,37 +84,16 @@ if [[ "${ASHA_WS_INJECT:-1}" != "0" \
   fi
 fi
 
-# Claude's SessionStart is its canonical operational-instruction seam. Codex,
-# Copilot, and OpenCode receive the same layer from their wrapper-managed
-# instruction file; injecting it again here doubles authoritative context.
-if [[ "$HARNESS" == "claude" ]]; then
-  OPERATION_FILE="${ASHA_HOME:-$HOME/.asha}/operation.md"
-  CORE_MD="$PLUGIN_ROOT/modules/CORE.md"
-  REMINDER=""
-  OPERATION_SOURCE=""
-  if [[ -f "$OPERATION_FILE" ]]; then
-    OPERATION_SOURCE="$OPERATION_FILE"
-  elif [[ -f "$CORE_MD" ]]; then
-    OPERATION_SOURCE="$CORE_MD"
-  fi
-  if [[ -n "$OPERATION_SOURCE" ]]; then
-    OPERATION_TEXT="$(asha_budget_truncate "$(cat "$OPERATION_SOURCE")" \
-      "$ASHA_OPERATION_MAX_BYTES" "$(basename "$OPERATION_SOURCE")")"
-    printf -v REMINDER '<system-reminder>\nAsha-managed project. Operational guidelines loaded.\n\n%s\n</system-reminder>' "$OPERATION_TEXT"
-    append_context "operational guidelines ($OPERATION_SOURCE)" "$REMINDER"
-  fi
-
-  # Only active learnings acquire authority at start.
-  if [[ -n "$PYTHON_CMD" && -f "$PLUGIN_ROOT/tools/learnings_manager.py" ]]; then
-    if ACTIVE="$("$PYTHON_CMD" "$PLUGIN_ROOT/tools/learnings_manager.py" render-active --max-bytes "$ASHA_LEARNINGS_MAX_BYTES" 2>/dev/null)"; then
-      if [[ -n "$ACTIVE" ]]; then
-        printf -v REMINDER '<system-reminder>\nActive reviewed learnings:\n\n%s\n</system-reminder>' "$ACTIVE"
-        append_context "active learnings (${ASHA_HOME:-$HOME/.asha}/learnings/active/)" "$REMINDER"
-      fi
-    else
-      append_context "learnings status" "<system-reminder>$ASHA_LEARNINGS_RENDER_FAILED</system-reminder>"
-    fi
-  fi
+# Claude's operational layer (operation.md + active learnings) rides its own
+# SessionStart entry, operational-context.sh, so each entry stays within
+# Claude Code's per-string hook output cap. Codex, Copilot and OpenCode receive
+# that layer from their wrapper-managed instruction file. Until `asha install
+# claude` registers that entry, deliver the layer here so an upgrade never
+# drops it; doctor reports the unregistered hook. The check reads the settings
+# file Claude itself loads.
+if [[ "$HARNESS" == "claude" ]] && ! grep -qs 'hooks/handlers/operational-context.sh' \
+      "${CLAUDE_CONFIG_DIR:-${HOME:-}/.claude}/settings.json"; then
+  asha_append_operational_context
 fi
 
 if [[ -n "$RECOVERY_HINT" ]] && printf '%s' "$RECOVERY_HINT" | jq -e '

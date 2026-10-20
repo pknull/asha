@@ -48,7 +48,8 @@ echo "--- worker profile silences Asha's own context hooks ---"
 
 START_PAYLOAD='{"session_id":"hub-start","cwd":"'"$PROJECT"'"}'
 BASELINE="$(run_hook session-start.sh "$START_PAYLOAD")"
-if [[ "$BASELINE" == *operation-v2-sentinel* \
+BASELINE_OPS="$(run_hook operational-context.sh "$START_PAYLOAD")"
+if [[ "$BASELINE_OPS" == *operation-v2-sentinel* \
    && "$BASELINE" == *"Published repository Memory v2"* ]]; then
   ok "SessionStart still injects operations and Memory outside a worker"
 else
@@ -57,7 +58,8 @@ fi
 
 rm -rf "$PROJECT/Work/session-state"
 WORKER_START="$(run_hook session-start.sh "$START_PAYLOAD" ASHA_SESSION_PROFILE=worker)"
-if [[ "$WORKER_START" == '{}' ]]; then
+WORKER_OPS="$(run_hook operational-context.sh "$START_PAYLOAD" ASHA_SESSION_PROFILE=worker)"
+if [[ "$WORKER_START" == '{}' && "$WORKER_OPS" == '{}' ]]; then
   ok "worker SessionStart injects no operations, Memory, workspace or learnings"
 else
   fail "worker SessionStart injects no operations, Memory, workspace or learnings ($WORKER_START)"
@@ -75,7 +77,7 @@ else
 fi
 
 for profile in chair room; do
-  KEPT="$(run_hook session-start.sh "$START_PAYLOAD" "ASHA_SESSION_PROFILE=$profile")"
+  KEPT="$(run_hook operational-context.sh "$START_PAYLOAD" "ASHA_SESSION_PROFILE=$profile")"
   if [[ "$KEPT" == *operation-v2-sentinel* ]]; then
     ok "$profile SessionStart keeps Asha context"
   else
@@ -586,7 +588,7 @@ echo "--- operational layer budget: one truncation for every harness ---"
 { printf 'OPERATION_HEAD:'; printf 'é%.0s' $(seq 1 3000); printf 'OPERATION_TAIL_SENTINEL\n'; } \
   > "$HOME_DIR/.asha/operation.md"
 rm -rf "$PROJECT/Work/session-state"
-OVER="$(run_hook session-start.sh "$START_PAYLOAD")"
+OVER="$(run_hook operational-context.sh "$START_PAYLOAD")"
 if [[ "$OVER" == *OPERATION_HEAD:* && "$OVER" != *OPERATION_TAIL_SENTINEL* \
    && "$OVER" == *"[Truncated: operation.md"* ]]; then
   ok "SessionStart truncates an over-budget operation.md with a notice"

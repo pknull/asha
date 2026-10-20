@@ -3,7 +3,7 @@
 #
 # For harnesses that inject context through a *file* rather than a SessionStart
 # hook (Copilot, Codex). On Claude the same content rides
-# plugins/session/hooks/handlers/session-start.sh; this is the file-based
+# plugins/session/hooks/handlers/operational-context.sh; this is the file-based
 # equivalent for harnesses without a usable hook.
 #
 # Output is plain markdown suitable as a Copilot
@@ -11,7 +11,7 @@
 # slot). No <system-reminder> wrappers — those are a Claude-hook convention.
 #
 # Budgets and truncation come from plugins/session/hooks/handlers/
-# operational-budget.sh, which session-start.sh also sources, so every harness
+# operational-budget.sh, which operational-context.sh also sources, so every harness
 # receives the same text. Fallback when operation.md is absent: CORE.md.
 #
 # Usage: operational-merge.sh <output-path>
