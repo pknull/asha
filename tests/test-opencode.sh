@@ -146,10 +146,13 @@ const { AshaPlugin } = await import(pathToFileURL(process.argv[2]).href)
 const fail = (message) => { throw new Error(message) }
 delete process.env.ASHA_HUB_SESSION_ID
 const hooks = await AshaPlugin({ directory: "/project" })
+// OpenCode with an Ollama provider forwards only the first system entry, so
+// the bridge must extend that entry rather than push a new one.
 const transform = async () => {
   const output = { system: ["BASE"] }
   await hooks["experimental.chat.system.transform"]({ sessionID: "s1" }, output)
-  return output.system.join("\n")
+  if (output.system.length !== 1 || !output.system[0].startsWith("BASE")) fail("context left the first system entry")
+  return output.system[0]
 }
 await hooks.event({ event: { type: "session.created", properties: { info: { id: "s1" } } } })
 await hooks["chat.message"]({ sessionID: "s1" }, { parts: [{ type: "text", text: "hi" }] })

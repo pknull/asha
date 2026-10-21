@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — OpenCode context inside the first system entry
+
+- The OpenCode bridge now appends its context to the first system entry instead
+  of pushing a separate one. With an Ollama provider, OpenCode 1.18.34 forwards
+  only the first system entry to the model: a sentinel inside it was reported
+  and one in a pushed entry was not, with the positions swapped as well. So
+  after the previous fix Memory was in every request yet still unseen.
+  Reinstall OpenCode to regenerate the bridge.
+
 ## Unreleased — OpenCode startup context reaches every request
 
 - The generated OpenCode bridge (`plugins/asha.js`) handed its queued context to
