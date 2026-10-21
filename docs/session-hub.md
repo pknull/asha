@@ -504,14 +504,23 @@ command until `memory_v2.py recover` (or the next publication) restores the
 pair.
 
 The wait never blocks the dashboard: `x` records the request and starts a
-detached `asha control session close ID` waiter, then returns; `X` is `close
---force`. The CLI waits in the foreground. Re-running `close` joins the pending
-request (no second request or pointer) and finalizes it once it has expired.
-If no waiter is left, any later `close` or `stop`, and every launch, send or
-resume, finalizes expired closes; the cached dashboard refresh never does, so a
-close is recovered when a command runs again, not terminated while nothing
-runs. Finalization names its request and generation, so a stale waiter cannot
-end a newer request. `stop ID` on a pending close ends it as stopped.
+detached `asha control session close ID --await-request REQUEST_ID` waiter,
+then returns; `X` is `close --force`. The CLI waits in the foreground and also
+starts that detached waiter for a new request first, so a foreground close
+killed mid-wait (by `timeout`, Ctrl-C or a closed terminal) still ends by its
+deadline (#128). A waiter only waits out its own request: it never opens a
+request, and a stop, resume or newer request leaves it nothing to do. Starting
+one appends a stamped line naming the session and request to
+`close-waiters.log` in the Control state directory (emptied once past 64 KiB),
+and the waiter's stderr goes to the same file, so a waiter that fails says why;
+a log that cannot be written never stops the waiter. Re-running `close` joins
+the pending request (no second request, pointer or waiter) and finalizes it
+once it has expired. If no waiter is left, any later `close` or `stop`, and
+every launch, send or resume, finalizes expired closes; the cached dashboard
+refresh never does, so a close is recovered when a command runs again, not
+terminated while nothing runs. Finalization names its request and generation,
+so a stale waiter cannot end a newer request. `stop ID` on a pending close ends
+it as stopped.
 
 Every successful publication path records one `hub_memory_publications` row
 naming its source: `explicit-save`, `close` (a handoff naming the request),

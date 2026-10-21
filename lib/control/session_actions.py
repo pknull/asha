@@ -118,9 +118,11 @@ def close_or_stop(ctx, key, row):
         if letter == 'x':
             # D6: record the request and hand the wait to a detached waiter; never block the dashboard.
             hub = ctx.hub
+            prior = (hub.get(row['session_id']).get('closure') or {}).get('request_id')
             requested = hub.request_close(row['session_id'], wait=hub._close_wait(False, None))
-            if requested['lifecycle'] == 'closing':
-                hub.spawn_close_waiter(row['session_id'])
+            # A repeated `x` joins the pending request, whose waiter is already running (#128).
+            if requested['lifecycle'] == 'closing' and requested['closure']['request_id'] != prior:
+                hub.spawn_close_waiter(row['session_id'], requested['closure']['request_id'])
             return (requested.get('closure') or {}).get('guidance') or requested.get('reason') or 'Session closed'
         if letter == 'X':
             closed = ctx.hub.close(row['session_id'], force=True)

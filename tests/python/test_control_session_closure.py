@@ -1,6 +1,7 @@
 """Best-effort close of hub project sessions (D1, D4-D11); the shared session fixture."""
 import json
 import hashlib
+import os
 import subprocess
 import threading
 import time
@@ -187,7 +188,7 @@ class RequestTests(FastClose):
         with mock.patch.object(hub_cli, 'Hub', return_value=self.hub), \
                 mock.patch.object(self.hub, 'close', return_value={'lifecycle': 'closed'}) as close:
             hub_cli.dispatch(['close', sid, '--json'], env=self.env)
-            self.assertEqual(close.call_args.kwargs, {'force': False, 'wait': None})
+            self.assertEqual(close.call_args.kwargs, {'force': False, 'wait': None, 'backstop': True})
             with self.assertRaises(SystemExit):
                 hub_cli.dispatch(['close', sid, '--force', '--wait', '3'], env=self.env)
 
@@ -443,14 +444,129 @@ class ReconcileTests(FastClose):
         with mock.patch('lib.control.sessions.refuse_managed_operator'), \
                 mock.patch.object(self.hub, 'spawn_close_waiter') as waiter:
             message = session_actions.close_or_stop(ctx, ord('x'), self.hub.show(sid))
-        waiter.assert_called_once_with(sid)
+        rid = self.hub.get(sid)['closure']['request_id']
+        waiter.assert_called_once_with(sid, rid)
         self.assertEqual(self.hub.get(sid)['lifecycle'], 'closing')
         self.assertIn('Closing', message)
         with mock.patch('subprocess.Popen') as popen:
-            self.hub.spawn_close_waiter(sid)
+            self.hub.spawn_close_waiter(sid, rid)
         argv = popen.call_args.args[0]
-        self.assertEqual(argv[1:], ['control', 'session', 'close', sid])
+        self.assertEqual(argv[1:], ['control', 'session', 'close', sid, '--await-request', rid])
         self.assertTrue(popen.call_args.kwargs['start_new_session'])
+
+
+class BackstopTests(FastClose):
+    """#128: a killed foreground close must not orphan its request (D6)."""
+
+    def test_a_foreground_close_starts_a_detached_waiter_before_it_waits(self):
+        sid = self.launch()['session_id']
+        with mock.patch.object(self.hub, 'spawn_close_waiter') as waiter, \
+                mock.patch.object(self.hub, 'await_close', side_effect=KeyboardInterrupt) as wait:
+            with self.assertRaises(KeyboardInterrupt):     # the foreground is killed mid-wait
+                self.hub.close(sid, wait=30, backstop=True)
+        rid = self.hub.get(sid)['closure']['request_id']
+        waiter.assert_called_once_with(sid, rid)
+        wait.assert_called_once_with(sid, rid)
+        self.assertEqual(self.hub.get(sid)['lifecycle'], 'closing')
+
+    def test_rejoining_a_pending_request_starts_no_second_waiter(self):
+        sid = self.launch()['session_id']
+        with mock.patch.object(self.hub, 'spawn_close_waiter') as waiter, \
+                mock.patch.object(self.hub, 'await_close', side_effect=KeyboardInterrupt):
+            for _ in range(3):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.hub.close(sid, wait=30, backstop=True)
+        waiter.assert_called_once()
+
+    def test_no_backstop_when_nothing_is_left_to_wait_for(self):
+        sid = self.launch()['session_id']
+        with mock.patch.object(self.hub, 'spawn_close_waiter') as waiter:
+            closed = self.hub.close(sid, force=True, backstop=True)
+        waiter.assert_not_called()
+        self.assertEqual(closed['lifecycle'], 'closed')
+
+    def test_a_failed_spawn_still_waits_in_the_foreground(self):
+        sid = self.launch()['session_id']
+        with mock.patch.object(self.hub, 'spawn_close_waiter', side_effect=OSError('no fork')), \
+                mock.patch.object(self.hub, 'await_close', return_value={'lifecycle': 'closed'}) as wait:
+            self.assertEqual(self.hub.close(sid, wait=30, backstop=True), {'lifecycle': 'closed'})
+        wait.assert_called_once()
+
+    def test_the_cli_close_asks_for_a_backstop_and_the_waiter_only_waits(self):
+        from lib.control import hub_cli
+        sid = self.launch()['session_id']
+        rid = 'f' * 8 + '-0000-4000-8000-' + '0' * 12
+        with mock.patch.object(hub_cli, 'Hub', return_value=self.hub), \
+                mock.patch.object(self.hub, 'close', return_value={'lifecycle': 'closed'}) as close, \
+                mock.patch.object(self.hub, 'await_close', return_value={'lifecycle': 'closed'}) as wait:
+            hub_cli.dispatch(['close', sid, '--json'], env=self.env)
+            self.assertTrue(close.call_args.kwargs['backstop'])
+            hub_cli.dispatch(['close', sid, '--await-request', rid, '--json'], env=self.env)
+            close.assert_called_once()
+            wait.assert_called_once_with(sid, rid)
+            hub_cli.dispatch(['close', sid, '--wai', '5', '--json'], env=self.env)   # still abbreviates --wait
+            self.assertEqual(close.call_args.kwargs['wait'], 5)
+            for extra in (['--force'], ['--wait', '5']):
+                with self.subTest(extra=extra), self.assertRaises(SystemExit):
+                    hub_cli.dispatch(['close', sid, '--await-request', rid, *extra], env=self.env)
+
+    def test_a_late_waiter_never_acts_on_a_newer_state(self):
+        sid = self.launch()['session_id']
+        rid = self.request(sid, wait=30)['closure']['request_id']
+        self.hub.stop(sid)
+        history = len(self.hub.get(sid).get('closure_history', []))
+        shown = self.hub.await_close(sid, rid)
+        self.assertEqual(shown['lifecycle'], 'stopped')
+        self.assertEqual(len(self.hub.get(sid).get('closure_history', [])), history)
+
+    def test_a_detached_waiter_waits_on_its_request_and_logs_its_failures(self):
+        sid = self.launch()['session_id']
+        with mock.patch('subprocess.Popen') as popen:
+            self.hub.spawn_close_waiter(sid, 'r1')
+        self.assertEqual(popen.call_args.args[0][1:], ['control', 'session', 'close', sid, '--await-request', 'r1'])
+        self.assertNotEqual(popen.call_args.kwargs['stderr'], subprocess.DEVNULL)
+        log = self.asha_home / 'state' / 'control' / 'close-waiters.log'
+        self.assertIn(f'close waiter {sid} r1', log.read_text())
+        self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+
+    def test_an_unwritable_log_never_blocks_the_waiter(self):
+        sid = self.launch()['session_id']
+        (self.asha_home / 'state' / 'control' / 'close-waiters.log').mkdir(parents=True)
+        with mock.patch('subprocess.Popen') as popen:
+            self.hub.spawn_close_waiter(sid, 'r1')
+        self.assertEqual(popen.call_args.kwargs['stderr'], subprocess.DEVNULL)
+
+    def test_a_failed_log_write_still_starts_the_waiter(self):
+        from lib.control import session_hub
+        sid = self.launch()['session_id']
+        real_open = os.open
+        full = lambda *args, **kwargs: real_open('/dev/full', os.O_WRONLY)   # every write fails ENOSPC
+        with mock.patch.object(session_hub.os, 'open', side_effect=full), \
+                mock.patch('subprocess.Popen') as popen:
+            self.hub.spawn_close_waiter(sid, 'r1')
+        self.assertEqual(popen.call_args.kwargs['stderr'], subprocess.DEVNULL)
+
+    def test_repeating_x_in_the_dashboard_starts_one_waiter(self):
+        from lib.control import session_actions
+        sid = self.launch()['session_id']
+        ctx = mock.Mock(hub=self.hub, config=self.config, env=self.env)
+        ctx.prompt.return_value = 'yes'
+        with mock.patch('lib.control.sessions.refuse_managed_operator'), \
+                mock.patch.object(self.hub, 'spawn_close_waiter') as waiter:
+            for _ in range(3):
+                session_actions.close_or_stop(ctx, ord('x'), self.hub.show(sid))
+        waiter.assert_called_once()
+
+    def test_the_waiter_log_stays_bounded(self):
+        from lib.control import session_hub
+        sid = self.launch()['session_id']
+        log = self.asha_home / 'state' / 'control' / 'close-waiters.log'
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_text('x' * (session_hub.CLOSE_WAITER_LOG_BYTES + 1))
+        with mock.patch('subprocess.Popen'):
+            self.hub.spawn_close_waiter(sid, 'r1')
+        self.assertLess(log.stat().st_size, session_hub.CLOSE_WAITER_LOG_BYTES)
+        self.assertIn(f'close waiter {sid} r1', log.read_text())
 
 
 class InFlightTests(FastClose):
