@@ -332,6 +332,35 @@ class RoomTests(unittest.TestCase):
             self._open(project=str(bare))
         self.assertEqual(self.tmux.created, [])
 
+    def test_session_show_resolves_a_legacy_room_as_list_shows_it(self) -> None:
+        # #127: `session list --all` shows ended legacy Rooms, so `show` resolves them,
+        # read-only and in the same row shape.
+        from lib.control import hub_cli
+        opened = self._open()
+        close_room(RoomStore(self.config), opened["room_id"], tmux=self.tmux)
+        killed = list(self.tmux.killed)
+        hub = unittest.mock.MagicMock()
+        hub.owns.return_value = False
+        hub.tmux = self.tmux
+        out = io.StringIO()
+        with unittest.mock.patch.object(hub_cli, "Hub", return_value=hub), \
+                contextlib.redirect_stdout(out):
+            code = hub_cli.dispatch(["show", opened["room_id"], "--json"], env=self.env)
+        self.assertEqual(code, 0)
+        shown = json.loads(out.getvalue())
+        self.assertEqual((shown["session_id"], shown["room_id"], shown["transport"]),
+                         (opened["room_id"], opened["room_id"], "room"))
+        self.assertEqual((shown["group"], shown["next_step"]), ("history", "Closed: view history"))
+        self.assertEqual(self.tmux.killed, killed)
+
+    def test_session_show_leaves_options_to_the_parser(self) -> None:
+        from lib.control import hub_cli
+        hub = unittest.mock.MagicMock()
+        hub.owns.return_value = False
+        with unittest.mock.patch.object(hub_cli, "Hub", return_value=hub), \
+                unittest.mock.patch.object(hub_cli, "_listed_matches", side_effect=AssertionError("looked up")):
+            self.assertIsNone(hub_cli.dispatch(["show", "--help"], env=self.env))
+
     def test_post_respawn_failure_leaves_exact_owned_record_closable(self) -> None:
         self.tmux.fail_respawn = True
         with self.assertRaisesRegex(RoomError, "launch outcome is uncertain"):

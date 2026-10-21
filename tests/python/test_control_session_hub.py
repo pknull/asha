@@ -29,6 +29,13 @@ class SessionHubTests(unittest.TestCase):
         return self.hub.launch(project=str(self.project), prompt='Trim the games',
                                name='Termart cleanup', harness='claude', **changes)
 
+    def test_show_does_not_resolve_a_hub_sessions_own_room(self):
+        # #127: `list` never shows a hub session's internal Room, so `show` must not either.
+        from lib.control import hub_cli
+        row = self.launch()
+        with mock.patch.object(hub_cli, 'Hub', return_value=self.hub):
+            self.assertIsNone(hub_cli.dispatch(['show', row['room_id'], '--json'], env=self.env))
+
     def test_launch_is_project_bound_without_initiative_and_idempotent(self):
         row = self.launch()
         self.assertEqual(row['profile'], 'worker')

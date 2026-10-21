@@ -52,6 +52,20 @@ class NextStepRenderingTests(unittest.TestCase):
         self.assertLess(text.index('Working'), text.index('▼ Ended'))
         self.assertLess(text.index('▼ Ended'), text.index('Ended unreported'))
 
+    def test_an_ended_legacy_room_is_history_not_an_action(self):
+        # #127: a legacy Room has no state past ended, so nothing can act on it.
+        from lib.control.session_presentation import present
+        room = dict(session_id='r1', room_id='r1', transport='room', profile='room', harness='claude',
+                    lifecycle='ended', activity='exited', reason='exact tmux pane is absent',
+                    pending_messages=0, observed_at=None)
+        shown = present(room)
+        self.assertEqual((shown['group'], shown['next_step']), ('history', 'Closed: view history'))
+        live = present(dict(room, lifecycle='open', activity='unknown'))
+        self.assertEqual(live['group'], 'current')
+        # An ended record whose owned pane survived still needs a look.
+        survived = present(dict(room, activity='unknown'))
+        self.assertNotEqual(survived['group'], 'history')
+
     def test_save_label_requires_publication_evidence_not_a_status_or_result(self):
         row = self.row(activity='finished', result='Saved and pushed', memory_saved_at=0)
         self.assertIn('Memory saved 00:00 UTC', '\n'.join(session_tui.lines({'rows': [row]})))

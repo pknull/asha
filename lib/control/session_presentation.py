@@ -31,7 +31,10 @@ def present(row):
         record = {}
     finished = activity == 'finished' or row.get('reported_activity') == 'finished'
     ended = process == 'ended' or (process != 'live' and activity in {'exited', 'stopped', 'closed'})
-    group = 'history' if row.get('lifecycle') == 'closed' else 'ended' if ended else 'current'
+    # A legacy Room has no state past ended, so one ended with its pane gone is history (#127).
+    final = row.get('lifecycle') == 'closed' or (row.get('transport') == 'room' and row.get('lifecycle') == 'ended'
+                                                  and ended)
+    group = 'history' if final else 'ended' if ended else 'current'
     # An open Room is an ongoing conversation: a save or finished report never ends it (#105).
     room_open = row.get('profile') == 'room' and group == 'current' and row.get('lifecycle') == 'open'
     changes = {}
