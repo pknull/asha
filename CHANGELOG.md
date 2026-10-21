@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased — a killed foreground close no longer orphans its request (#128)
+
+- `asha control session close ID` now starts the dashboard's detached waiter
+  before it waits in the foreground. On 2026-10-17 the chair ran the close
+  under `timeout 30` with the default 60 s wait: the request was recorded at
+  07:20:48 and its only waiter was killed at 07:21:18, before the 07:21:48
+  deadline. The worker saved and acknowledged at 07:21:42, but nothing was left
+  to finalize, and read-only `show` never reconciles (D6), so the session sat
+  `closing` and live until `close --force` at 07:24:55. The detached waiter
+  runs `close ID --await-request REQUEST_ID` and only waits out that request,
+  so it never opens a request on a stopped, resumed or re-requested session
+  (the dashboard's `x` waiter could before). A repeated close joins the pending
+  request without a second waiter. A detached waiter's stderr, which went to
+  `/dev/null`, now goes to `close-waiters.log` in the Control state directory
+  (0600, emptied once past 64 KiB) after a stamped line naming the session and
+  request; a log that cannot be written never stops the waiter.
+
 ## Unreleased — legacy Room rows leave the ended group (#127)
 
 - A legacy Room row (`transport: room`) whose lifecycle is `ended` and whose

@@ -309,6 +309,7 @@ def dispatch(argv, *, env):
             parser.add_argument('--digest')
         if verb == 'close':
             parser.add_argument('--force', action='store_true', help='a zero wait: terminate now without asking for a save')
+            parser.add_argument('--await-request', metavar='REQUEST_ID', help=argparse.SUPPRESS)
             parser.add_argument('--wait', type=int, default=None, metavar='SECONDS',
                                 help='how long to wait for a Memory save before terminating '
                                      '(default control.close_wait_seconds, 60)')
@@ -388,9 +389,17 @@ def dispatch(argv, *, env):
         elif verb in {'stop', 'close'}:
             if verb == 'close' and args.force and args.wait is not None:
                 parser.error('--force is a zero wait; it cannot be combined with --wait')
+            if verb == 'close' and args.await_request is not None and (args.force or args.wait is not None):
+                parser.error('--await-request waits out an existing request; it takes no --force or --wait')
             if hub.owns(args.session_id):
                 if verb == 'close':
-                    result = hub.close(args.session_id, force=args.force, wait=args.wait)
+                    if args.await_request is not None:
+                        # A detached waiter only waits out its own request; it never opens one (#128).
+                        from .sessions import refuse_managed_operator
+                        refuse_managed_operator(config, env)
+                        result = hub.await_close(args.session_id, args.await_request)
+                    else:
+                        result = hub.close(args.session_id, force=args.force, wait=args.wait, backstop=True)
                 else:
                     result = hub.stop(args.session_id)
             else:

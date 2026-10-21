@@ -9,7 +9,7 @@ import json
 import os
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from . import session_closure as closure
@@ -53,6 +53,8 @@ ACTIVE_LIFECYCLES = {'starting', 'open', 'closing'}
 # Close takes the session's action lock with a bound (D9) and polls this often.
 CLOSE_LOCK_SECONDS = 5
 CLOSE_POLL_SECONDS = 0.5
+CLOSE_WAITER_LOG_NAME = 'close-waiters.log'
+CLOSE_WAITER_LOG_BYTES = 64 * 1024
 # A hook report stamped this much older than the newest applied one is skipped
 # (D2); anything older still applies, bounding a backward clock step.
 STALE_REPORT_SECONDS = 30
@@ -785,23 +787,32 @@ class Hub:
         self._update(sid, **changes)
         return self.show(sid, refresh_usage=True)
 
-    def close(self, sid, *, force=False, wait=None):
+    def close(self, sid, *, force=False, wait=None, backstop=False):
         """Best-effort close: ask for a Memory save, wait a bounded time, then terminate.
 
         ``wait`` defaults to ``control.close_wait_seconds``; ``force`` is a zero
         wait. A repeated close joins the pending request (one request and at
         most one typed pointer per request) and finalizes it once it expired.
         The row ends closed, labelled saved or unsaved from the generation's
-        publications (D8).
+        publications (D8). ``backstop`` also starts a detached waiter for a new
+        request before this one waits, so a foreground close killed mid-wait
+        still ends by its deadline (#128).
         """
         wait = self._close_wait(force, wait)
         from .sessions import refuse_managed_operator
         refuse_managed_operator(self.config, self.env)
         self.reconcile_closes(exclude=sid)
+        prior = (self.get(sid).get('closure') or {}).get('request_id')
         row = self.request_close(sid, wait=wait)
         if row['lifecycle'] != 'closing':
             return row
-        return self.await_close(sid, row['closure']['request_id'])
+        request_id = row['closure']['request_id']
+        if backstop and request_id != prior:
+            try:
+                self.spawn_close_waiter(sid, request_id)
+            except OSError:
+                pass    # this foreground wait still enforces the close while it runs
+        return self.await_close(sid, request_id)
 
     def _close_wait(self, force, wait):
         if wait is not None and (type(wait) is not int or not 0 <= wait <= CLOSE_WAIT_LIMIT):
@@ -850,13 +861,35 @@ class Hub:
             self._point(row, record)
             time.sleep(min(CLOSE_POLL_SECONDS, max(0.0, record['deadline'] - now)))
 
-    def spawn_close_waiter(self, sid):
-        """Start a detached ``asha control session close ID`` that waits out the request (D6)."""
+    def spawn_close_waiter(self, sid, request_id):
+        """Start a detached ``close ID --await-request REQUEST`` that waits out that request only (D6)."""
         import subprocess
         asha = Path(__file__).resolve().parents[2] / 'bin' / 'asha'
-        subprocess.Popen([str(asha), 'control', 'session', 'close', identifier(sid)], env=self.env,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True, close_fds=True)
+        stderr = subprocess.DEVNULL
+        try:
+            # A waiter that fails says why somewhere an operator can read (#128).
+            log_path = self.config.tasks_dir.parent / CLOSE_WAITER_LOG_NAME
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT
+            if log_path.exists() and log_path.stat().st_size > CLOSE_WAITER_LOG_BYTES:
+                flags |= os.O_TRUNC
+            stderr = os.fdopen(os.open(log_path, flags, 0o600), 'a', encoding='utf-8')
+            stamp = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+            stderr.write(f'{stamp} close waiter {identifier(sid)} {request_id}\n')
+            stderr.flush()
+        except OSError:
+            if stderr is not subprocess.DEVNULL:
+                with suppress(OSError):   # closing flushes the write that just failed
+                    stderr.close()
+            stderr = subprocess.DEVNULL
+        try:
+            subprocess.Popen([str(asha), 'control', 'session', 'close', identifier(sid), '--await-request', request_id],
+                             env=self.env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=stderr,
+                             start_new_session=True, close_fds=True)
+        finally:
+            if stderr is not subprocess.DEVNULL:
+                with suppress(OSError):
+                    stderr.close()
 
     def reconcile_closes(self, *, exclude=None):
         """Finalize every close whose deadline passed while nothing waited (D6).
