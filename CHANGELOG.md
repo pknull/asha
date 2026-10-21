@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — OpenCode startup context reaches every request
+
+- The generated OpenCode bridge (`plugins/asha.js`) handed its queued context to
+  the first system transform of a session and then dropped it. In OpenCode that
+  first transform is an auxiliary request (the session title), so Memory,
+  workspace context and recovery hints never reached the agent's own requests,
+  and OpenCode rebuilds the system prompt for every request anyway. Startup
+  context now rides every request of its session. Turn items (prompt hints,
+  policy notes, the idle verification nudge) ride every request until the next
+  user message, and are dropped then only once delivered, so a nudge queued at
+  idle still reaches the next turn. Diagnosed with a project-level probe plugin
+  (first transform: 2 entries with Memory; agent request: 1 entry without).
+  Reinstall OpenCode to regenerate the bridge.
+
 ## Unreleased — the active learnings budget holds the live set (session 2.12.1)
 
 - The active learnings render budget rises from 3,000 to 4,500 bytes, one

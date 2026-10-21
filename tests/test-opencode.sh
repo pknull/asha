@@ -114,6 +114,81 @@ NODE
 else
   echo "  - node absent; child-idle behavior check skipped"
 fi
+# OpenCode rebuilds the system prompt for every request, and its first
+# transform of a session can be an auxiliary call (the title). Startup context
+# must reach every request of the session; per-turn context must reach every
+# request of its turn, and an item queued at idle must reach the next turn.
+if command -v node >/dev/null 2>&1; then
+  DELIVERY_PLUGIN="$WORK/asha-plugin-delivery.mjs"
+  python3 - "$OC1/plugins/asha.js" "$DELIVERY_PLUGIN" <<'PY'
+import pathlib, re, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+source, count = re.subn(
+    r'import \{[^}]*\} from "node:child_process"',
+    '''const spawn = () => ({ stdin: { on() {}, end() {} }, on() {}, unref() {} })
+globalThis.__ashaPrompt = "PROMPT-HINT"
+const spawnSync = (command) => {
+  const out = command.endsWith("session-start.sh") ? "STARTUP-CONTEXT"
+    : command.endsWith("user-prompt-submit.sh") ? globalThis.__ashaPrompt
+    : command.endsWith("verify-pass-complete.sh") ? "IDLE-NUDGE" : ""
+  const err = command.endsWith("opencode-policy-adapter.sh") ? "POLICY-NOTE" : ""
+  return { status: 0, stdout: out, stderr: err }
+}''',
+    source, count=1)
+assert count == 1, "child_process import not found"
+pathlib.Path(sys.argv[2]).write_text(source)
+PY
+  if node --input-type=module - "$DELIVERY_PLUGIN" \
+      >"$WORK/delivery.out" 2>"$WORK/delivery.err" <<'NODE'
+import { pathToFileURL } from "node:url"
+
+const { AshaPlugin } = await import(pathToFileURL(process.argv[2]).href)
+const fail = (message) => { throw new Error(message) }
+delete process.env.ASHA_HUB_SESSION_ID
+const hooks = await AshaPlugin({ directory: "/project" })
+const transform = async () => {
+  const output = { system: ["BASE"] }
+  await hooks["experimental.chat.system.transform"]({ sessionID: "s1" }, output)
+  return output.system.join("\n")
+}
+await hooks.event({ event: { type: "session.created", properties: { info: { id: "s1" } } } })
+await hooks["chat.message"]({ sessionID: "s1" }, { parts: [{ type: "text", text: "hi" }] })
+const title = await transform()
+const main = await transform()
+for (const [name, text] of [["title", title], ["main", main]]) {
+  if (!text.includes("STARTUP-CONTEXT")) fail(name + " request lacks startup context")
+  if (!text.includes("PROMPT-HINT")) fail(name + " request lacks the turn's prompt context")
+}
+await hooks.event({ event: { type: "session.idle", properties: { info: { id: "s1" } } } })
+globalThis.__ashaPrompt = ""
+await hooks["chat.message"]({ sessionID: "s1" }, { parts: [{ type: "text", text: "next" }] })
+const second = await transform()
+if (!second.includes("STARTUP-CONTEXT")) fail("a later turn lost the startup context")
+if (!second.includes("IDLE-NUDGE")) fail("the idle nudge never reached the next turn")
+if (second.includes("PROMPT-HINT")) fail("a delivered turn item repeated into the next turn")
+if (second.split("STARTUP-CONTEXT").length !== 2) fail("startup context pushed twice into one request")
+// The same policy note from repeated tool calls is queued once.
+process.stderr.write = () => true
+await hooks["tool.execute.before"]({ sessionID: "s1", tool: "write" }, { args: {} })
+await transform()
+await hooks["tool.execute.before"]({ sessionID: "s1", tool: "write" }, { args: {} })
+const notes = await transform()
+if (notes.split("POLICY-NOTE").length !== 2) fail("an identical policy note repeated within a turn")
+// A session classified as a child after it started carries no startup context.
+await hooks["chat.message"]({ sessionID: "c1" }, { parts: [] })
+await hooks.event({ event: { type: "session.created", properties: { info: { id: "c1", parentID: "s1" } } } })
+const childOutput = { system: [] }
+await hooks["experimental.chat.system.transform"]({ sessionID: "c1" }, childOutput)
+if (childOutput.system.join("").includes("STARTUP-CONTEXT")) fail("a child session kept startup context")
+NODE
+  then
+    ok "generated plugin delivers startup context to every request and turn context through its turn"
+  else
+    fail "generated plugin delivers startup context to every request and turn context through its turn ($(grep -m1 "^Error" "$WORK/delivery.err"))"
+  fi
+else
+  echo "  - node absent; context delivery check skipped"
+fi
 # Control session events: the bridge reports the four lifecycle seams it already
 # holds through the shared control-event.sh contract, only inside a hub session,
 # never for a child session, and never blocks the native seam waiting for it.
