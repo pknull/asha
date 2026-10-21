@@ -618,12 +618,16 @@ def list_state(state: str | None = None) -> list[Learning]:
         return _list_state_unlocked(state)
 
 
-def render_active(max_bytes: int = 3000) -> str:
+# Matches ASHA_LEARNINGS_MAX_BYTES in hooks/handlers/operational-budget.sh.
+ACTIVE_RENDER_MAX_BYTES = 4500
+
+
+def render_active(max_bytes: int = ACTIVE_RENDER_MAX_BYTES) -> str:
     with _global_lock(recover=False):
         return "\n".join(_select_active_lines(_list_state_unlocked("active"), max_bytes))
 
 
-def _rebuild_index_unlocked(max_bytes: int = 3000) -> None:
+def _rebuild_index_unlocked(max_bytes: int = ACTIVE_RENDER_MAX_BYTES) -> None:
     content = _render_active_index(_list_state_unlocked("active"), max_bytes)
     _atomic(_secure_learning_child("active/index.md", create_parents=True), content)
 
@@ -647,12 +651,12 @@ def _select_active_lines(learnings: Iterable[Learning], max_bytes: int) -> list[
     return [note]
 
 
-def _render_active_index(learnings: Iterable[Learning], max_bytes: int = 3000) -> str:
+def _render_active_index(learnings: Iterable[Learning], max_bytes: int = ACTIVE_RENDER_MAX_BYTES) -> str:
     selected = _select_active_lines(learnings, max_bytes)
     return "# Active learnings\n\n" + ("\n".join(selected) or "No active learnings.") + "\n"
 
 
-def rebuild_index(max_bytes: int = 3000) -> None:
+def rebuild_index(max_bytes: int = ACTIVE_RENDER_MAX_BYTES) -> None:
     with _global_lock():
         _rebuild_index_unlocked(max_bytes)
 
@@ -698,7 +702,7 @@ def _main(argv: list[str] | None = None) -> int:
     listing = sub.add_parser("list")
     listing.add_argument("--state", choices=STATES)
     render = sub.add_parser("render-active")
-    render.add_argument("--max-bytes", type=int, default=3000)
+    render.add_argument("--max-bytes", type=int, default=ACTIVE_RENDER_MAX_BYTES)
     expire = sub.add_parser("expire")
     expire.add_argument("--project-dir", required=True, type=Path)
     args = parser.parse_args(argv)

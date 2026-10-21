@@ -137,6 +137,15 @@ class LearningLifecycleTests(unittest.TestCase):
         index = (self.bundle / "active/index.md").read_text()
         self.assertIn("Omitted 2 of 3 active learnings", index)
 
+    def test_default_budget_holds_five_learnings_of_typical_length(self):
+        # Five active learnings of about 850 bytes each, the live set's shape.
+        for i in range(5):
+            self.write_active(f"typical-{i}", "t " * 200, "a " * 210)
+        rendered = lm.render_active()
+        self.assertNotIn("Omitted", rendered)
+        self.assertEqual(5, rendered.count("- typical-"))
+        self.assertEqual(lm.ACTIVE_RENDER_MAX_BYTES, 4500)
+
     def test_render_active_within_the_byte_cap_has_no_omission_note(self):
         self.write_active("small", "t", "a")
         self.assertEqual("- small: when t; a", lm.render_active(3000))
