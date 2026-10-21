@@ -9,7 +9,7 @@
 # shellcheck disable=SC2034  # read by the scripts that source this file
 ASHA_OPERATION_MAX_BYTES=4000
 # shellcheck disable=SC2034
-ASHA_LEARNINGS_MAX_BYTES=3000
+ASHA_LEARNINGS_MAX_BYTES=4500
 # Claude Code replaces any hook output string over 10,000 characters with a
 # file path and a 2,000-character preview it never asks the model to read, and
 # Codex spills hook output above 2,500 tokens (bytes/4). Bytes bound both.

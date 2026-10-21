@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — the active learnings budget holds the live set (session 2.12.1)
+
+- The active learnings render budget rises from 3,000 to 4,500 bytes, one
+  constant shared by the hook budget and `learnings_manager.py`. The five live
+  active learnings total 4,298 bytes; at 3,000 the render had been dropping two
+  of them on every harness, silently until the previous change named the
+  omission. Claude's operational entry with the live `operation.md` and all five
+  learnings is 7,358 bytes, under the 9,500-byte ceiling.
+
 ## Unreleased — Claude's operational layer on its own SessionStart entry (session 2.12.0)
 
 - Claude receives `operation.md` and active learnings from a Claude-only

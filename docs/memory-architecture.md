@@ -91,7 +91,7 @@ three distinct positive sessions across two projects. This automatic gate is a
 user-controlled corroboration heuristic, not a security boundary. Activation
 measures recurrence, not effect: nothing checks that an active learning improves
 outcomes. Only active learnings are rendered at SessionStart, within a
-3,000-byte budget; learnings past it, and a render that fails, are named rather
+4,500-byte budget; learnings past it, and a render that fails, are named rather
 than dropped silently. SessionStart runs candidate expiry, moving records
 older than 90 days to retired; no record
 is silently deleted. Contradiction is an explicit transition back to candidate;
