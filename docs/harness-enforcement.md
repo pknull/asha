@@ -22,7 +22,7 @@ select the verified delivery seam. It never publishes Memory or blocks a tool.
 
 | Nudge | Claude Code | OpenAI Codex | GitHub Copilot CLI | OpenCode |
 |---|---|---|---|---|
-| Declared verification pass | `Stop` runs `verify-pass-complete.sh`; remaining fixed-string hits return one `{"decision":"block","reason":...}` retry and `stop_hook_active` suppresses the loop | Same Stop JSON, subject to Codex's per-command hash-bound hook trust | No Stop claim: next `userPromptSubmitted` runs the handler and returns top-level `additionalContext` | Root `session.idle` appends handler stdout to pending context for the next system transform; known child-session idles are ignored |
+| Declared verification pass | `Stop` runs `verify-pass-complete.sh`; remaining fixed-string hits return one `{"decision":"block","reason":...}` retry and `stop_hook_active` suppresses the loop | Same Stop JSON, subject to Codex's per-command hash-bound hook trust | No Stop claim: next `userPromptSubmitted` runs the handler and returns top-level `additionalContext` | Root `session.idle` appends handler stdout to turn context, carried into the next turn's system transforms; known child-session idles are ignored |
 
 The declared-pass handler excludes `.git`, `.jj`, and `Work` from its
 fixed-string search, including binary/NUL-containing files, names remaining
@@ -244,7 +244,8 @@ Legacy lifecycle and nudge hook files are removed during reconciliation.
 `harnesses/opencode.sh` generates `plugins/asha.js`. It calls the shared recovery
 handlers directly for start, prompt, post-tool, and dispose, and runs the
 declared-pass handler on `session.idle`.
-Pending output enters the next system-context transform. Dispose invokes only
+Startup output rides every system-context transform of its session; turn output
+rides every transform until the next user message. Dispose invokes only
 the session-end seal path. Commands and agents remain native Markdown under
 plural `commands/` and `agents/` directories.
 

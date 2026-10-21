@@ -459,7 +459,7 @@
           "surface": "root session.idle (known child sessions suppressed) -> verify-pass-complete.sh stdout -> pending system context",
           "verifier": "doctor:opencode-plugin + tests:test-hooks/test-opencode/test-install/test-doctor",
           "limitations": [
-            "Delivery occurs at the next system-context transform after idle",
+            "Delivery rides the system-context transforms of the next turn after idle",
             "The advisory handler fails open"
           ]
         },
