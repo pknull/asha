@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — legacy Room rows leave the ended group (#127)
+
+- A legacy Room row (`transport: room`) whose lifecycle is `ended` and whose
+  pane is gone or dead now groups as history instead of ended. Such a row has
+  no state past ended and nothing left running, yet it sat in the dashboard's
+  ended group with "Ended unreported: check work" indefinitely. `asha control
+  session show` now resolves the legacy Rooms `list --all` shows, read-only and
+  as the same row, instead of answering "managed session not found"; a hub
+  session's own Room stays unlisted and unresolved. `close` is unchanged.
+
 ## Unreleased — OpenCode context inside the first system entry
 
 - The OpenCode bridge now appends its context to the first system entry instead

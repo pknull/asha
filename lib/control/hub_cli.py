@@ -49,7 +49,7 @@ def terminal_inventory(deadline):
 
 def overview(config, *, env=None, tmux=None, include_closed=False, tmux_errors=(), deadline=None):
     """The session page. ``tmux`` and ``tmux_errors`` pass in an inventory already read."""
-    from .rooms import RoomStore, _owned_state
+    from .rooms import RoomStore
     from .store import SnapshotBudget
     deadline = time.monotonic() + 2 if deadline is None else deadline
     probe_errors = list(tmux_errors)
@@ -79,12 +79,7 @@ def overview(config, *, env=None, tmux=None, include_closed=False, tmux_errors=(
         for room in room_records:
             if room['room_id'] in known_rooms or (room['lifecycle'] == 'ended' and not include_closed):
                 continue
-            state, detail = _owned_state(room, hub.tmux)
-            rows.append(dict(session_id=room['room_id'], room_id=room['room_id'], transport='room',
-                             name=room['name'], project=room['project_root'], project_name=room['project_name'],
-                             profile='room', harness=room['harness'], lifecycle=room['lifecycle'],
-                             activity={'open': 'unknown', 'ended': 'exited', 'missing': 'exited'}.get(state, 'unknown'),
-                             reason=detail, pending_messages=0, observed_at=None))
+            rows.append(_legacy_room_row(room, hub.tmux))
         if budget.truncated or budget.unavailable:
             errors.append('Legacy Room observation is incomplete')
     except (ValueError, OSError) as exc:
@@ -112,6 +107,17 @@ def overview(config, *, env=None, tmux=None, include_closed=False, tmux_errors=(
     return {'contract': 'asha.hub-sessions.v1', 'rows': rows, 'complete': complete,
             'errors': errors, 'summary': f"{sum(r['group'] == 'current' for r in rows)} current; {sum(r['group'] == 'ended' for r in rows)} ended; {sum(r['activity'] == 'needs-input' and r['group'] == 'current' for r in rows)} need input"
             + (' (partial observation)' if not complete else '')}
+
+
+def _legacy_room_row(room, tmux):
+    """One legacy Room as `session list` shows it, before presentation."""
+    from .rooms import _owned_state
+    state, detail = _owned_state(room, tmux)
+    return dict(session_id=room['room_id'], room_id=room['room_id'], transport='room',
+                name=room['name'], project=room['project_root'], project_name=room['project_name'],
+                profile='room', harness=room['harness'], lifecycle=room['lifecycle'],
+                activity={'open': 'unknown', 'ended': 'exited', 'missing': 'exited'}.get(state, 'unknown'),
+                reason=detail, pending_messages=0, observed_at=None)
 
 
 def _listed_matches(config, hub, needle, *, room_names):
@@ -264,8 +270,19 @@ def dispatch(argv, *, env):
             return False
     always = {'launch', 'attach', 'close', 'report', 'event', 'event-lost', 'messages', 'ack-message', 'list',
               'handoff'}
+    def is_legacy_room(sid):
+        """A Room `list --all` shows that neither the hub nor the managed store owns."""
+        try:
+            sid = identifier(sid)
+            # The managed check is one indexed read; the listing scans every Room record.
+            return not is_managed(sid) and sid in _listed_matches(config, hub, sid, room_names=False)
+        except (ValueError, OSError):
+            return False
     if verb not in always:
-        if verb not in {'show', 'send', 'stop', 'resume'} or len(argv) < 2 or not hub.owns(argv[1]):
+        if verb not in {'show', 'send', 'stop', 'resume'} or len(argv) < 2:
+            return None
+        # `list --all` shows legacy Rooms, so `show` resolves them too (#127).
+        if not hub.owns(argv[1]) and not (verb == 'show' and is_legacy_room(argv[1])):
             return None
     parser = argparse.ArgumentParser(prog='asha control session ' + verb)
     parser.add_argument('--json', action='store_true')
@@ -360,7 +377,12 @@ def dispatch(argv, *, env):
         elif verb == 'list':
             result = overview(config, env=env, include_closed=args.all)
         elif verb == 'show':
-            result = hub.show(args.session_id, refresh_usage=True)
+            if hub.owns(args.session_id):
+                result = hub.show(args.session_id, refresh_usage=True)
+            else:
+                from .rooms import RoomStore
+                from .session_presentation import present
+                result = present(_legacy_room_row(RoomStore(config).read(args.session_id), hub.tmux))
         elif verb == 'send':
             result = hub.send(args.session_id, args.text, key=args.key or str(uuid.uuid4()), learning_ids=args.learning_ids)
         elif verb in {'stop', 'close'}:
