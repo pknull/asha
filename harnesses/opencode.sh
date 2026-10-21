@@ -313,7 +313,11 @@ print('    "experimental.chat.system.transform": async (input, output) => {')
 print('      const sid = input.sessionID || latestSessionID || ""; remember(sid); ensureStarted(sid)')
 print('      const turn = (pending.get(sid) || []).map((item) => { item.delivered = true; return item.text })')
 print('      const text = [startup.get(sid), ...turn].filter(Boolean).join("\\n\\n")')
-print('      if (text) output.system.push(text)')
+print('      if (!text) return')
+# OpenCode with an Ollama provider forwards only the first system entry to the
+# model (sentinel test, OpenCode 1.18.34), so extend that entry.
+print('      if (output.system.length) output.system[0] = output.system[0] + "\\n\\n" + text')
+print('      else output.system.push(text)')
 print('    },')
 print('    event: async ({ event }) => {')
 print('      if (event && event.type === "session.created") {')
