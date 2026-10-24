@@ -292,6 +292,7 @@ The owning guide below is the catalogue for each plugin.
 | `devops` | `devops-inspect`, `devops-unifi`, or `devops-change` skill | Inspect owned hosts, read UniFi inventory and health, or execute authorized changes with preflight, recovery, and verification | [DevOps guide](plugins/devops/README.md) |
 | `security` | `security-review` skill | Security-sensitive implementation and review | [Security guide](plugins/security/README.md) |
 | `asha` | `asha <harness>`; `asha-reference` when needed | Compact identity and task-selected private reference material | [Identity guide](plugins/asha/README.md) |
+| `personal` | Say what you want, or name the skill | Open conversation with private notes; tracking what needs doing and following up | [Personal guide](plugins/personal/README.md) |
 | `test` | `/test:ping` or rendered canary skills | Installer verification only | [Test guide](plugins/test/README.md) |
 
 Commands are the user-facing workflows. Agents are their specialist parts;
@@ -524,7 +525,7 @@ To propose new plugins or improvements:
 
 ## License
 
-Individual plugins licensed separately. See each plugin's LICENSE file (MIT throughout: admin, asha, code, devops, image, panel, rp, rpg, security, session, test, write).
+Individual plugins licensed separately. See each plugin's LICENSE file (MIT throughout: admin, asha, code, devops, image, panel, personal, rp, rpg, security, session, test, write).
 
 ---
 
