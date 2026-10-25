@@ -520,7 +520,8 @@ If a confirmed violation needs a rewrite, you will be re-spawned with `PRIOR_VIO
 
 **To minimize rewrite cycles**:
 
-- Read `Memory/invariants.md` at session start (and re-read if it has been refreshed)
+- Read `Memory/invariants.md` at session start (and re-read if it has been refreshed); it holds static canon only
+- Take current state (who is alive and where, the day, stats, workings and what is on the PC, standing facts) from `LIVE_STATE` and `SCENE_STATE`, never from `Memory/invariants.md`. `LIVE_STATE` names line ranges in the session file (frontmatter and header) and the run's state file (its current entry); read those. Where the invariants describe something the live state has moved past (a death, a departure, a custom no longer kept), the live state governs the run
 - Treat its **Tone Anchors** section as binding (no softening, no fade-to-black, predators ACT, body-present prose, etc.)
 - Treat its **Character Registers** section as authoritative (render each character's register intact — never flatten a terse character into fluency, or a cold one into warmth)
 - Treat its **Mechanical Rules** section as canon (release-word for ALL crests, vitality drain mechanics, cycle behaviors)

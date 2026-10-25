@@ -2,6 +2,7 @@
 import importlib.util
 import io
 import json
+import re
 import tempfile
 import time
 import unittest
@@ -866,6 +867,603 @@ class CommandContractTests(unittest.TestCase):
         self.assertIn("### 11. pc_authored", text)
         self.assertIn("### 12. presence", text)
         self.assertIn("ADJUDICATE", text)
+
+
+# ------------------------------------------------- live state, not invariants
+
+LIVE_FRONTMATTER = """---
+campaign: "Test"
+currentDate: "Day 195 (Sunday)"
+currentLocation: "the yard"
+currentTime: "15:00"
+participants: ["Alder", "Liss", "Mira"]
+{extra}scene:
+  time: "15:00"
+  location: "the yard"
+  participants:
+    - name: "Alder"
+      role: "PC (calm)"
+    - name: "Liss"
+      role: "NPC"
+    - name: "Mira"
+      role: "NPC"
+---
+"""
+
+HEADER = """
+# RP Session 2026-10-24: Alder, Day 195 afternoon onward
+
+Continues the 10-17 log (closed at B4099). Summary: `Work/rp/summaries/x.md`. State: `Work/rp/alder/alder.md`
+§ Run state ("Closed" line). Beat numbering resumes at 4100.
+
+**Standing since D174:** the Warden is dead. No board is held.
+
+## What is on him
+
+**Stats:** POW 48/60; HP 20/20.
+"""
+
+DAY_PLAN = """
+## Day Plan: Day 195 (Sunday)
+
+| NPC | Goal | Move | Clock |
+|---|---|---|---|
+
+### Beat 4100: Day 195, ~15:00 (Sunday)
+
+Liss sets down the drawknife.
+"""
+
+RUN_STATE_FILE = """---
+character: "Alder"
+status: "paused at Beat 83, Day 31 (2026-09-25)"
+---
+
+# Alder
+
+## Sheet
+
+STR 80.
+
+## Run state (one page — the GM updates this, nothing else)
+
+**Closed: Day 195, ~15:00 (Sunday), after Beat 4099 (closed 2026-10-24 with /rp:end; log `rp_session_2026-10-17.md`):** the yard at the dray shafts; due again 2026-12-01.
+
+**Earlier: Day 190, ~19:47 (Tuesday), after Beat 3899 (paused 2026-10-21):** the larder after supper.
+
+**Vitals:** HP 9/15 · POW 48/60
+
+---
+
+### Briefing
+
+Old notes.
+
+## Later section
+
+Not run state.
+"""
+
+STATIC_INVARIANTS = """---
+type: invariants
+last_extraction: {extracted}
+keeper_locked_sections:
+  - "Character Registers → Warden (arc CLOSED status)"
+conflicts_flagged: 1
+---
+
+# RP Invariants
+
+> **This projection is the test campaign.** Current state is not kept here: read the live session.
+
+## Tone Anchors
+
+- No softening. Do not skip in-world time.
+
+## Character Registers
+
+### Warden
+
+- **Arc status (CLOSED)** `[KEEPER-LOCKED]`: the pilgrimage is complete.
+
+### Alder (PC)
+
+- **Run state block** at the foot of `Work/rp/alder/alder.md` is the only PC state the GM updates.
+- Fed once (D32) is history; the calendar ruling says Day 36 = Tuesday.
+
+## Mechanical Rules
+
+- **Resistance**: 50 + caster's POW - target's current POW (current POW from the run state).
+
+## World and Timeline Facts
+
+- The tavern sits on neutral ground.
+
+## Conflicts and Gaps
+
+1. ~~Locked Timeline State stale~~ — retired 2026-10-25; live state is read from the session.
+
+```yaml
+# an example inside a fence is not the projection's own state
+Timeline State: example
+```
+"""
+
+LIVE_LINES = {
+    "snapshot": "> **This projection is the run begun 2026-09-24, now at Day 60.**",
+    "label": "- **Run state (Day 60, Friday, ~18:45, Beat 342 closed; resumes Beat 343)**: his own frame.",
+    "clocks": "- **Live clocks**: treads 23-29 to fit.",
+    "heading": "## Timeline State `[KEEPER-LOCKED]`",
+    "vessel": "- **Current vessel (session-local)**: Alder, Day 60.",
+    "resumes": "The run resumes at Beat 343 at the gate.",
+}
+
+
+class LiveStateProject(Project):
+    def live_session(self, name="rp_session_2026-10-24.md", extra="", header=HEADER, plan=DAY_PLAN):
+        return self.session(name, LIVE_FRONTMATTER.format(extra=extra) + header + plan)
+
+    def run_state(self, path="Work/rp/alder/alder.md", body=RUN_STATE_FILE):
+        target = self.root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+        return target
+
+    def invariants(self, body):
+        path = self.root / "Memory/invariants.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        return path
+
+
+def line_of(path, text):
+    return path.read_text(encoding="utf-8").splitlines().index(text) + 1
+
+
+class LiveStateTests(unittest.TestCase):
+    """Current state comes from the session and the run's state file, resolved without names."""
+
+    def test_run_state_named_by_the_session_header(self):
+        p = LiveStateProject(self)
+        session = p.live_session()
+        target = p.run_state()
+        got = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
+        rs = got["run_state"]
+        self.assertEqual(rs["path"], "Work/rp/alder/alder.md")
+        self.assertEqual(rs["source"], "header")
+        self.assertEqual(rs["section"], "Run state")
+        self.assertEqual(rs["heading_line"], line_of(target, "## Run state (one page — the GM updates this, nothing else)"))
+        self.assertEqual(rs["end_line"], line_of(target, "## Later section") - 1)
+        current = rs["current"]
+        self.assertEqual(current["start"], current["end"])  # the first entry only, not the history below it
+        self.assertTrue(target.read_text().splitlines()[current["start"] - 1].startswith("**Closed: Day 195"))
+        self.assertEqual((current["day"], current["beat"], current["time"]), (195, 4099, "15:00"))
+        self.assertIn("2026-10-24", current["dates"])
+        self.assertEqual(got["warnings"], [])
+        self.assertEqual(got["session_file"], "Work/rp/rp_session_2026-10-24.md")
+        self.assertTrue(session.exists())
+
+    def test_run_state_named_by_the_session_frontmatter(self):
+        p = LiveStateProject(self)
+        p.live_session(extra='run_state: "Work/rp/other/pc.md#Run state"\n', header="\n# RP Session\n")
+        p.run_state("Work/rp/other/pc.md")
+        rs = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")["run_state"]
+        self.assertEqual((rs["path"], rs["source"], rs["section"]), ("Work/rp/other/pc.md", "frontmatter", "Run state"))
+
+    def test_frontmatter_outranks_the_header_and_takes_a_section_sign(self):
+        p = LiveStateProject(self)
+        p.live_session(extra='run_state: "Work/rp/other/pc.md § Run state"\n')
+        p.run_state("Work/rp/other/pc.md")
+        p.run_state()
+        rs = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")["run_state"]
+        self.assertEqual((rs["path"], rs["source"]), ("Work/rp/other/pc.md", "frontmatter"))
+
+    def test_header_and_frontmatter_ranges(self):
+        p = LiveStateProject(self)
+        session = p.live_session()
+        got = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
+        lines = session.read_text().splitlines()
+        closing = lines.index("---", 1) + 1
+        self.assertEqual(got["frontmatter"], {"start": 1, "end": closing})
+        self.assertEqual(got["header"]["start"], got["frontmatter"]["end"] + 1)
+        self.assertEqual(got["header"]["end"], line_of(session, "## Day Plan: Day 195 (Sunday)") - 1)
+        self.assertFalse(got["header"]["truncated"])
+        self.assertEqual(got["as_of"], {"day": 195, "time": "15:00"})
+
+    def test_header_without_a_day_plan_stops_at_the_first_beat(self):
+        p = LiveStateProject(self)
+        session = p.live_session(plan="\n### Beat 12: Day 4, ~15:00\n\nProse.\n")
+        got = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
+        self.assertEqual(got["header"]["end"], line_of(session, "### Beat 12: Day 4, ~15:00") - 1)
+
+    def test_long_header_is_capped(self):
+        p = LiveStateProject(self)
+        p.live_session(header=HEADER + "line\n" * 600)
+        header = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")["header"]
+        self.assertTrue(header["truncated"])
+        self.assertLessEqual(header["end"] - header["start"] + 1, rp_gate.HEADER_MAX_LINES)
+
+    def test_session_resolution_follows_the_marker(self):
+        p = LiveStateProject(self)
+        p.live_session("rp_session_2026-10-24.md")
+        p.live_session("rp_session_2026-10-30.md", extra='run_state: "Work/rp/other/pc.md"\n')
+        p.run_state()
+        p.run_state("Work/rp/other/pc.md")
+        p.marker("session_file: Work/rp/rp_session_2026-10-24.md\n")
+        code, out, _err = run("session", "--project-dir", str(p.root))
+        self.assertEqual(code, 0)
+        live = json.loads(out)["live_state"]
+        self.assertEqual(live["session_file"], "Work/rp/rp_session_2026-10-24.md")
+        self.assertEqual(live["run_state"]["path"], "Work/rp/alder/alder.md")
+
+    def test_malformed_frontmatter_pointer_warns_instead_of_falling_back(self):
+        p = LiveStateProject(self)
+        p.live_session(extra="run_state:\n  - Work/rp/alder/alder.md\n")
+        p.run_state()
+        got = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
+        self.assertIsNone(got["run_state"])
+        self.assertTrue(any("run_state" in w for w in got["warnings"]))
+
+    def test_no_run_state_pointer_warns(self):
+        p = LiveStateProject(self)
+        p.live_session(header="\n# RP Session\n")
+        got = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
+        self.assertIsNone(got["run_state"])
+        self.assertTrue(any("run_state" in w for w in got["warnings"]))
+
+    def test_run_state_cannot_point_outside_the_project(self):
+        elsewhere = tempfile.TemporaryDirectory()
+        self.addCleanup(elsewhere.cleanup)
+        outside = Path(elsewhere.name) / "outside.md"
+        outside.write_text(RUN_STATE_FILE, encoding="utf-8")
+        for pointer in (str(outside), f"../{Path(elsewhere.name).name}/outside.md"):
+            with self.subTest(pointer=pointer):
+                p = LiveStateProject(self)
+                p.live_session(extra=f'run_state: "{pointer}"\n')
+                got = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
+                self.assertIsNone(got["run_state"])
+                self.assertTrue(any("outside" in w for w in got["warnings"]))
+
+    def test_run_state_file_without_the_section_warns(self):
+        p = LiveStateProject(self)
+        p.live_session()
+        p.run_state(body="# Alder\n\n## Sheet\n\nSTR 80.\n")
+        got = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
+        self.assertIsNone(got["run_state"])
+        self.assertTrue(any("Run state" in w for w in got["warnings"]))
+
+    def test_state_date_ignores_future_dates_and_floors_at_the_session_start(self):
+        p = LiveStateProject(self)
+        p.live_session()
+        p.run_state()
+        got = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
+        self.assertEqual((got["state_date"], got["state_date_source"]), ("2026-10-24", "run_state"))
+        p2 = LiveStateProject(self)
+        p2.live_session("rp_session_2026-10-24.md", header="\n# RP Session\n")
+        got = rp_gate.live_state(p2.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
+        self.assertEqual((got["state_date"], got["state_date_source"]), ("2026-10-24", "session"))
+
+    def test_the_tool_names_no_campaign(self):
+        # The state files are resolved from the session, never from a run's name.
+        source = SCRIPT.read_text(encoding="utf-8").lower()
+        for name in ("garret", "gilt thorn"):
+            self.assertNotIn(name, source)
+
+
+class InvariantsTests(unittest.TestCase):
+    """The gate warns when invariants.md carries live state or predates the run's state."""
+
+    def project(self, invariants, run_state=True):
+        p = LiveStateProject(self)
+        p.live_session()
+        if run_state:
+            p.run_state()
+        p.invariants(invariants)
+        return p
+
+    def report(self, p):
+        state = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
+        return rp_gate.invariants_report(p.root, state)
+
+    def kinds(self, report):
+        return sorted(w["kind"] for w in report["warnings"])
+
+    def test_static_canon_raises_nothing(self):
+        p = self.project(STATIC_INVARIANTS.format(extracted="2026-10-25"))
+        self.assertEqual(self.report(p)["warnings"], [])
+
+    def test_each_live_state_shape_is_flagged(self):
+        for name, line in LIVE_LINES.items():
+            with self.subTest(shape=name):
+                body = STATIC_INVARIANTS.format(extracted="2026-10-25").replace(
+                    "## Tone Anchors\n", f"## Tone Anchors\n\n{line}\n")
+                p = self.project(body)
+                path = p.root / "Memory/invariants.md"
+                report = self.report(p)
+                self.assertEqual(self.kinds(report), ["live_state"])
+                self.assertIn(line_of(path, line), report["warnings"][0]["lines"])
+
+    def test_a_locked_live_section_named_in_the_frontmatter_is_flagged(self):
+        body = STATIC_INVARIANTS.format(extracted="2026-10-25").replace(
+            '  - "Character Registers', '  - "Timeline State"\n  - "Character Registers')
+        self.assertEqual(self.kinds(self.report(self.project(body))), ["live_state"])
+
+    def test_extraction_older_than_the_run_state_is_stale(self):
+        report = self.report(self.project(STATIC_INVARIANTS.format(extracted="2026-09-27")))
+        self.assertEqual(self.kinds(report), ["stale"])
+        detail = report["warnings"][0]["detail"]
+        self.assertIn("2026-09-27", detail)
+        self.assertIn("2026-10-24", detail)
+        self.assertEqual(report["state_date"], "2026-10-24")
+
+    def test_extraction_on_the_state_date_is_fresh(self):
+        self.assertEqual(self.report(self.project(STATIC_INVARIANTS.format(extracted="2026-10-24")))["warnings"], [])
+
+    def test_the_session_start_dates_the_state_when_no_run_state_resolves(self):
+        p = LiveStateProject(self)
+        p.live_session(header="\n# RP Session\n")
+        p.invariants(STATIC_INVARIANTS.format(extracted="2026-09-27"))
+        report = self.report(p)
+        self.assertEqual(self.kinds(report), ["stale"])
+        self.assertEqual(report["state_date_source"], "session")
+
+    def test_missing_extraction_date_warns(self):
+        body = STATIC_INVARIANTS.format(extracted="2026-10-25").replace("last_extraction: 2026-10-25\n", "")
+        self.assertEqual(self.kinds(self.report(self.project(body))), ["no_extraction_date"])
+
+    def test_no_invariants_file_reports_nothing(self):
+        p = LiveStateProject(self)
+        p.live_session()
+        self.assertIsNone(self.report(p))
+
+    def test_the_old_shape_raises_both_warnings(self):
+        body = STATIC_INVARIANTS.format(extracted="2026-09-27") + "\n" + "\n".join(LIVE_LINES.values()) + "\n"
+        report = self.report(self.project(body))
+        self.assertEqual(self.kinds(report), ["live_state", "stale"])
+        self.assertEqual(len(report["warnings"][0]["lines"]), len(LIVE_LINES))
+
+    def test_session_command_reports_and_warns_on_stderr(self):
+        p = self.project(STATIC_INVARIANTS.format(extracted="2026-09-27") + "\n" + LIVE_LINES["heading"] + "\n")
+        p.marker("session_file: Work/rp/rp_session_2026-10-24.md\n")
+        code, out, err = run("session", "--project-dir", str(p.root))
+        self.assertEqual(code, 0)
+        self.assertEqual(sorted(w["kind"] for w in json.loads(out)["invariants"]["warnings"]), ["live_state", "stale"])
+        self.assertIn("live state", err)
+        self.assertIn("predates", err)
+
+    def test_check_reports_and_logs_the_warnings(self):
+        p = self.project(STATIC_INVARIANTS.format(extracted="2026-09-27") + "\n" + LIVE_LINES["heading"] + "\n")
+        tf = p.turn_file(turn(f'Liss sets down the drawknife.\n\n{ANCHOR}'))
+        code, out, err = run("check", "--project-dir", str(p.root), "--session-file",
+                             "Work/rp/rp_session_2026-10-24.md", "--turn-file", str(tf))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(sorted(w["kind"] for w in json.loads(out)["invariants"]["warnings"]), ["live_state", "stale"])
+        lint = [line for line in p.log_lines() if line["path"] == "lint"]
+        self.assertEqual(lint[0]["invariants_warnings"], ["live_state", "stale"])
+
+    def test_check_without_invariants_is_unchanged(self):
+        p = LiveStateProject(self)
+        p.live_session()
+        tf = p.turn_file(turn(f'Liss sets down the drawknife.\n\n{ANCHOR}'))
+        code, out, err = run("check", "--project-dir", str(p.root), "--session-file",
+                             "Work/rp/rp_session_2026-10-24.md", "--turn-file", str(tf))
+        self.assertEqual(code, 0, err)
+        self.assertIsNone(json.loads(out)["invariants"])
+        self.assertNotIn("invariants_warnings", p.log_lines()[0])
+
+    def test_invariants_command_strict_exit(self):
+        static = self.project(STATIC_INVARIANTS.format(extracted="2026-10-25"))
+        code, out, _err = run("invariants", "--project-dir", str(static.root), "--strict")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["warnings"], [])
+        live = self.project(STATIC_INVARIANTS.format(extracted="2026-10-25") + "\n" + LIVE_LINES["clocks"] + "\n")
+        code, out, _err = run("invariants", "--project-dir", str(live.root), "--strict")
+        self.assertEqual(code, 1)
+        self.assertEqual([w["kind"] for w in json.loads(out)["warnings"]], ["live_state"])
+        code, _out, _err = run("invariants", "--project-dir", str(live.root))
+        self.assertEqual(code, 0)
+
+    def test_report_is_cheap(self):
+        p = self.project(STATIC_INVARIANTS.format(extracted="2026-10-25") * 40)
+        started = time.perf_counter()
+        for _ in range(20):
+            self.report(p)
+        self.assertLess((time.perf_counter() - started) / 20, 0.05)
+
+
+class LiveStateReviewTests(unittest.TestCase):
+    """Cases from the cold review of the first pass: each one failed or was untested there."""
+
+    def report_for(self, extra, extracted="2026-10-25", body=None):
+        p = LiveStateProject(self)
+        p.live_session()
+        p.run_state()
+        text = body if body is not None else STATIC_INVARIANTS.format(extracted=extracted).replace(
+            "## Tone Anchors\n", f"## Tone Anchors\n\n{extra}\n")
+        p.invariants(text)
+        state = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
+        return p, rp_gate.invariants_report(p.root, state)
+
+    def live_lines(self, report):
+        return [line for w in report["warnings"] if w["kind"] == "live_state" for line in w["lines"]]
+
+    def test_static_protocol_and_chronology_are_not_live_state(self):
+        for line in (
+            "## Scene State Protocol",
+            "- **Scene state**: every beat closes with a SCENE_STATE_DELTA.",
+            "- **Current state:** read from the session, never from here.",
+            "- **Live state** comes from the session header.",
+            "- **Witness arc**: CLOSED; Beat 3217 closed it.",
+            "The cycle resumes at Day 1 after each reset.",
+            "~~~\n## Timeline State\n~~~",
+            "One line ```Timeline State``` of code.",
+        ):
+            with self.subTest(line=line):
+                _p, report = self.report_for(line)
+                self.assertEqual(self.live_lines(report), [])
+
+    def test_more_live_state_shapes_are_flagged(self):
+        for line in (
+            "- Run state: Day 60, Beat 342.",
+            "## Current State",
+            "## Live State",
+            "## 3. Timeline State",
+            "- **Run state (Day 60)** `[KEEPER-LOCKED]`: his own frame.",
+            "- **Live clocks** (session-local): treads 23-29.",
+            "Play is now at D195, B4099 closed; resumes B4100.",
+        ):
+            with self.subTest(line=line):
+                p, report = self.report_for(line)
+                first = line.splitlines()[0]
+                self.assertIn(line_of(p.root / "Memory/invariants.md", first), self.live_lines(report))
+
+    def test_an_unclosed_fence_does_not_hide_the_rest(self):
+        static = STATIC_INVARIANTS.format(extracted="2026-10-25").split("```yaml")[0]  # no later fence to close it
+        body = static.replace("## Tone Anchors\n", "## Tone Anchors\n\n```\nan example that never closes\n\n## Timeline State\n")
+        p, report = self.report_for("", body=body)
+        self.assertIn(line_of(p.root / "Memory/invariants.md", "## Timeline State"), self.live_lines(report))
+
+    def test_a_locked_name_path_ending_in_a_live_section_is_flagged(self):
+        body = STATIC_INVARIANTS.format(extracted="2026-10-25").replace(
+            '  - "Character Registers', '  - "World and Timeline Facts → Timeline State"\n  - "Character Registers')
+        _p, report = self.report_for("", body=body)
+        self.assertTrue(self.live_lines(report))
+
+    def test_hits_inside_locked_content_are_marked_locked(self):
+        body = STATIC_INVARIANTS.format(extracted="2026-10-25") + (
+            "\n## Timeline State `[KEEPER-LOCKED]`\n\n### Active\n\n- **Current vessel (session-local)**: Alder, Day 60.\n"
+            "\n## Protocol Requirements\n\n- **Live clocks**: treads 23-29.\n"
+            "- **Run state (Day 60)** `[KEEPER-LOCKED]`: his own frame.\n")
+        p, report = self.report_for("", body=body)
+        path = p.root / "Memory/invariants.md"
+        hits = {h["line"]: h["locked"] for w in report["warnings"] if w["kind"] == "live_state" for h in w["hits"]}
+        self.assertTrue(hits[line_of(path, "## Timeline State `[KEEPER-LOCKED]`")])
+        self.assertTrue(hits[line_of(path, "- **Current vessel (session-local)**: Alder, Day 60.")])
+        self.assertFalse(hits[line_of(path, "- **Live clocks**: treads 23-29.")])
+        self.assertTrue(hits[line_of(path, "- **Run state (Day 60)** `[KEEPER-LOCKED]`: his own frame.")])
+        live = next(w for w in report["warnings"] if w["kind"] == "live_state")
+        self.assertTrue(live["locked"])
+
+    def test_a_locked_frontmatter_name_is_a_locked_hit(self):
+        body = STATIC_INVARIANTS.format(extracted="2026-10-25").replace(
+            '  - "Character Registers', '  - "Timeline State"\n  - "Character Registers')
+        _p, report = self.report_for("", body=body)
+        live = next(w for w in report["warnings"] if w["kind"] == "live_state")
+        self.assertTrue(all(h["locked"] for h in live["hits"]))
+
+    def test_a_later_session_start_or_pause_alone_is_not_newer_state(self):
+        # Static canon goes stale when the run's state moves on, not when a session opens.
+        p = LiveStateProject(self)
+        p.live_session("rp_session_2026-10-24.md")
+        p.run_state(body=RUN_STATE_FILE.replace("closed 2026-10-24", "closed 2026-10-20").replace(
+            "due again 2026-12-01", "noted"))
+        p.invariants(STATIC_INVARIANTS.format(extracted="2026-10-21"))
+        state = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
+        self.assertEqual((state["state_date"], state["state_date_source"]), ("2026-10-20", "run_state"))
+        self.assertEqual(rp_gate.invariants_report(p.root, state)["warnings"], [])
+
+    def test_a_datetime_counts_as_its_date(self):
+        p = LiveStateProject(self)
+        p.live_session()
+        p.run_state(body=RUN_STATE_FILE.replace("closed 2026-10-24 with", "closed 2026-10-24T10:00 with"))
+        state = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
+        dates = state["run_state"]["current"]["dates"]
+        self.assertIn("2026-10-24", dates)
+        self.assertNotIn("2026-10-17", dates)  # a log's file name is not a state date
+
+    def test_header_pointer_skips_other_kinds_of_state(self):
+        p = LiveStateProject(self)
+        header = ("\n# RP Session\n\nScene state: `Work/rp/scenes/yard.md` (map). "
+                  "State: `Work/rp/alder/alder.md` § Run state.\n")
+        p.live_session(header=header)
+        p.run_state()
+        rs = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")["run_state"]
+        self.assertEqual(rs["path"], "Work/rp/alder/alder.md")
+
+    def test_a_pointer_at_the_invariants_is_refused(self):
+        p = LiveStateProject(self)
+        p.live_session(extra='run_state: "Memory/invariants.md#Timeline State"\n')
+        p.invariants(STATIC_INVARIANTS.format(extracted="2026-10-25") + "\n## Timeline State\n\nDay 60.\n")
+        got = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
+        self.assertIsNone(got["run_state"])
+        self.assertTrue(any("invariants" in w for w in got["warnings"]))
+
+    def test_section_prefers_the_exact_heading(self):
+        p = LiveStateProject(self)
+        p.live_session()
+        target = p.run_state(body="# Alder\n\n## Run state history\n\nOld.\n\n## Run state\n\n**Closed: Day 9.**\n")
+        rs = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")["run_state"]
+        self.assertEqual(rs["heading_line"], line_of(target, "## Run state"))
+
+    def test_abbreviated_beat_headings_end_the_header(self):
+        p = LiveStateProject(self)
+        session = p.live_session(plan="\n### B4100 — Day 195, ~15:00\n\nProse.\n")
+        header = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")["header"]
+        self.assertEqual(header["end"], line_of(session, "### B4100 — Day 195, ~15:00") - 1)
+
+    def test_empty_header_and_empty_current_entry_are_null(self):
+        p = LiveStateProject(self)
+        p.live_session(extra='run_state: "Work/rp/alder/alder.md"\n', header="", plan="## Day Plan: Day 195\n")
+        p.run_state(body="# Alder\n\n## Run state\n\n### Workings\n\n- smooth skin\n")
+        got = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
+        self.assertIsNone(got["header"])
+        self.assertIsNone(got["run_state"]["current"])
+        self.assertIsNotNone(got["frontmatter"])
+
+
+class LiveStateContractTests(unittest.TestCase):
+    """The commands and agents read live state from the session, never from the invariants."""
+
+    def read(self, rel):
+        return (REPO / rel).read_text(encoding="utf-8")
+
+    def test_extract_invariants_writes_static_canon_only(self):
+        text = self.read("plugins/rp/commands/extract-invariants.md")
+        self.assertIn("static canon", text.lower())
+        step3 = text.split("### Step 3", 1)[1].split("\n### ", 1)[0]
+        sections = re.findall(r"(?m)^- \*\*(.+?)\*\*", step3)
+        self.assertTrue(sections)
+        for section in sections:
+            self.assertNotRegex(section.lower(), r"timeline state|run state|live|current")
+        self.assertIn("Timeline State", step3)  # named as excluded
+        self.assertIn('rp_gate.py" invariants', text)
+        self.assertIn("byte-for-byte", text)  # static locked sections are still kept verbatim
+        self.assertIn("Bash", text.split("---", 2)[1])  # the verification step runs the tool
+        # Locked live state halts before anything is written, by the tool, not by judgement,
+        # and the after-write check never edits locked text.
+        step2 = text.split("### Step 2", 1)[1].split("\n### ", 1)[0]
+        self.assertIn('rp_gate.py" invariants', step2)
+        self.assertIn("locked: true", step2)
+        step5 = text.split("### Step 5", 1)[1].split("\n### ", 1)[0]
+        self.assertRegex(step5, r"(?i)never edit locked")
+
+    def test_turn_passes_live_state_to_the_gm_and_the_reviewer(self):
+        text = self.read("plugins/rp/commands/turn.md")
+        gm = text.split('subagent_type: "roleplay-gm"', 1)[1].split("Receive DRAFT", 1)[0]
+        reviewer = text.split('subagent_type: "continuity-reviewer"', 1)[1].split("Receive VERDICT", 1)[0]
+        self.assertIn("LIVE_STATE:", gm)
+        self.assertIn("LIVE_STATE:", reviewer)
+        self.assertIn("live_state", text)
+        self.assertIn("invariants.warnings", text)
+        self.assertIn("`header` is null", text)  # the ranges may be absent
+        self.assertIn("`current` is null", text)
+
+    def test_the_canon_register_has_a_run_state_slot(self):
+        self.assertIn("| `run_state` |", self.read("plugins/rp/templates/canon-layout.md"))
+
+    def test_reviewer_reads_current_state_from_live_state(self):
+        text = self.read("plugins/write/agents/continuity-reviewer.md")
+        self.assertIn("LIVE_STATE:", text)
+        self.assertRegex(text, r"(?s)LIVE_STATE.{0,400}never from (?:the )?(?:INVARIANTS_FILE|invariants)")
+
+    def test_gm_reads_current_state_from_live_state(self):
+        self.assertIn("LIVE_STATE", self.read("plugins/rp/agents/roleplay-gm.md"))
+
+    def test_start_records_the_run_state_in_the_frontmatter(self):
+        self.assertIn("run_state:", self.read("plugins/rp/commands/start.md"))
+
+    def test_ratifier_keeps_run_state_out_of_the_invariants(self):
+        self.assertRegex(self.read("plugins/rp/agents/rp-ratifier.md"), r"(?i)static canon only")
 
 
 if __name__ == "__main__":

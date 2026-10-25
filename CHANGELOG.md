@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased — RP live state leaves the invariants (rp 0.4.0, write 1.12.0)
+
+- `Memory/invariants.md` now holds static canon only. `/rp:extract-invariants`
+  writes no Timeline State, run state, clocks or positions; keeps locked static
+  sections verbatim as before; stops before writing when the tool finds live
+  state inside KEEPER-LOCKED content (the Keeper retires it), and never edits
+  locked text; and checks its own output with `rp_gate.py invariants --strict`.
+- The GM and the continuity reviewer read current state from a `LIVE_STATE`
+  block: line ranges in the session file's frontmatter and header and in the
+  run's state file. `rp_gate.py session` resolves them through the session (the
+  marker, then the session's `run_state:` frontmatter or its header's
+  ``State: `<path>` § <section>`` line), with no model call and no campaign
+  names. `/rp:start` writes `run_state:`.
+- `rp_gate.py session` and `check` warn when the invariants carry live state
+  or `last_extraction` predates the run's state; the lint line records
+  `invariants_warnings`. The new `invariants` subcommand reports both.
+
 ## Unreleased — a lighter per-beat RP continuity gate (rp 0.4.0, write 1.12.0)
 
 - `/rp:turn` now lints every draft with `plugins/rp/tools/rp_gate.py`, a

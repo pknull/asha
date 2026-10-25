@@ -82,7 +82,8 @@ Path conventions, matching the `write` plugin's posture (plugin content addresse
 | `Work/rp/_validator_log.jsonl` | one line per gate step: `lint`, `skipped`, `review`, `adjudicate`, `turn` |
 | `.claude/modes/rp.yaml` | optional `turnGate` block (below) |
 | `Work/rp/{summaries,characters,pending-canon}/` | derived session artifacts |
-| `Memory/invariants.md` | the compiled invariants projection the per-turn gate reads |
+| `Memory/invariants.md` | the compiled invariants projection the per-turn gate reads: static canon only |
+| *(the run's state file)* | named by the session's `run_state:` frontmatter (or a ``State: `<path>` § <section>`` header line); with the session's frontmatter and header, the source of current state |
 | `Memory/canon-layout.md` | **the canon register** — maps entity kind → project path. Copy from `templates/canon-layout.md` |
 | *(paths named in the register)* | authored canon — the source of truth the projection is compiled *from* |
 
@@ -106,9 +107,37 @@ disabled with `Work/markers/rp-priced-stakes-off` (the historical
 
 | Subcommand | Use |
 |---|---|
-| `session` | prints the live session file (the marker's `session_file:`, else the newest open `Work/rp/rp_session_*.md` with a warning; `/rp:end` marks a session `status: closed`, which the fallback skips) and the gate settings |
+| `session` | prints the live session file (the marker's `session_file:`, else the newest open `Work/rp/rp_session_*.md` with a warning; `/rp:end` marks a session `status: closed`, which the fallback skips), the gate settings, where current state is (`live_state`) and any invariants warning |
 | `check` | lints one GM turn and routes it (ship, fix or review; a rewrite is always reviewed); appends `lint` (and `skipped`) lines |
 | `log` | appends a `review`, `adjudicate` or `turn` line |
+| `invariants` | reports live state in `Memory/invariants.md` and its age against the run's state; `--strict` exits 1 on live state (the `/rp:extract-invariants` check) |
+
+**Current state never comes from the invariants.** `session` reports it as line
+ranges for the GM and the reviewer to read: the session file's frontmatter and
+header (up to the first Day Plan or beat heading, at most 250 lines), and the
+run's state file the session names, with the first entry of its section as the
+current one. The pointer is the frontmatter `run_state: "<path>#<section>"`
+(`/rp:start` copies it from the canon register's `run_state` row), else a
+``State: `<path>` § <section>`` or ``Run state: `<path>` `` line in the header;
+the section defaults to `Run state`. A path outside the project, or the
+invariants themselves, is not read. The run's state is dated by the newest date
+in that current entry (dates after today are ignored); the session's start date
+stands in only when no such date resolves, since opening a session changes no
+canon.
+
+`session` and `check` warn, and the lint line records, when the invariants
+carry live state (`live_state`) or when `last_extraction` predates the run's
+state (`stale`). Live state is a Timeline State, Run state, Live state, Current
+state, Live clocks, Current vessel or Resume point heading (numbering ignored);
+a bold or plain label opening a line with one of those names except Live state
+and Current state ("**Run state (Day 60)**:", "- Live clocks:"); a locked name
+ending in one; or a snapshot phrase ("now at Day 60", "now at D195", "resumes
+Beat 343", "resumes B4100"). Protocol words such as "Scene state" are not live
+state, and closed code fences are skipped. Each hit says whether it sits in
+KEEPER-LOCKED content (`locked`), which `/rp:extract-invariants` never edits.
+The checks are text patterns, not judgement: a rule's worked example that
+embeds a current value ("90 vs 59 = 81%"), or a snapshot in a table row, is not
+caught. Reading the invariants and the run state adds 1–3 ms to a `check`.
 
 The lint checks what is mechanical: exactly one closing anchor; SCENE_STATE_DELTA
 keys are schema keys (no root mirrors), and its participants and time agree
@@ -164,6 +193,8 @@ the adjudicator run on the same model.
 ## Design note — projection vs source
 
 `Memory/invariants.md` is a **generated projection**, not a bible: it is compiled for read-speed at turn time and is therefore lossy by construction. A claim that falls outside it is invisible to the gate rather than wrong. Treat it as a cache over authored canon — never as the only authority consulted.
+
+It holds static canon only. A snapshot of play in it goes stale within a beat and grades every later draft against the wrong world (one projection still described Day 60 at Day 195), so current state is read from the session and the run's state file at every turn instead.
 
 ## Installation
 

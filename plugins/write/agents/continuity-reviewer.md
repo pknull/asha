@@ -1,6 +1,6 @@
 ---
 name: continuity-reviewer
-description: Unified continuity reviewer (dual-mode). MODE=live_roleplay = per-turn RP gate (validates a GM draft vs Memory/invariants.md; 12 categories plus the delta check, incl. pc_authored and presence; YAML verdict consumed by /rp:turn, which also uses it to adjudicate a cheaper pass's violations). MODE=novel_draft = offline manuscript continuity review (timeline/spatial/knowledge/objects/character-traits/worldbuilding-rules vs state files; markdown report; also runs as a proactive pre-writing gate before new content). Single source of truth for continuity across the storytelling towers.
+description: Unified continuity reviewer (dual-mode). MODE=live_roleplay = per-turn RP gate (validates a GM draft vs Memory/invariants.md, static canon, and the live session state; 12 categories plus the delta check, incl. pc_authored and presence; YAML verdict consumed by /rp:turn, which also uses it to adjudicate a cheaper pass's violations). MODE=novel_draft = offline manuscript continuity review (timeline/spatial/knowledge/objects/character-traits/worldbuilding-rules vs state files; markdown report; also runs as a proactive pre-writing gate before new content). Single source of truth for continuity across the storytelling towers.
 tools: Read, Grep, Glob
 model: sonnet
 ---
@@ -11,7 +11,8 @@ One reviewer, two modes — the single source of truth for continuity/validation
 storytelling towers (convergence Phase 3c). Pick the mode from the `MODE` input:
 
 - **`MODE: live_roleplay`** — the per-turn RP gate. Spawned by `/rp:turn` when its lint flags a beat or the beat is consequential (or on `[validate]`);
-  validates against `Memory/invariants.md`; returns the YAML verdict the command parses. Full
+  validates against `Memory/invariants.md` (static canon) and the live state the session names;
+  returns the YAML verdict the command parses. Full
   spec in the live_roleplay section below (preserved verbatim from the original rp-validator).
 - **`MODE: novel_draft`** — offline manuscript continuity review. Checks a manuscript section
   against the project's `state/` + `timeline/` + worldbuilding canon; returns a markdown report.
@@ -74,6 +75,10 @@ SCENE_STATE:
   observable: "<what is sensible>"
   recent_installations: ["<register-stack items recently installed that should still be active>"]
 
+LIVE_STATE: |  # where current state is (rp_gate.py session); read these line ranges
+  session: Work/rp/rp_session_YYYY-MM-DD.md lines 1-80        # frontmatter and header
+  run_state: <the run's state file> lines 56-56 (the section: lines 54-194)  # its current entry; optional
+
 ATTEMPT_NUMBER: 1 | 2 | 3 | 4
 REWRITES_LEFT: 0 | 1 | 2 | 3  # rewrites the command may still spend on this beat
 PRIOR_VIOLATIONS: |  # Only present when ATTEMPT_NUMBER > 1
@@ -115,13 +120,15 @@ ADJUDICATE: |  # Optional — present only on the adjudication pass
 
 **ADJUDICATE** makes you the adjudicator. A cheaper routine pass reported the listed violations, and a rewrite costs a full GM turn. Re-read the draft against the cited invariant for each one and decide `confirmed` or `overturned` with a one-line reason. Add a new violation only if it is hard. Your `verdict` and `violations` then list only the confirmed and added violations, and you return the `adjudication` block (Output Format).
 
+**Current state comes from LIVE_STATE, never from INVARIANTS_FILE.** The invariants hold static canon: tone, character registers, rules and settled world facts. Who is alive, present or where, the day and beat, stats, workings, clocks and standing facts come from LIVE_STATE and SCENE_STATE; read the LIVE_STATE ranges, and search the run state's wider section only for a specific fact. Where the invariants describe a character, place or custom that the live state has moved past (a death, a departure, a custom no longer kept), the live state governs this run, and a draft that follows it is not a violation. If the invariants still carry a snapshot of state (a Timeline State or Run state section, a dated "now at Day N"), ignore the snapshot. Absent LIVE_STATE, take current state from SESSION_FILE's frontmatter and header.
+
 **The delta is part of the reviewed surface.** On a clean verdict the calling command applies SCENE_STATE_DELTA to the session file's frontmatter — so a delta the prose does not support commits unreviewed state. Check category `scene_state_mismatch`: every delta entry must be evidenced by the draft's prose (a `scene.location` change requires the prose to actually move the scene; a participant removal requires a departure on the page), and any state change the prose DOES enact must appear in the delta (a departure in prose with no participants change goes stale silently). Either direction is a violation.
 
 ---
 
 ## Validation Categories
 
-For each category, evaluate the DRAFT against INVARIANTS_FILE and SCENE_STATE. Flag violations with category, location (the offending passage or absence), invariant reference, severity (hard/soft), and suggested_fix.
+For each category, evaluate the DRAFT against INVARIANTS_FILE (static canon) and against LIVE_STATE and SCENE_STATE (current state). Flag violations with category, location (the offending passage or absence), invariant reference, severity (hard/soft), and suggested_fix.
 
 ### 1. softened_stakes
 
@@ -281,7 +288,7 @@ A character can act only where they are.
 
 - A named character who speaks, acts or proposes something in the draft while not in `SCENE_STATE.present` at the start of the beat, and who neither arrives on the page nor sends word
 - A character who left in an earlier beat acting as if still in the room
-- A dead, absent or off-scene character's line rendered as live speech rather than as a memory, a written message or something carried by someone present
+- A dead, absent or off-scene character's line rendered as live speech rather than as a memory, a written message or something carried by someone present (LIVE_STATE says who is dead or gone)
 - The closing anchor's `Present:` list naming someone the page never brought in, or omitting someone who is still there and acting
 
 **Not a violation:** an arrival shown on the page (in through the door, up from the cellar, at the gate); word sent by a carrier (a note, a runner, "Liss sends word"); someone present relaying another's message; a mention or memory of someone absent; a name inside dialogue.
@@ -368,7 +375,7 @@ On an adjudication pass the rules apply to the confirmed and added violations on
 
 ### Step 1: Read invariants
 
-Always read `Memory/invariants.md` first. If it doesn't exist, return:
+Always read `Memory/invariants.md` first, then the LIVE_STATE ranges. If the invariants file doesn't exist, return:
 
 ```yaml
 verdict: hard_fail
