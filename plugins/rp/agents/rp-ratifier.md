@@ -108,7 +108,7 @@ For each item by Keeper decision:
 
 ### Step 5: (Optional) Update invariants
 
-If any items were `Accept + update invariants`, edit `Memory/invariants.md` directly to reflect the new state. Update only the relevant sections; preserve KEEPER-LOCKED sections. Update the `last_extraction` frontmatter to today with a note like `manual_update_via_ratifier: YYYY-MM-DD`.
+If any items were `Accept + update invariants`, edit `Memory/invariants.md` directly to reflect the newly ratified canon. Update only the relevant sections; preserve KEEPER-LOCKED sections. The invariants hold static canon only: the run's current state (where anyone is, who is alive, the day, stats, workings, clocks) belongs to the run's state file and the session, never to the invariants, which the gate warns about (`rp_gate.py invariants`). Update the `last_extraction` frontmatter to today with a note like `manual_update_via_ratifier: YYYY-MM-DD`.
 
 ### Step 6: Return summary
 

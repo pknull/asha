@@ -4,14 +4,19 @@
 Standard library only and no model calls. /rp:turn runs `check` on every
 draft; it decides whether a model reviewer is worth spending on the beat.
 
-  session  print the live session file (marker first, never the clock)
-  check    lint one GM turn, route it, append the lint (and skipped) lines
-  log      append one review, adjudicate or turn line to the validator log
+  session     print the live session file (marker first, never the clock), where
+              its live state is, and any invariants warning
+  check       lint one GM turn, route it, append the lint (and skipped) lines
+  log         append one review, adjudicate or turn line to the validator log
+  invariants  report live state in Memory/invariants.md and its staleness
 
 The lint checks only what can be checked mechanically: the closing
 Scene/Location/Present anchor, named actors against the scene's people, and
 SCENE_STATE_DELTA keys and their agreement with the anchor. Everything that
 needs judgement belongs to the continuity reviewer.
+
+Current state is never read from the invariants: it lives in the session's
+frontmatter and header and in the run's state file, which the session names.
 """
 from __future__ import annotations
 
@@ -19,6 +24,7 @@ import argparse
 import copy
 import datetime
 import glob
+import itertools
 import json
 import os
 import re
@@ -32,6 +38,7 @@ MARKER = "Work/markers/rp-active"
 VALIDATOR_LOG = "Work/rp/_validator_log.jsonl"
 MODE_FILE = ".claude/modes/rp.yaml"
 CANON_LAYOUT = "Memory/canon-layout.md"
+INVARIANTS = "Memory/invariants.md"
 DEFAULT_CHARACTER_GLOB = "Lore/World/Characters/*.md"
 PRICED_RULE = Path(__file__).resolve().parents[1] / "hooks/priced-stakes/rule.json"
 
@@ -297,6 +304,315 @@ def resolve_session_file(project, today: str | None = None) -> dict:
             }
     rel = f"{SESSION_DIR}/rp_session_{today}.md"
     return {"path": rel, "source": "new", "warning": warning + f"No session file exists yet; a new one would be {rel}."}
+
+
+# -------------------------------------------------------------- live state
+# The run's current state lives in the session's frontmatter and header and in
+# the run's state file, which the session names (frontmatter run_state:, else a
+# "State: `path` § Section" line in the header). The gate reports line ranges;
+# the GM and the reviewer read them. Nothing here reads the invariants.
+
+RUN_STATE_SECTION = "Run state"
+HEADER_MAX_LINES = 250
+HEADER_END_RE = re.compile(r"^#{1,6}\s+(?:(?i:day plan\b|beat\s+\d+\b)|B\d+\b)")  # "### B4100 — Day 195"
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
+# "State: `path` § Section" or "Run state: `path`", never "Scene state: `map.md`".
+STATE_POINTER_RE = re.compile(
+    r"(?i)(?<![\w`])(?:\*\*)?(?:(\w+)\s+)?state(?:\*\*)?\s*:\s*(?:\*\*)?\s*`([^`\n]+?\.md)`(?:\s*§\s*([^()\n.;`]+))?"
+)
+DATE_RE = re.compile(r"(?<![\w-])(\d{4}-\d{2}-\d{2})(?!\d)")  # 2026-10-24T10:00 too; not rp_session_2026-10-17
+DAY_RE = re.compile(r"\bDay\s+(\d+)\b")
+BEAT_RE = re.compile(r"\bBeat\s+(\d+)\b")
+SESSION_DATE_RE = re.compile(r"rp_session_(\d{4}-\d{2}-\d{2})")
+
+
+def _heading_text(text: str) -> str:
+    text = re.sub(r"(?i)\[KEEPER-LOCKED\]", " ", text)
+    text = re.sub(r"[`*_~⚑]", " ", text)
+    text = re.sub(r"^\s*\d+(?:\.\d+)*[.)]?\s+", "", text)  # "3. Timeline State"
+    return " ".join(text.split()).strip(" .:-—–").lower()
+
+
+def _iso(value) -> str | None:
+    text = str(value or "").strip()
+    try:
+        return datetime.date.fromisoformat(text).isoformat() if DATE_RE.fullmatch(text) else None
+    except ValueError:
+        return None
+
+
+def _fenced(lines: list[str]) -> set[int]:
+    """Indices of lines inside closed code fences. An unclosed fence hides nothing."""
+    inside, i = set(), 0
+    while i < len(lines):
+        m = FENCE_RE.match(lines[i])
+        if m and m.group(1)[0] not in m.group(2):  # ```yaml opens; ```inline``` does not
+            closing = re.compile(r"^\s{0,3}%s{%d,}\s*$" % (re.escape(m.group(1)[0]), len(m.group(1))))
+            close = next((j for j in range(i + 1, len(lines)) if closing.match(lines[j])), None)
+            if close is not None:
+                inside.update(range(i, close + 1))
+                i = close + 1
+                continue
+        i += 1
+    return inside
+
+
+def _session_layout(path: Path) -> dict:
+    """Line ranges of the frontmatter and the header (up to the Day Plan or first beat)."""
+    layout = {"frontmatter": None, "header": None, "text": []}
+    try:
+        fh = open(path, encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return layout
+    with fh:
+        numbered = enumerate(fh, 1)
+        first = next(numbered, None)
+        if first is None:
+            return layout
+        pending = [first]
+        if first[1].strip() == "---":
+            pending = []
+            for n, line in numbered:
+                if line.strip() == "---":
+                    layout["frontmatter"] = {"start": 1, "end": n}
+                    break
+                if n > 2000:
+                    return layout
+            else:
+                return layout
+        start = layout["frontmatter"]["end"] + 1 if layout["frontmatter"] else 1
+        end, ended_by, truncated = start - 1, "eof", False
+        for n, line in itertools.chain(pending, numbered):  # lazily: a log runs to megabytes
+            if HEADER_END_RE.match(line):
+                ended_by = line.strip()[:80]
+                break
+            if n - start + 1 > HEADER_MAX_LINES:
+                truncated = True
+                break
+            end = n
+            layout["text"].append(line.rstrip("\n"))
+    if end >= start:
+        layout["header"] = {"start": start, "end": end, "ended_by": ended_by, "truncated": truncated}
+    return layout
+
+
+def _state_pointer(data: dict, header: list[str]):
+    """(pointer, warning): where the session says the run's state file is."""
+    value = data.get("run_state")
+    if value is not None and not isinstance(value, str):
+        return None, "run_state in the session frontmatter must be one quoted \"<path>#<section>\" string."
+    if isinstance(value, str) and value.strip():
+        m = re.match(r"\s*(.+?\.md)\s*(?:[#§]\s*(.*?))?\s*$", value)
+        if not m:
+            return None, f"run_state {value!r} names no .md file."
+        return {"raw": m.group(1), "section": (m.group(2) or "").strip() or RUN_STATE_SECTION,
+                "source": "frontmatter"}, None
+    for m in STATE_POINTER_RE.finditer("\n".join(header)):
+        if m.group(1) is None or m.group(1).lower() == "run":
+            return {"raw": m.group(2), "section": (m.group(3) or "").strip() or RUN_STATE_SECTION,
+                    "source": "header"}, None
+    return None, ("The session names no run state file: add run_state: \"<path>#<section>\" to its "
+                  "frontmatter (/rp:start writes it). Current state comes from the session alone.")
+
+
+def _inside_project(project: Path, raw: str):
+    """The file a pointer names, if it stays inside the project (lexically) and is markdown."""
+    root = os.path.abspath(project)
+    path = os.path.abspath(os.path.join(root, raw))
+    if not path.endswith(".md") or path == root or os.path.commonpath([root, path]) != root:
+        return None
+    return Path(path)
+
+
+def _section(path: Path, name: str):
+    """A heading's line range and its first entry (the current one by convention)."""
+    try:
+        lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    except OSError:
+        return None
+    fenced = _fenced(lines)
+    headings = [(i, len(m.group(1)), _heading_text(m.group(2))) for i, m in
+                ((i, HEADING_RE.match(line)) for i, line in enumerate(lines) if i not in fenced) if m]
+    want = _heading_text(name)
+    exact = re.compile(r"%s(?:\s*[(\[—–:-]|$)" % re.escape(want))  # "Run state (one page)", not "... history"
+    loose = re.compile(r"%s(?!\w)" % re.escape(want))
+    chosen = next((h for h in headings if exact.match(h[2])), None) or next(
+        (h for h in headings if loose.match(h[2])), None)
+    if chosen is None:
+        return None
+    start, level = chosen[0], chosen[1]
+    end = next((i for i, lvl, _ in headings if i > start and lvl <= level), len(lines))
+    j = start + 1
+    while j < end and not lines[j].strip():
+        j += 1
+    k = j
+    while k < end and lines[k].strip() and lines[k].strip() != "---" and not HEADING_RE.match(lines[k]):
+        k += 1
+    current = None
+    if k > j:
+        text = " ".join(lines[j:k])
+        day, beat = DAY_RE.search(text), BEAT_RE.search(text)
+        current = {
+            "start": j + 1,
+            "end": k,
+            "day": int(day.group(1)) if day else None,
+            "time": _norm_time(text),
+            "beat": int(beat.group(1)) if beat else None,
+            "dates": sorted({d for d in DATE_RE.findall(text) if _iso(d)}),
+        }
+    return {"heading_line": start + 1, "end_line": end, "current": current}
+
+
+def live_state(project, session_file, today: str | None = None) -> dict:
+    """Where the run's current state is: line ranges, the run state's current entry, its date."""
+    project = Path(project)
+    today = today or datetime.date.today().isoformat()
+    path = Path(session_file)
+    path = path if path.is_absolute() else project / path
+    layout = _session_layout(path)
+    data = read_frontmatter(path)
+    scene = data.get("scene") if isinstance(data.get("scene"), dict) else {}
+    warnings, run_state = [], None
+    pointer, warning = _state_pointer(data, layout["text"])
+    if warning:
+        warnings.append(warning)
+    if pointer:
+        target = _inside_project(project, pointer["raw"])
+        if target is None:
+            warnings.append(f"run state {pointer['raw']} is outside the project or not a .md file; not read.")
+        elif target == _inside_project(project, INVARIANTS):
+            warnings.append(f"run state {pointer['raw']} names the invariants; current state is never read "
+                            "from them.")
+        elif not target.is_file():
+            warnings.append(f"run state {pointer['raw']} does not exist.")
+        else:
+            section = _section(target, pointer["section"])
+            if section is None:
+                warnings.append(f"{_relative(project, target)} has no '{pointer['section']}' section.")
+            else:
+                run_state = {"path": _relative(project, target), "section": pointer["section"],
+                             "source": pointer["source"], **section}
+    day = DAY_RE.search(str(data.get("currentDate") or ""))
+    # The run's state is dated by its current entry. A session opening on a later
+    # day changes nothing static, so its start date stands in only without one.
+    dates = [d for d in (run_state["current"]["dates"] if run_state and run_state["current"] else []) if d <= today]
+    started = SESSION_DATE_RE.search(path.name)
+    if dates:
+        state_date, source = max(dates), "run_state"
+    elif started and _iso(started.group(1)) and started.group(1) <= today:
+        state_date, source = started.group(1), "session"
+    else:
+        state_date, source = None, None
+    return {
+        "session_file": str(session_file),
+        "frontmatter": layout["frontmatter"],
+        "header": layout["header"],
+        "as_of": {"day": int(day.group(1)) if day else None,
+                  "time": _norm_time(scene.get("time", data.get("currentTime")))},
+        "run_state": run_state,
+        "state_date": state_date,
+        "state_date_source": source,
+        "warnings": warnings,
+    }
+
+
+# A snapshot of state in the invariants: a section of that name, a bold label
+# opening a line ("**Run state (Day 60)**:"), or a phrase only a snapshot uses.
+# Protocol words ("Scene state", "Current state: read the session") are not.
+HEADING_NAMES = ("timeline state", "run state", "live state", "current state", "live clocks",
+                 "current vessel", "resume point")
+LABEL_NAMES = ("timeline state", "run state", "live clocks", "current vessel", "resume point")
+HEADING_NAME_RE = re.compile(r"(?:%s)(?!\w)" % "|".join(HEADING_NAMES))
+LIVE_LABEL_RE = re.compile(
+    r"(?i)^\s*(?:[-*+]\s+|>\s*)?(?:"
+    r"\*\*\s*(?:{0})\s*(?:\([^)\n]*\))?\s*(?::\s*\*\*|\*\*\s*(?:\([^)\n]*\)|`[^`\n]*`)?\s*:)"
+    r"|(?:{0})\s*(?:\([^)\n]*\))?\s*:)".format("|".join(LABEL_NAMES))
+)
+SNAPSHOT_RE = re.compile(
+    r"(?i:\bnow\s+at\s+day\s+\d+|\bresumes\s+(?:at\s+)?beat\s+\d+)"
+    r"|(?i:\bnow\s+at)\s+D\d+\b|(?i:\bresumes\s+(?:at\s+)?)B\d+\b"  # the logs' D195, B4100
+)
+
+
+def _live_locked_name(name: str) -> bool:
+    return any(HEADING_NAME_RE.match(_heading_text(part)) for part in re.split(r"→|->|>", name))
+
+
+def invariants_report(project, state: dict | None) -> dict | None:
+    """Live state in Memory/invariants.md, and whether it predates the run's state.
+
+    Each hit says whether it sits in KEEPER-LOCKED content: a section whose heading
+    carries the marker or is named in keeper_locked_sections, a line carrying the
+    marker, or the frontmatter list itself. Locked content is the Keeper's to retire.
+    """
+    path = Path(project) / INVARIANTS
+    try:
+        lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    except OSError:
+        return None
+    body = 0
+    if lines and lines[0].strip() == "---":
+        body = next((i + 1 for i in range(1, min(len(lines), 2000)) if lines[i].strip() == "---"), 0)
+    data = parse_yaml("\n".join(lines[1:body - 1])) if body else None
+    data = data if isinstance(data, dict) else {}
+    hits = []
+    names = [n for n in data.get("keeper_locked_sections") or [] if isinstance(n, str)] \
+        if isinstance(data.get("keeper_locked_sections"), list) else []
+    listed = {_heading_text(re.split(r"→|->|>", n)[-1]) for n in names}
+    for name in names:
+        if _live_locked_name(name):
+            n = next((i + 1 for i in range(body) if name in lines[i]), 1)
+            hits.append({"line": n, "kind": "locked", "locked": True, "text": name[:100]})
+    fenced = _fenced(lines)
+    locked_level = None
+    for n, line in enumerate(lines[body:], body + 1):
+        if n - 1 in fenced:
+            continue
+        heading = HEADING_RE.match(line)
+        marked = "[keeper-locked]" in line.lower()
+        if heading:
+            level, name = len(heading.group(1)), _heading_text(heading.group(2))
+            if locked_level is not None and level <= locked_level:
+                locked_level = None
+            if locked_level is None and (marked or name in listed):
+                locked_level = level
+            kind = "heading" if HEADING_NAME_RE.match(name) else None
+        else:
+            kind = "label" if LIVE_LABEL_RE.match(line) else "snapshot" if SNAPSHOT_RE.search(line) else None
+        if kind:
+            hits.append({"line": n, "kind": kind, "locked": locked_level is not None or marked,
+                         "text": line.strip()[:100]})
+    state = state or {}
+    state_date, source = state.get("state_date"), state.get("state_date_source")
+    warnings = []
+    if hits:
+        where = ", ".join(str(h["line"]) for h in hits[:8]) + (", ..." if len(hits) > 8 else "")
+        day = (state.get("as_of") or {}).get("day")
+        locked = any(h["locked"] for h in hits)
+        warnings.append({
+            "kind": "live_state",
+            "detail": f"{INVARIANTS} carries live state (lines {where})"
+                      + (f"; the run is at Day {day}" if day else "")
+                      + ". The gate reads current state from the session and the run's state file; "
+                        "re-run /rp:extract-invariants, which writes static canon only."
+                      + (" Some of it is KEEPER-LOCKED: the Keeper retires it first." if locked else ""),
+            "locked": locked,
+            "lines": [h["line"] for h in hits],
+            "hits": hits,
+        })
+    extracted = _iso(data.get("last_extraction"))
+    if not extracted:
+        warnings.append({"kind": "no_extraction_date",
+                         "detail": f"{INVARIANTS} has no last_extraction date; its age against the run's "
+                                   "state is unknown."})
+    elif state_date and extracted < state_date:
+        warnings.append({"kind": "stale",
+                         "detail": f"{INVARIANTS} was extracted {extracted}, which predates the run's state of "
+                                   f"{state_date} (from the {(source or 'session').replace('_', ' ')}); canon "
+                                   "ratified since then is missing. Re-run /rp:extract-invariants."})
+    return {"path": INVARIANTS, "last_extraction": extracted, "state_date": state_date,
+            "state_date_source": source, "warnings": warnings}
 
 
 # -------------------------------------------------------------- turn input
@@ -889,6 +1205,19 @@ def _session_for(project: Path, given):
     return resolved["path"], resolved["warning"]
 
 
+def _state_reports(project: Path, session: str, exists: bool = True):
+    """The live state and the invariants report for one session file."""
+    state = live_state(project, session) if exists else None
+    return state, invariants_report(project, state)
+
+
+def _warn_all(state, report) -> None:
+    for text in (state or {}).get("warnings", []):
+        print(f"WARNING: {text}", file=sys.stderr)
+    for warning in (report or {}).get("warnings", []):
+        print(f"WARNING: {warning['detail']}", file=sys.stderr)
+
+
 def cmd_session(args) -> int:
     project = Path(args.project_dir)
     resolved = resolve_session_file(project)
@@ -896,8 +1225,27 @@ def cmd_session(args) -> int:
         print(f"WARNING: {resolved['warning']}", file=sys.stderr)
     config = load_config(project, args.config)
     resolved["gate"] = {k: config[k] for k in ("review", "rewrites", "models", "warnings")}
-    print(json.dumps(resolved))
+    resolved["live_state"], resolved["invariants"] = _state_reports(project, resolved["path"],
+                                                                    resolved["source"] != "new")
+    _warn_all(resolved["live_state"], resolved["invariants"])
+    print(json.dumps(resolved, ensure_ascii=False))
     return 0
+
+
+def cmd_invariants(args) -> int:
+    project = Path(args.project_dir)
+    if args.session_file:
+        session, exists = args.session_file, True
+    else:
+        resolved = resolve_session_file(project)
+        session, exists = resolved["path"], resolved["source"] != "new"
+    state, report = _state_reports(project, session, exists)
+    if report is None:
+        print(f"ERROR: {INVARIANTS} does not exist. Run /rp:extract-invariants.", file=sys.stderr)
+        return 2
+    print(json.dumps(report, ensure_ascii=False, indent=1))
+    live = any(w["kind"] == "live_state" for w in report["warnings"])
+    return 1 if args.strict and live else 0
 
 
 def cmd_check(args) -> int:
@@ -913,6 +1261,8 @@ def cmd_check(args) -> int:
     config = load_config(project, args.config)
     scene = load_scene(project, session)
     started = time.perf_counter()
+    _state, invariants = _state_reports(project, session)
+    invariant_kinds = [w["kind"] for w in invariants["warnings"]] if invariants else []
     turn = parse_turn(text)
     result = lint(turn, scene, config, project)
     triggers = beat_triggers(turn, result, scene, config)
@@ -925,7 +1275,7 @@ def cmd_check(args) -> int:
                              "triggers": triggers, "class": decision["beat"], "next": decision["next"],
                              "recheck": args.recheck or None, "final": args.final or None,
                              "rewrite": rewrite or None, "scene_warning": scene["warning"],
-                             "elapsed_ms": elapsed})
+                             "invariants_warnings": invariant_kinds or None, "elapsed_ms": elapsed})
         if decision["next"] == "ship" and not args.final:
             reason = "policy lint-only" if config["review"] == "lint-only" else "routine beat, lint clean"
             append_log(project, {**common, "path": "skipped", "reason": reason})
@@ -937,6 +1287,7 @@ def cmd_check(args) -> int:
         "triggers": triggers,
         "route": decision,
         "elapsed_ms": elapsed,
+        "invariants": invariants,
         "config_warnings": config["warnings"],
         "logged": not args.no_log,
     }, ensure_ascii=False, indent=1))
@@ -987,11 +1338,16 @@ def main(argv=None) -> int:
     g.add_argument("--attempts", type=int)
     g.add_argument("--beat")
     g.add_argument("--note")
+    v = sub.add_parser("invariants", help=f"report live state in {INVARIANTS} and its age against the run's state")
+    v.add_argument("--project-dir", default=".")
+    v.add_argument("--session-file", help="the session whose state dates the run (default: the live session)")
+    v.add_argument("--strict", action="store_true", help="exit 1 when the invariants carry live state")
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return int(exc.code or 0) if exc.code not in (None, 0) else 0
-    return {"session": cmd_session, "check": cmd_check, "log": cmd_log}[args.command](args)
+    commands = {"session": cmd_session, "check": cmd_check, "log": cmd_log, "invariants": cmd_invariants}
+    return commands[args.command](args)
 
 
 if __name__ == "__main__":

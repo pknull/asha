@@ -20,8 +20,9 @@ This command uses the conventional RP layout. A project adopting it supplies:
 | Path | Role |
 |---|---|
 | `Work/markers/rp-active` | session marker; `/rp:start` records the live session file in it |
-| `Memory/invariants.md` | the compiled invariants projection the gate validates against |
-| `Work/rp/rp_session_*.md` | the live session record (resolved through the marker, never the date) |
+| `Memory/invariants.md` | the compiled invariants projection the gate validates against: static canon only |
+| `Work/rp/rp_session_*.md` | the live session record (resolved through the marker, never the date); its frontmatter and header carry current state |
+| the run's state file | named by the session: `run_state: "<path>#<section>"` in its frontmatter, else a ``State: `<path>` § <section>`` line in its header |
 | `Work/rp/_validator_log.jsonl` | per-turn telemetry: one line per gate step |
 | `Work/rp/.gate/turn.md` | scratch: the current GM turn, overwritten on each attempt |
 | `.claude/modes/rp.yaml` | optional: the `turnGate` block (policy, rewrite caps, models; see the plugin README) |
@@ -44,23 +45,36 @@ ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}
 
 Every gate command in this file resolves `ASHA_ROOT` on its own line, because shell variables do not survive between tool calls; if it is unresolved the command fails with a missing `/plugins/rp/tools/rp_gate.py`: run `./install.sh` or launch through the `asha` wrapper.
 
-The `session` command prints `{"path", "source", "warning", "gate"}`. Write `path` literally wherever this file says `<SESSION_FILE>`, and take GM_MODEL from `gate.models.gm`. A session can run for days, so the date never names it:
+The `session` command prints `{"path", "source", "warning", "gate", "live_state", "invariants"}`. Write `path` literally wherever this file says `<SESSION_FILE>`, and take GM_MODEL from `gate.models.gm`. A session can run for days, so the date never names it:
 
 - `source: marker`: the marker names it. Proceed.
 - `source: latest`: the marker names no (existing) session file, so the newest open `Work/rp/rp_session_*.md` is used. Tell the Keeper the warning once, in one line, and proceed. `/rp:start` records the file in the marker.
 - `source: new`: no session file exists. Halt and ask the Keeper to run `/rp:start`.
 
+`live_state` says where current state is, as line ranges: `frontmatter` and `header` in SESSION_FILE (the header runs to the first Day Plan or beat heading), and `run_state` (the run's state file, its section, and `current`, the section's first entry). Its `warnings` say what could not be resolved; with no `run_state`, current state comes from the session alone.
+
+`invariants.warnings` lists `live_state` (the invariants still carry a snapshot of state, with its lines), `stale` (`last_extraction` predates the run's state) or `no_extraction_date`. Tell the Keeper each once per session, in one line, with the fix (`/rp:extract-invariants`), and proceed: the gate reads current state from LIVE_STATE either way, and the reviewer ignores any snapshot in the invariants.
+
 If any precondition fails, halt and inform the Keeper. Do not proceed.
 
 ### Step 2: Read current scene state
 
-Read SESSION_FILE's YAML frontmatter and its current `## Day Plan` section, not the whole file: a long session runs to megabytes.
+Read SESSION_FILE's YAML frontmatter, its header and its current `## Day Plan` section, not the whole file: a long session runs to megabytes. Read the run state's `current` entry too. Take every range from `live_state`.
 
 - Current scene state YAML (location, time, present, observable)
+- Standing facts, stats and what is on the PC (the header and the run state's current entry)
 - Recent register-stack installations (to pass to the gate)
 - Day Plan (needed by the `missing_day_plan` check)
 
-Construct SCENE_STATE block from session file.
+Construct the SCENE_STATE block from these, and the LIVE_STATE block that tells the GM and the reviewer where to read current state:
+
+```
+LIVE_STATE:
+  session: <SESSION_FILE> lines <frontmatter.start>-<header.end>
+  run_state: <run_state.path> lines <current.start>-<current.end>  (the section: lines <heading_line>-<end_line>)
+```
+
+When `header` is null (the Day Plan follows the frontmatter), the session range ends at `frontmatter.end`; when `header.truncated` is true, add "(header cut at 250 lines)". When `current` is null (the section opens with a subheading), give the section's range instead, marked "search it; do not read it whole". Omit the `run_state` line when `live_state.run_state` is null. Current state is never read from `Memory/invariants.md`, which holds static canon: where the two disagree (a death, a departure, a custom no longer kept), LIVE_STATE governs the run.
 
 ### Step 3: Attempt loop
 
@@ -84,8 +98,13 @@ LOOP:
       KEEPER_INPUT: <the {command_args} from /rp:turn>
       SESSION_FILE: <SESSION_FILE>
       SCENE_STATE: <constructed from session file>
+      LIVE_STATE: <the block from Step 2>
       ATTEMPT_NUMBER: <ATTEMPT_NUMBER>
       PRIOR_VIOLATIONS: <PRIOR_VIOLATIONS if attempt > 1>
+
+      Current state (who is alive and where, the day, stats, what is on
+      the PC, standing facts) comes from LIVE_STATE and SCENE_STATE, never
+      from Memory/invariants.md, which holds static canon.
 
       Draft the GM response for this turn. If PRIOR_VIOLATIONS is present,
       the previous draft failed validation. Use the suggested_fix entries
@@ -118,8 +137,9 @@ LOOP:
   The check appends its own `lint` line (and a `skipped` line when no review
   runs) to the validator log. It reports lint.findings (each with fix: edit or
   review), triggers (why the beat is consequential), scene_warning (the
-  frontmatter could not be read) and route. Raise MAX_REWRITES to
-  route.max_rewrites if it is larger.
+  frontmatter could not be read), invariants (Step 1's warnings again, which
+  the lint line records as invariants_warnings; do not repeat them to the
+  Keeper) and route. Raise MAX_REWRITES to route.max_rewrites if it is larger.
 
   route.next:
     fix    → the findings are mechanical (anchor missing, duplicated or not
@@ -141,8 +161,9 @@ LOOP:
       DRAFT: <DRAFT>
       KEEPER_INPUT: <the Keeper's input; read only to bound pc_authored>
       INVARIANTS_FILE: "Memory/invariants.md"
-      SESSION_FILE: <SESSION_FILE>  (read its frontmatter and current Day Plan only)
+      SESSION_FILE: <SESSION_FILE>  (read its frontmatter, header and current Day Plan only)
       SCENE_STATE: <constructed scene state>
+      LIVE_STATE: <the block from Step 2>  # current state; never from the invariants
       ATTEMPT_NUMBER: <ATTEMPT_NUMBER>
       REWRITES_LEFT: <MAX_REWRITES - REWRITES>
       PRIOR_VIOLATIONS: <PRIOR_VIOLATIONS if attempt > 1>
@@ -263,6 +284,8 @@ Do not narrate the validation process to the Keeper unless they ask. The gate ru
 |---|---|
 | `Memory/invariants.md` missing | Halt, instruct Keeper to run `/rp:extract-invariants` |
 | `Work/markers/rp-active` missing | Halt, instruct Keeper to run `/rp:start` first |
+| `invariants.warnings` (`live_state`, `stale`, `no_extraction_date`) | Tell the Keeper once per session with the fix (`/rp:extract-invariants`); proceed |
+| `live_state` warning (no run state resolved) | Proceed on the session's frontmatter and header; tell the Keeper once |
 | No session file (`source: new`) | Halt, instruct Keeper to run `/rp:start` |
 | roleplay-gm spawn fails | Surface error to Keeper; do not retry blindly |
 | `rp_gate.py check` fails | Surface the error; offer to review the draft with the routine pass instead (Keeper's choice); log the turn with `--note` |

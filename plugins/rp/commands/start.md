@@ -110,6 +110,7 @@ Create or update session file with scene state schema:
 ```yaml
 ---
 campaign: "<campaign-name>"
+run_state: "<the run's state file>#<section>"   # e.g. Work/rp/<run>/<pc>.md#Run state; omit if none
 currentDate: "<in-fiction date>"
 startDate: "<in-fiction date>"
 currentLocation: "<location>"
@@ -130,6 +131,8 @@ scene:
   power_method: null
 ---
 ```
+
+`run_state:` names where the run's current state lives (PC stats, workings, standing facts), taken from the `run_state` register in `Memory/canon-layout.md` (a project with several campaigns may name it in each campaign's own table instead). `/rp:turn` reads current state from it and from this file's frontmatter and header, never from `Memory/invariants.md`, which holds static canon. A continuing session carries the previous session's `run_state:` forward. Without the key, the gate falls back to a ``State: `<path>` § <section>`` line in the session header.
 
 ### Step 6: Enforce Scene Pressure Protocol
 
