@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased — a lighter per-beat RP continuity gate (rp 0.4.0, write 1.12.0)
+
+- `/rp:turn` now lints every draft with `plugins/rp/tools/rp_gate.py`, a
+  standard-library check with no model call: one closing Scene/Location/Present
+  anchor; named speakers and actors against the scene, the anchor's Present
+  list, an arrival on the page or word sent; SCENE_STATE_DELTA keys, and the
+  delta's participants and time against the anchor. The continuity reviewer
+  runs only when the lint flags something or the beat is consequential
+  (priced stake, proposed canon, a PC change, an arrival or departure, a fight
+  or capture, `[validate]`). Its routine pass uses haiku; sonnet adjudicates a
+  hard violation before a rewrite is spent and reviews the rewrites. Soft
+  findings are fixed in the edit pass instead of a rewrite. A routine beat gets
+  one rewrite, a consequential one three. A routine, lint-clean beat now costs
+  one model call (the GM) instead of two. Policy, caps and models come from an
+  optional `turnGate` block in the project's rp mode file; old mode files keep
+  working on the defaults.
+- `/rp:turn` and `/rp:end` resolve the session file from the `rp-active`
+  marker, which `/rp:start` now writes (`session_file:`), instead of from
+  `date +%Y-%m-%d`: one session ran seven real days and the date named a new
+  file each day. An old empty marker falls back to the newest open session with
+  a warning.
+- Every gate step appends one line to `Work/rp/_validator_log.jsonl` (`lint`,
+  `skipped`, `review`, `adjudicate`, `turn`); the lint writes its own line, so
+  a gated beat can no longer go unlogged.
+- The continuity reviewer's `live_roleplay` mode gains `pc_authored` (a PC
+  action, line or decision beyond the Keeper's input, which it now receives for
+  that purpose alone) and `presence` (a character speaking or acting while not
+  present), and an `ADJUDICATE` input for the adjudication pass. The GM's
+  SOURCE_LOG gains `canon_proposed` and `pc_changed`.
+
 ## Unreleased — a killed foreground close no longer orphans its request (#128)
 
 - `asha control session close ID` now starts the dashboard's detached waiter

@@ -11,11 +11,11 @@ Initiates an interactive roleplay session by deploying the multi-agent `roleplay
 
 ## What This Does
 
-1. **Marks RP mode active** via `rp-active` for RP routing and safeguards
+1. **Marks RP mode active** via `rp-active` for RP routing and safeguards, and records the session file in it
 2. **Retrieves session continuity** via timeline-search subagent
 3. **Builds initial scene state** in session file
 4. **Deploys roleplay-gm orchestrator** with subagent coordination
-5. **Sessions logged to**: `Work/rp/rp_session_YYYY-MM-DD.md`
+5. **Sessions logged to**: `Work/rp/rp_session_YYYY-MM-DD.md`, named by the day the session starts; it keeps that name however many days it runs
 
 ## Project conventions
 
@@ -32,21 +32,19 @@ This command carries no campaign of its own. The consuming project supplies:
 
 ## Session Initiation Protocol
 
-### Step 1: Mark RP Mode Active
+### Step 1: Choose the session file
+
+- `load <session>` → that file (under `Work/rp/`).
+- Otherwise → today's `Work/rp/rp_session_YYYY-MM-DD.md`. If it already exists, read its last scene state for continuity. A new session that continues a closed one starts today's file and names the old one in its header.
+
+### Step 2: Mark RP Mode Active and record the session file
 
 ```bash
-mkdir -p Work/markers && touch Work/markers/rp-active
+SESSION_FILE="Work/rp/rp_session_$(date +%Y-%m-%d).md"   # or the file chosen in Step 1
+mkdir -p Work/markers && printf 'session_file: %s\n' "$SESSION_FILE" > Work/markers/rp-active
 ```
 
-Creates the RP routing/safeguard marker. Mechanical recovery remains independent.
-
-### Step 2: Check for Existing Session
-
-Check if today's session file exists:
-
-- `Work/rp/rp_session_YYYY-MM-DD.md`
-
-If exists, read last scene state for continuity.
+Creates the RP routing/safeguard marker and records the session file in it. `/rp:turn` and `/rp:end` read the session file from the marker (`rp_gate.py session`), because one session can run across several real days. Mechanical recovery remains independent.
 
 ### Step 3: Retrieve Session Context
 

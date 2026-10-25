@@ -1,6 +1,6 @@
 # RP Plugin
 
-**Version**: 0.3.1
+**Version**: 0.4.0
 
 Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification, and world/history lookup. The *verbs* of running a game live here; the *nouns* — canon, character registers, rulesets, the invariants projection — stay in the consuming project.
 
@@ -41,10 +41,13 @@ tedious species of error.
 /rp:end                            summarize, update character state, ratify canon
 ```
 
-`/rp:turn` may rewrite a failed draft up to three times. If the draft still
-violates the invariants or source provenance, it surrenders rather than shipping
-known-bad continuity. Each turn returns exactly one complete beat, never cuts
-off mid-dialogue, and closes with one Scene/Location/Present anchor line.
+`/rp:turn` lints every draft deterministically and spends a model reviewer only
+on beats the lint flags or that are consequential (see **Turn gate**). A
+confirmed violation gets one rewrite on a routine beat and three on a
+consequential one; if the draft still violates the invariants or source
+provenance, it surrenders rather than shipping known-bad continuity. Each turn
+returns exactly one complete beat, never cuts off mid-dialogue, and closes with
+one Scene/Location/Present anchor line.
 `/rp:end` presents proposed canon additions individually;
 only accepted items are promoted.
 
@@ -64,7 +67,7 @@ only accepted items are promoted.
 | Command | Purpose |
 |---|---|
 | `/rp:start` | Open a session — marker, continuity retrieval, Day Plan, scene state |
-| `/rp:turn` | Run one turn through the continuity gate (draft → review → rewrite ≤3 → ship or surrender) |
+| `/rp:turn` | Run one turn through the continuity gate (draft → lint → review if flagged or consequential → rewrite within the cap → ship or surrender) |
 | `/rp:end` | Close a session — summary, character state, ratification, optional canon promotion |
 | `/rp:extract-invariants` | Rebuild the invariants projection from canonical sources |
 
@@ -74,8 +77,10 @@ Path conventions, matching the `write` plugin's posture (plugin content addresse
 
 | Path | Role |
 |---|---|
-| `Work/markers/rp-active` | session marker; also gates the session plugin's per-turn routing nudge |
-| `Work/rp/rp_session_YYYY-MM-DD.md` | session record |
+| `Work/markers/rp-active` | session marker; records `session_file:`; also gates the session plugin's per-turn routing nudge |
+| `Work/rp/rp_session_YYYY-MM-DD.md` | session record, named by the day it starts; the marker, not the clock, says which is live |
+| `Work/rp/_validator_log.jsonl` | one line per gate step: `lint`, `skipped`, `review`, `adjudicate`, `turn` |
+| `.claude/modes/rp.yaml` | optional `turnGate` block (below) |
 | `Work/rp/{summaries,characters,pending-canon}/` | derived session artifacts |
 | `Memory/invariants.md` | the compiled invariants projection the per-turn gate reads |
 | `Memory/canon-layout.md` | **the canon register** — maps entity kind → project path. Copy from `templates/canon-layout.md` |
@@ -94,6 +99,67 @@ language must not contain proper nouns from one campaign. The safeguard is
 marker-gated by `rp-active`, uses a 1 h project-local cooldown, and can be
 disabled with `Work/markers/rp-priced-stakes-off` (the historical
 `nudge-rp-priced-stakes-off` alias remains honored).
+
+## Turn gate
+
+`tools/rp_gate.py` (standard library, no model call) backs the gate:
+
+| Subcommand | Use |
+|---|---|
+| `session` | prints the live session file (the marker's `session_file:`, else the newest open `Work/rp/rp_session_*.md` with a warning; `/rp:end` marks a session `status: closed`, which the fallback skips) and the gate settings |
+| `check` | lints one GM turn and routes it (ship, fix or review; a rewrite is always reviewed); appends `lint` (and `skipped`) lines |
+| `log` | appends a `review`, `adjudicate` or `turn` line |
+
+The lint checks what is mechanical: exactly one closing anchor; SCENE_STATE_DELTA
+keys are schema keys (no root mirrors), and its participants and time agree
+with the anchor; and every mention of a known cast member in narration (outside
+dialogue) is someone in the scene, in the anchor's `Present:` list, arriving on
+the page or sending word. A mention is let off only when it is plainly not that
+person on the page: a possession ("Velathra's plans"), "the Vey brothers",
+"thinks of" or "word from", reported belief or speech ("Liss knows Vey...",
+"Liss says Vey..."), or a stated absence ("is away", "will be back", "used to").
+Names come from the session frontmatter, the anchor, the `character` row of
+`Memory/canon-layout.md` (default `Lore/World/Characters/*.md`) and
+`turnGate.cast`; a character-file name that is also a common word ("Frost") is
+skipped at the start of a sentence unless it is in the scene or in
+`turnGate.cast`. The default leans toward flagging: a false flag costs one
+cheap review, a miss ships a beat unreviewed. It reads only the session
+frontmatter, so log size does not matter: on 204 real beats it took about 7 ms
+a beat (p95 17 ms), and a `check` call, Python start-up included, about 90 ms.
+
+A beat is **consequential** when the check finds a priced stake (SOURCE_LOG,
+or the priced-stakes phrases in the Keeper's input), proposed canon or a PC
+change (SOURCE_LOG `canon_proposed`, `pc_changed`, or a new PC role in the
+delta), an arrival or departure, a fight or capture, `[validate]`, or a
+`consequentialPatterns` match. Otherwise it is **routine**.
+
+The project's rp mode file may carry a `turnGate` block. Every key is
+optional; an absent block, or a mode file without one, uses the defaults:
+
+```yaml
+turnGate:
+  review: consequential     # consequential | every | lint-only
+  rewrites:
+    routine: 1              # 0-3
+    consequential: 3        # 0-3
+  models:                   # haiku | sonnet | opus
+    gm: sonnet              # roleplay-gm drafts and rewrites
+    reviewer: haiku         # the routine review pass
+    adjudicator: sonnet     # confirms a hard violation before a rewrite, then reviews rewrites
+  cast: []                  # extra names the presence lint should know (minor NPCs)
+  deltaKeys: []             # extra SCENE_STATE_DELTA keys
+  consequentialPatterns: [] # extra case-insensitive regexes, single-quoted
+```
+
+`review: consequential` reviews flagged and consequential beats; `every`
+reviews every beat (the 0.3 behaviour); `lint-only` reviews only `[validate]`
+beats. Block or flow style both parse (`rewrites: {routine: 1}`). An invalid
+value falls back to its default with a warning in the check output. The
+`models` keys of the draft-loop engine are separate and unchanged.
+
+Per-spawn model choice is a Claude Code Task parameter. Codex, Copilot and
+OpenCode were not checked: where a spawn ignores `model`, the routine pass and
+the adjudicator run on the same model.
 
 ## Design note — projection vs source
 
