@@ -32,7 +32,7 @@ SESSION_RANGE:
 
 | Source | Path | Content |
 |--------|------|---------|
-| Session Logs | `Work/rp/rp_session_*.md` | Raw session transcripts |
+| Session Logs | the `session_record` globs in `Memory/canon-layout.md`; default `Work/rp/rp_session_*.md` and `Work/rp/*/log/day-*.md` | Raw session transcripts: one day file per fiction day, or one legacy log per session |
 | Summaries | `Work/rp/summaries/*.md` | Condensed session summaries |
 | Character States | `Work/rp/characters/*.md` | Character evolution notes |
 
@@ -68,12 +68,16 @@ Summaries provide fastest overview. Use for initial orientation.
 
 ### 3. Search Session Logs
 
-Search `Work/rp/rp_session_*.md`:
+Search the session records:
 
 ```bash
-# File pattern filters by real-world date
-Work/rp/rp_session_2025-12-*.md  # December 2025 sessions
+# A day file is one fiction day: the name filters by fiction day
+Work/rp/<campaign>/log/day-019[0-6].md   # Days 190-196
+# A legacy log is one session: the name filters by real-world start date
+Work/rp/rp_session_2025-12-*.md          # December 2025 sessions
 ```
+
+A closed day file ends with a footer naming the file it continues in, and each day file's frontmatter `continues:` names the one before, so a search can walk a run in either direction.
 
 Within files, look for:
 
@@ -151,7 +155,7 @@ search_metadata:
 
 ### "Last session"
 
-Return summary of most recent session file by real-world date.
+Return the summary of the most recent session: the newest file in `Work/rp/summaries/`, and the open day file (the one with no rotation footer) for where play stands.
 
 ### "What happened with [character]"
 

@@ -123,12 +123,14 @@ class SessionFileTests(unittest.TestCase):
         self.assertEqual(got["source"], "latest")
         self.assertIn("marker", got["warning"])
 
-    def test_fallback_skips_a_closed_session(self):
+    def test_fallback_never_resumes_a_log_older_than_a_closed_one(self):
+        # Older logs were never closed (status: closed came with /rp:end in rp 0.4.0), so skipping a
+        # closed newest log resumed an older one, whose every line the vault cites. The newest decides.
         p = Project(self)
         p.session("rp_session_2026-10-17.md")
         p.session("rp_session_2026-10-20.md", body="---\nstatus: closed\n---\n")
         got = rp_gate.resolve_session_file(p.root, today="2026-10-24")
-        self.assertEqual(got["path"], "Work/rp/rp_session_2026-10-17.md")
+        self.assertEqual((got["path"], got["source"]), ("Work/rp/rp_session_2026-10-24.md", "new"))
 
     def test_marker_naming_a_missing_file_warns_and_falls_back(self):
         p = Project(self)

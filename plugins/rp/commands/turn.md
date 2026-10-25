@@ -21,7 +21,7 @@ This command uses the conventional RP layout. A project adopting it supplies:
 |---|---|
 | `Work/markers/rp-active` | session marker; `/rp:start` records the live session file in it |
 | `Memory/invariants.md` | the compiled invariants projection the gate validates against: static canon only |
-| `Work/rp/rp_session_*.md` | the live session record (resolved through the marker, never the date); its frontmatter and header carry current state |
+| `Work/rp/<campaign>/log/day-NNNN.md` | the live session record, one file per fiction day (resolved through the marker, never the date); its frontmatter and header carry current state. A legacy `Work/rp/rp_session_*.md` log works too, and rotates into day files once its frontmatter names a `log_dir` |
 | the run's state file | named by the session: `run_state: "<path>#<section>"` in its frontmatter, else a ``State: `<path>` § <section>`` line in its header |
 | `Work/rp/_validator_log.jsonl` | per-turn telemetry: one line per gate step |
 | `Work/rp/.gate/turn.md` | scratch: the current GM turn, overwritten on each attempt |
@@ -48,10 +48,12 @@ Every gate command in this file resolves `ASHA_ROOT` on its own line, because sh
 The `session` command prints `{"path", "source", "warning", "gate", "live_state", "invariants"}`. Write `path` literally wherever this file says `<SESSION_FILE>`, and take GM_MODEL from `gate.models.gm`. A session can run for days, so the date never names it:
 
 - `source: marker`: the marker names it. Proceed.
-- `source: latest`: the marker names no (existing) session file, so the newest open `Work/rp/rp_session_*.md` is used. Tell the Keeper the warning once, in one line, and proceed. `/rp:start` records the file in the marker.
-- `source: new`: no session file exists. Halt and ask the Keeper to run `/rp:start`.
+- `source: latest`: the marker names no (existing) session file, so the newest open session is used: the head of a campaign's day files (the one with no rotation footer), or the newest legacy `Work/rp/rp_session_*.md` not marked `status: closed`. Tell the Keeper the warning once, in one line, and proceed. `/rp:start` records the file in the marker.
+- `source: new`: no open session file is found; the warning says why, and names any existing file to `load`. Halt and ask the Keeper to run `/rp:start`.
 
 `live_state` says where current state is, as line ranges: `frontmatter` and `header` in SESSION_FILE (the header runs to the first Day Plan or beat heading), and `run_state` (the run's state file, its section, and `current`, the section's first entry). Its `warnings` say what could not be resolved; with no `run_state`, current state comes from the session alone.
+
+`continuity` is the continuity read, as line ranges: the last `beats` beats (`sessionLog.previousBeats` in the mode file, default 20), wherever they fall, and never the whole day once it holds more. `current` is its part in SESSION_FILE: the day's last `beats` beats (`whole_day: false`), or, while the day holds fewer, the day so far with its Day Plan (`whole_day: true`; in a legacy log the day starts at its first Day Plan or beat). `previous` is a list, oldest first, that tops the read up to `beats` from before the day: a legacy log's earlier beats, then the files before it, a day file's `continues:` first. `plans` lists, in order, every Day Plan section of the current day that the `day` range does not hold (the first plan, an ADDENDUM, a second session's plan, or one written early before an earlier day's last beat, in this file or the file before), since a long day's window no longer reaches them; it is empty when the `day` range holds them all or the day has none. `current` is null and `previous` empty when there is nothing to read; `continuity` is null when the session has no fiction day. A `rotation_warning` means an earlier rotation stopped before closing the old file; Step 3e's `rotate` closes it, so do not tell the Keeper.
 
 `invariants.warnings` lists `live_state` (the invariants still carry a snapshot of state, with its lines), `stale` (`last_extraction` predates the run's state) or `no_extraction_date`. Tell the Keeper each once per session, in one line, with the fix (`/rp:extract-invariants`), and proceed: the gate reads current state from LIVE_STATE either way, and the reviewer ignores any snapshot in the invariants.
 
@@ -59,7 +61,7 @@ If any precondition fails, halt and inform the Keeper. Do not proceed.
 
 ### Step 2: Read current scene state
 
-Read SESSION_FILE's YAML frontmatter, its header and its current `## Day Plan` section, not the whole file: a long session runs to megabytes. Read the run state's `current` entry too. Take every range from `live_state`.
+Read SESSION_FILE's YAML frontmatter, its header and its current `## Day Plan` sections (`continuity.plans`, or inside the `day` range), not the whole file: a long session runs to megabytes. Read the run state's `current` entry too. Take every range from `live_state`.
 
 - Current scene state YAML (location, time, present, observable)
 - Standing facts, stats and what is on the PC (the header and the run state's current entry)
@@ -72,9 +74,12 @@ Construct the SCENE_STATE block from these, and the LIVE_STATE block that tells 
 LIVE_STATE:
   session: <SESSION_FILE> lines <frontmatter.start>-<header.end>
   run_state: <run_state.path> lines <current.start>-<current.end>  (the section: lines <heading_line>-<end_line>)
+  day: <continuity.current.path> lines <start>-<end>  (Day <continuity.day>: so far | its last <beats> beats; B<first_beat>-B<last_beat>)
+  earlier: <path> lines <start>-<end>  (<beats> beats, B<first_beat>-B<last_beat>)   # one line per continuity.previous entry, oldest first
+  plan: <path> lines <start>-<end>  (<heading>)   # one line per continuity.plans entry, in order
 ```
 
-When `header` is null (the Day Plan follows the frontmatter), the session range ends at `frontmatter.end`; when `header.truncated` is true, add "(header cut at 250 lines)". When `current` is null (the section opens with a subheading), give the section's range instead, marked "search it; do not read it whole". Omit the `run_state` line when `live_state.run_state` is null. Current state is never read from `Memory/invariants.md`, which holds static canon: where the two disagree (a death, a departure, a custom no longer kept), LIVE_STATE governs the run.
+When `header` is null (the Day Plan follows the frontmatter), the session range ends at `frontmatter.end`; when `header.truncated` is true, add "(header cut at 250 lines)". When `current` is null (the section opens with a subheading), give the section's range instead, marked "search it; do not read it whole". Omit the `run_state` line when `live_state.run_state` is null, the `day` line when `continuity.current` is null, and the `earlier` lines when `continuity.previous` is empty. Write "so far" when `whole_day` is true, else "its last <beats> beats"; omit the beat span when `first_beat` is null (a day with only its Day Plan). Write a `plan` line for each `continuity.plans` entry (none when the list is empty: the `day` range holds the plan). The reader reads these ranges, never the whole day. Current state is never read from `Memory/invariants.md`, which holds static canon: where the two disagree (a death, a departure, a custom no longer kept), LIVE_STATE governs the run.
 
 ### Step 3: Attempt loop
 
@@ -133,7 +138,7 @@ LOOP:
     KEEPER_INPUT:, DRAFT:, GM_SPAWN_LOG:, SOURCE_LOG:, SCENE_STATE_DELTA:
   Run (add --beat <label> when the session numbers its beats; any
   --attempt above 1 is treated as a rewrite and always reviewed):
-    ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" check --project-dir . --session-file <SESSION_FILE> --turn-file Work/rp/.gate/turn.md --attempt <ATTEMPT_NUMBER>
+    ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" check --project-dir . --session-file "<SESSION_FILE>" --turn-file Work/rp/.gate/turn.md --attempt <ATTEMPT_NUMBER>
   The check appends its own `lint` line (and a `skipped` line when no review
   runs) to the validator log. It reports lint.findings (each with fix: edit or
   review), triggers (why the beat is consequential), scene_warning (the
@@ -161,7 +166,7 @@ LOOP:
       DRAFT: <DRAFT>
       KEEPER_INPUT: <the Keeper's input; read only to bound pc_authored>
       INVARIANTS_FILE: "Memory/invariants.md"
-      SESSION_FILE: <SESSION_FILE>  (read its frontmatter, header and current Day Plan only)
+      SESSION_FILE: <SESSION_FILE>  (read its frontmatter, header and current Day Plan, and the LIVE_STATE day and earlier ranges, never the whole day)
       SCENE_STATE: <constructed scene state>
       LIVE_STATE: <the block from Step 2>  # current state; never from the invariants
       ATTEMPT_NUMBER: <ATTEMPT_NUMBER>
@@ -183,7 +188,7 @@ LOOP:
 
   Receive VERDICT (clean | violations_found | hard_fail).
   Log it:
-    ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" log --project-dir . --session-file <SESSION_FILE> --path review --model <model used> --attempt <ATTEMPT_NUMBER> --verdict <verdict> --violations <categories,comma,separated> --clean <categories>
+    ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" log --project-dir . --session-file "<SESSION_FILE>" --path review --model <model used> --attempt <ATTEMPT_NUMBER> --verdict <verdict> --violations <categories,comma,separated> --clean <categories>
 
   if clean → 3e.
   if every violation is soft → apply each suggested_fix yourself (the edit
@@ -203,7 +208,7 @@ LOOP:
       ADJUDICATE: <the routine pass's violations, verbatim>
   It confirms or overturns each violation and returns a verdict over the
   confirmed ones only. Log it:
-    ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" log --project-dir . --session-file <SESSION_FILE> --path adjudicate --model <route.adjudicator_model> --attempt <ATTEMPT_NUMBER> --verdict <verdict> --violations <confirmed categories>
+    ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" log --project-dir . --session-file "<SESSION_FILE>" --path adjudicate --model <route.adjudicator_model> --attempt <ATTEMPT_NUMBER> --verdict <verdict> --violations <confirmed categories>
 
   Decision:
     clean (all overturned) or soft only → apply any soft fixes in the edit
@@ -214,6 +219,30 @@ LOOP:
     otherwise (hard_fail, or no rewrites left) → 3f.
 
   # 3e. Ship
+  ROTATE first: the beat's fiction day picks its file (one file per day).
+  Work/rp/.gate/turn.md holds the turn as it ships (after any edit pass).
+  Run (add --beat <label> when the session numbers its beats):
+    ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" rotate --project-dir . --session-file "<SESSION_FILE>" --turn-file Work/rp/.gate/turn.md
+  It prints {"action", "path", "previous", "day", "flag", "warnings"}. From
+  here on SESSION_FILE is `path`, for the append, the delta and the turn line.
+  The beat heading you write carries `day` (Day <day>).
+    rotated   → the day moved on: `previous` now ends with a footer pointing
+                to `path`, which opens with the header copied as written.
+                Never edit `previous` again. Write the GM's Day Plan for the
+                new day into `path` first, then the beat.
+    step_back → the beat's day is earlier than the file's (a flashback or a
+                numbering slip): it stays in this file. Append `flag` (already
+                in parentheses) at the very end of the beat heading, after the
+                heading's own parentheses. Rotation never moves back.
+    none      → same day, or no fiction day: carry on.
+    refused   → (exit 1) nothing was written. Either a day file of that
+                name exists and is not this run's, or the day jumps more
+                than 7 days (a typo would split the log past every day
+                between, for good): stop and show the Keeper the warning. Only
+                on the Keeper's word that the jump is real, run rotate again
+                with --allow-jump.
+  The day comes from the gated delta, never from a heading. A failed rotate
+  is safe to run again as is.
   APPEND DRAFT to SESSION_FILE
   APPLY SCENE_STATE_DELTA to SESSION_FILE's YAML frontmatter
     (state rides the same gate as prose: a delta is applied only once the
@@ -231,6 +260,9 @@ LOOP:
 
   # 3f. Surrender
   APPEND DRAFT + violations report to SESSION_FILE under a "## VALIDATOR SURRENDER" block
+    (no rotate: a surrendered draft stays in the current file; if the
+    Keeper accepts it and its delta moves the day, the next shipped beat
+    rotates)
   Log the turn (Step 4) with verdict surrendered.
   OUTPUT DRAFT to Keeper plus violations report plus prompt:
     "Validator surrendered after <ATTEMPT_NUMBER> attempts. Draft above with violations.
@@ -259,7 +291,7 @@ END LOOP
 Every gate step appends one line to `Work/rp/_validator_log.jsonl`: `check` writes `lint` (and `skipped` when no review runs); the command writes `review`, `adjudicate` and, once per turn, `turn`:
 
 ```bash
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" log --project-dir . --session-file <SESSION_FILE> --path turn --attempts <ATTEMPT_NUMBER> --verdict <clean|soft_fixed|surrendered|unreviewed> --violations <categories left, if any>
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" log --project-dir . --session-file "<SESSION_FILE>" --path turn --attempts <ATTEMPT_NUMBER> --verdict <clean|soft_fixed|surrendered|unreviewed> --violations <categories left, if any>
 ```
 
 Pass the same `--beat <label>` on every line of a turn when the session numbers its beats, so the lines group by beat. A beat that reached the Keeper without a `turn` line did not pass through this gate. When a gate step itself fails (the check errors, a reviewer spawn fails) and the Keeper ships the draft anyway, log the turn with `--verdict unreviewed --note "<what failed>"`.
@@ -286,11 +318,13 @@ Do not narrate the validation process to the Keeper unless they ask. The gate ru
 | `Work/markers/rp-active` missing | Halt, instruct Keeper to run `/rp:start` first |
 | `invariants.warnings` (`live_state`, `stale`, `no_extraction_date`) | Tell the Keeper once per session with the fix (`/rp:extract-invariants`); proceed |
 | `live_state` warning (no run state resolved) | Proceed on the session's frontmatter and header; tell the Keeper once |
-| No session file (`source: new`) | Halt, instruct Keeper to run `/rp:start` |
+| No open session file (`source: new`) | Halt, instruct Keeper to run `/rp:start` |
 | roleplay-gm spawn fails | Surface error to Keeper; do not retry blindly |
 | `rp_gate.py check` fails | Surface the error; offer to review the draft with the routine pass instead (Keeper's choice); log the turn with `--note` |
 | continuity-reviewer spawn fails | Surface error and offer to ship the draft unvalidated (Keeper's choice); log the turn with verdict `unreviewed` |
 | No rewrites left | Surrender flow as above |
+| `rp_gate.py rotate` fails | Surface the error and run the same command again: every step is safe to repeat. Do not append the beat until it names a file |
+| `rotate` answers `refused` | Halt; show the Keeper the warning (a day file of that name belongs to another run or is closed, or the day jumps more than 7 days; for a real jump the Keeper confirms and `rotate` runs again with `--allow-jump`) |
 
 ## Arguments
 
@@ -301,7 +335,8 @@ ARGUMENTS: {command_args}
 ## Notes
 
 - This command does NOT replace `/rp:start`. `/rp:start` initializes a session; `/rp:turn` runs each turn within an active session.
-- The Keeper can mix `/rp:turn` and ungated input: anything sent without `/rp:turn` goes straight to the GM unvalidated and leaves no gate line.
+- The Keeper can mix `/rp:turn` and ungated input: anything sent without `/rp:turn` goes straight to the GM unvalidated and leaves no gate line, and never rotates the log.
+- One log file per fiction day. A beat belongs to the day it ends on, so a night beat that wakes on the next morning opens the next day's file, after that day's Day Plan. The beat's day is the delta's `currentDate` (the lint holds it to the anchor's `Scene: Day N`), else the frontmatter's; a campaign whose frontmatter carries no `Day N`, or names no `log_dir`, keeps one file as before. `sessionLog.rotation: off` in the mode file turns rotation off.
 - A beat is **consequential** when the check reports a trigger: `priced_stake` (SOURCE_LOG, or the priced-stakes phrases in the Keeper's input), `canon_proposed`, `pc_change` (SOURCE_LOG `pc_changed`, or a new PC role in the delta), `arrival_departure` (the Present list changed, or someone arrives on the page), `fight_or_capture`, `validate_tag`, or a project `consequentialPatterns` match. Anything else is **routine**.
 - Model calls per beat, excluding the character agents the GM spawns:
 

@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased — one RP log file per fiction day (rp 0.4.0, write 1.12.0)
+
+- A campaign whose session frontmatter counts fiction days and names a
+  `log_dir` keeps one log file per fiction day, `<log_dir>/day-NNNN.md`.
+  Before a beat ships, `/rp:turn` runs the new `rp_gate.py rotate`: when the
+  beat ends on a later day it publishes the next day's file with the
+  frontmatter and header copied as written, swaps the marker atomically, then
+  closes the old file with a footer. Each step is safe to repeat after a crash;
+  a closed file is never edited again; a beat on an earlier day stays put,
+  flagged. Campaigns without a fiction day, or without `log_dir`, are unchanged.
+- The GM and the continuity reviewer read the header, the day's Day Plan and
+  the last 20 beats, wherever they fall (`sessionLog.previousBeats`): a day
+  that holds 20 beats is read from its last ones only, and a short day tops up
+  from the days before. Line ranges come from
+  `rp_gate.py session` (`continuity`). `/rp:start` opens or continues the right
+  day file through `rotate --start`; `/rp:end` reads `session_files` so its
+  summary and ratification cover every day file the session wrote.
+- The lint checks the delta's `currentDate` against the anchor's `Scene: Day N`
+  (`delta_day_missing`, `delta_day_mismatch`), since that day now picks the
+  file, and sends to review a day move the anchor does not confirm or a jump of
+  more than 7 days (`delta_day_unanchored`, `delta_day_jump`).
+- `rp_gate.py split` plans, read-only, how existing logs would cut into day
+  files, lists step-backs, and reports where each old citation would land.
+- With no marker, the fallback offers only the newest legacy log. When
+  nothing is open but `/rp:end` closed a legacy log that can still rotate,
+  `session`'s warning names it, and `/rp:start` loads it with the opening day
+  rather than writing that run's first day file by hand.
+- Citations name a line only in a closed file (an open file's lines move with
+  every frontmatter delta); while a file is open they cite the beat. A run
+  reset moves the old run out of `Work/rp/` and starts a fresh `log_dir`.
+
 ## Unreleased — RP live state leaves the invariants (rp 0.4.0, write 1.12.0)
 
 - `Memory/invariants.md` now holds static canon only. `/rp:extract-invariants`

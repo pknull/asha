@@ -30,7 +30,7 @@ SCENE_STATE:
   character_state: "Your character's observable condition"
 
 CHARACTER_FILE: "path/to/character.md"  # Or omit for named agents
-SESSION_FILE: "Work/rp/rp_session_YYYY-MM-DD.md"
+SESSION_FILE: "Work/rp/<campaign>/log/day-NNNN.md"  # the current day file
 
 GM_DIRECTIVE: |  # Optional — overrides default behavior
   Specific instruction for this invocation.
@@ -274,7 +274,7 @@ INPUT:
     observable: "Gas lamps low. Wine poured. She hasn't touched hers."
     character_state: "the Proprietor seated, composed, waiting."
 
-  SESSION_FILE: "Work/rp/rp_session_2026-03-03.md"
+  SESSION_FILE: "Work/rp/<campaign>/log/day-0042.md"
 
 PROCESS:
 1. Parse SCENE_STATE → I'm at Ashfield House, I hold home ground

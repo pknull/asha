@@ -16,7 +16,8 @@ At session end, extract new world facts established during play and write them t
 The GM orchestrator (via `/rp:end`) spawns you with:
 
 ```yaml
-SESSION_FILE: "Work/rp/rp_session_2026-02-03.md"
+SESSION_FILE: "Work/rp/<campaign>/log/day-0042.md"  # the current day file
+SESSION_FILES: ["Work/rp/<campaign>/log/day-0041.md", "Work/rp/<campaign>/log/day-0042.md"]  # the whole session; cite these by beat (B4123), and a line only in a closed file (one rotation footered)
 FACT_TYPE: "location|character|artifact|relationship|magic|all"
 CONTENT: |
   The session established the following new canon:

@@ -23,15 +23,16 @@ Ends an active roleplay session with canon synthesis and state management.
 
 ### Step 1: Resolve the session file, then remove the RP marker
 
-The marker names the session file, so resolve it first:
+The marker names the session file, so resolve it first. `rotate --repair` moves no beat and opens no file: it closes a file an interrupted rotation left without its footer, and hides (renames to `.day-NNNN.md.orphan-<date>`, never deletes) a day file such a crash left unused:
 
 ```bash
 ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"
 [[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
+python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" rotate --repair --project-dir . >/dev/null
 python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" session --project-dir .
 ```
 
-Use the printed `path` as SESSION_FILE for every later step. If it prints a warning (the marker named no session file), tell the Keeper which file it chose before going on. Then:
+Use the printed `path` as SESSION_FILE for every later step: the current day file, where the END block goes. `session_files` lists every file this session wrote, oldest first (one per fiction day it crossed; a marker from before day files, which records no `session_opened`, reaches back to the legacy log the session opened), and `session_opened_line` is where it began in the first (null: from the first file's start). If it prints a warning (the marker named no session file), tell the Keeper which file it chose before going on. Then:
 
 ```bash
 rm -f Work/markers/rp-active
@@ -43,13 +44,14 @@ This ends RP-specific routing for subsequent work.
 
 Ensure the current session file is written:
 
-- Location: SESSION_FILE (from Step 1)
-- Set `status: closed` in its YAML frontmatter, so the session-file fallback no longer picks it
+- Location: SESSION_FILE (from Step 1). Append the END block (where play stopped, state, open clocks) at its end
+- A legacy `Work/rp/rp_session_*.md` log: set `status: closed` in its YAML frontmatter, so the session-file fallback no longer picks it. A day file stays open: only rotation closes it, and the next `/rp:start` continues it or rotates from it
+- Never edit an earlier file in `session_files`: rotation closed it, and its `file:line` citations must stay valid (cite a line only in a closed file: an open file's lines move with every frontmatter delta)
 - Use Edit/Write tool (never claim saved without tool use)
 
 ### Step 3: Generate Session Summary
 
-Create or update `Work/rp/summaries/YYYY-MM-DD.md`:
+Create or update `Work/rp/summaries/YYYY-MM-DD.md`. It covers the whole session: every file in `session_files`, from `session_opened_line` in the first through the END block in the last, citing each beat by number (`B4123`), and a line only in a closed file (`<day file>:<line>` into a day file rotation has footered; the current day file is still open, so cite its beats, never its lines):
 
 ```markdown
 ---
@@ -127,6 +129,7 @@ Before any canon is promoted to `Lore/`, the Keeper ratifies each proposed addit
 subagent: rp-ratifier
 prompt: |
   SESSION_FILE: <SESSION_FILE from Step 1>
+  SESSION_FILES: <session_files from Step 1>  # the whole session, oldest first; read from session_opened_line in the first
   INVARIANTS_FILE: "Memory/invariants.md"
   SUMMARY_FILE: "Work/rp/summaries/YYYY-MM-DD.md"
 
@@ -158,6 +161,7 @@ Spawn the **canon-writer** agent:
 subagent: canon-writer
 prompt: |
   SESSION_FILE: <SESSION_FILE from Step 1>
+  SESSION_FILES: <session_files from Step 1>
   FACT_TYPE: "all"
   RATIFIED_ITEMS: <accepted_for_canon_writer list from rp-ratifier>
 
