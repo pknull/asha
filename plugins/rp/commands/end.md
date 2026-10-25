@@ -21,7 +21,17 @@ Ends an active roleplay session with canon synthesis and state management.
 
 ## Session End Protocol
 
-### Step 1: Remove RP Marker
+### Step 1: Resolve the session file, then remove the RP marker
+
+The marker names the session file, so resolve it first:
+
+```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
+python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" session --project-dir .
+```
+
+Use the printed `path` as SESSION_FILE for every later step. If it prints a warning (the marker named no session file), tell the Keeper which file it chose before going on. Then:
 
 ```bash
 rm -f Work/markers/rp-active
@@ -33,7 +43,8 @@ This ends RP-specific routing for subsequent work.
 
 Ensure the current session file is written:
 
-- Location: `Work/rp/rp_session_YYYY-MM-DD.md`
+- Location: SESSION_FILE (from Step 1)
+- Set `status: closed` in its YAML frontmatter, so the session-file fallback no longer picks it
 - Use Edit/Write tool (never claim saved without tool use)
 
 ### Step 3: Generate Session Summary
@@ -115,7 +126,7 @@ Before any canon is promoted to `Lore/`, the Keeper ratifies each proposed addit
 ```yaml
 subagent: rp-ratifier
 prompt: |
-  SESSION_FILE: "Work/rp/rp_session_YYYY-MM-DD.md"
+  SESSION_FILE: <SESSION_FILE from Step 1>
   INVARIANTS_FILE: "Memory/invariants.md"
   SUMMARY_FILE: "Work/rp/summaries/YYYY-MM-DD.md"
 
@@ -146,7 +157,7 @@ Spawn the **canon-writer** agent:
 ```yaml
 subagent: canon-writer
 prompt: |
-  SESSION_FILE: "Work/rp/rp_session_2026-02-03.md"
+  SESSION_FILE: <SESSION_FILE from Step 1>
   FACT_TYPE: "all"
   RATIFIED_ITEMS: <accepted_for_canon_writer list from rp-ratifier>
 

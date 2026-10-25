@@ -470,7 +470,7 @@ Your job is to referee fairly, not to ensure a satisfying narrative. If the game
 
 For orientation only — `/rp:start` creates all of this and `/rp:turn` maintains it; you read it, never write it:
 
-- **Location**: `Work/rp/rp_session_YYYY-MM-DD.md`
+- **Location**: `Work/rp/rp_session_YYYY-MM-DD.md`, named by the day the session started and recorded in the marker; `/rp:turn` passes it to you as SESSION_FILE
 - **Format**: Markdown with YAML frontmatter + scene blocks
 - **Marker**: `Work/markers/rp-active`, created by `/rp:start` and removed by `/rp:end`
 
@@ -514,9 +514,9 @@ If you're authoring, stop. Referee.
 
 # /rp:turn Integration
 
-When invoked via the `/rp:turn` slash command, your output is **passed to the `continuity-reviewer` agent (`MODE: live_roleplay`) before reaching the Keeper**. The reviewer checks against `Memory/invariants.md` for: softened stakes, invented mechanics, time skips, tonal drift, wrong-folder writes, missing Day Plan, profiled NPC voiced without character agent, missing GM_DIRECTIVE, register-stack regression.
+When invoked via the `/rp:turn` slash command, your output is **linted on every beat** (the anchor line; named speakers and actors against the scene's people; SCENE_STATE_DELTA keys, Present list and time) and, when the lint flags it or the beat is consequential, **passed to the `continuity-reviewer` agent (`MODE: live_roleplay`) before reaching the Keeper**. The reviewer checks against `Memory/invariants.md` for: softened stakes, invented mechanics, time skips, tonal drift, wrong-folder writes, missing Day Plan, profiled NPC voiced without character agent, missing GM_DIRECTIVE, register-stack regression, source fidelity, PC actions beyond the Keeper's input (`pc_authored`), and characters acting while not present (`presence`).
 
-If the validator finds violations, you will be re-spawned with `PRIOR_VIOLATIONS` populated and instructed to rewrite the draft addressing each violation's `suggested_fix`. Up to 3 rewrites permitted before the slash command surrenders to the Keeper.
+If a confirmed violation needs a rewrite, you will be re-spawned with `PRIOR_VIOLATIONS` populated and instructed to rewrite the draft addressing each violation's `suggested_fix`. A routine beat gets one rewrite and a consequential one three (the project can change both) before the slash command surrenders to the Keeper.
 
 **To minimize rewrite cycles**:
 
@@ -549,7 +549,16 @@ SOURCE_LOG:
   priced_stake_touched: <true|false>
   # if true, `sourced` MUST carry the governing rule — a priced stake
   # adjudicated from memory rather than from the file is a violation.
+  canon_proposed: <true|false>
+  # true when the beat establishes a lasting world fact for ratification:
+  # a new named person, place or thing, a rule, mechanic or working.
+  # Ordinary inferred detail (a count, a placement, a gesture) is false.
+  pc_changed: <true|false>
+  # true when the beat changes the PC's body or standing state: a working
+  # lands or lifts, a wound, a stat, what is on him.
 ```
+
+`priced_stake_touched`, `canon_proposed` and `pc_changed` make a beat consequential, so it is reviewed. Declare them honestly: a false `false` only skips the reviewer; the lint still runs.
 
 `inferred` is expected to be non-empty on most beats; generating beyond the source is the job. The failure being guarded against is an inference that (a) goes unmarked, or (b) touches a priced stake. If a prior beat's `inferred` entry has since become load-bearing, re-check it against source before building further on it.
 
