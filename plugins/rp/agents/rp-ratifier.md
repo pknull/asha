@@ -23,7 +23,8 @@ You are spawned by the modified `/rp-end` flow, between session-summary generati
 ## Invocation Format
 
 ```yaml
-SESSION_FILE: "Work/rp/rp_session_YYYY-MM-DD.md"
+SESSION_FILE: "Work/rp/<campaign>/log/day-NNNN.md"  # the current day file (a legacy log: Work/rp/rp_session_YYYY-MM-DD.md)
+SESSION_FILES: ["<day file>", "..."]  # every file the session wrote, oldest first; absent means SESSION_FILE alone
 INVARIANTS_FILE: "Memory/invariants.md"
 SUMMARY_FILE: "Work/rp/summaries/YYYY-MM-DD.md"  # If already generated
 
@@ -41,7 +42,7 @@ CANON_PROPOSALS:
     ...
 ```
 
-If CANON_PROPOSALS is absent, you derive them yourself by reading SESSION_FILE for new locations, named characters, mechanics, relationships, etc. (Use the same heuristics as canon-writer would.)
+If CANON_PROPOSALS is absent, you derive them yourself by reading the session (every file in SESSION_FILES, else SESSION_FILE) for new locations, named characters, mechanics, relationships, etc. (Use the same heuristics as canon-writer would.)
 
 ---
 
@@ -50,7 +51,7 @@ If CANON_PROPOSALS is absent, you derive them yourself by reading SESSION_FILE f
 ### Step 1: Load context
 
 - Read INVARIANTS_FILE in full
-- Read SESSION_FILE (or SUMMARY_FILE if dense session)
+- Read the session: each file in SESSION_FILES in order, else SESSION_FILE (or SUMMARY_FILE if dense). A session that crossed fiction days spans one day file per day
 - If CANON_PROPOSALS not provided, scan session for canon candidates:
   - New named locations (proper nouns describing places)
   - New named NPCs introduced
@@ -166,7 +167,7 @@ defer_reason: "<short reason>"
 
 ## Source
 
-- Session: `Work/rp/rp_session_YYYY-MM-DD.md`
+- Session: Beat N and its day file (e.g. B4123, `Work/rp/garret/log/day-0196.md`); add `:<line>` for a line only in a closed file (one that ends with a rotation footer), since an open file's lines move with every delta
 - Passages:
   - "<source excerpt>"
 

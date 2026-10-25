@@ -77,10 +77,11 @@ Path conventions, matching the `write` plugin's posture (plugin content addresse
 
 | Path | Role |
 |---|---|
-| `Work/markers/rp-active` | session marker; records `session_file:`; also gates the session plugin's per-turn routing nudge |
-| `Work/rp/rp_session_YYYY-MM-DD.md` | session record, named by the day it starts; the marker, not the clock, says which is live |
+| `Work/markers/rp-active` | session marker; records `session_file:` and `session_opened:`; `/rp:start` also appends a `<!-- rp-session-opened: <date> -->` line where the session opens, which `session` reports as `session_opened_line`; also gates the session plugin's per-turn routing nudge |
+| `Work/rp/<campaign>/log/day-NNNN.md` | session record, one file per fiction day (see **Day files**); the marker, not the clock, says which is live |
+| `Work/rp/rp_session_YYYY-MM-DD.md` | legacy session record, one per session, named by the day it starts; a campaign with no fiction day keeps it |
 | `Work/rp/_validator_log.jsonl` | one line per gate step: `lint`, `skipped`, `review`, `adjudicate`, `turn` |
-| `.claude/modes/rp.yaml` | optional `turnGate` block (below) |
+| `.claude/modes/rp.yaml` | optional `turnGate` and `sessionLog` blocks (below) |
 | `Work/rp/{summaries,characters,pending-canon}/` | derived session artifacts |
 | `Memory/invariants.md` | the compiled invariants projection the per-turn gate reads: static canon only |
 | *(the run's state file)* | named by the session's `run_state:` frontmatter (or a ``State: `<path>` § <section>`` header line); with the session's frontmatter and header, the source of current state |
@@ -107,10 +108,12 @@ disabled with `Work/markers/rp-priced-stakes-off` (the historical
 
 | Subcommand | Use |
 |---|---|
-| `session` | prints the live session file (the marker's `session_file:`, else the newest open `Work/rp/rp_session_*.md` with a warning; `/rp:end` marks a session `status: closed`, which the fallback skips), the gate settings, where current state is (`live_state`) and any invariants warning |
+| `session` | prints the live session file (the marker's `session_file:`, else with a warning the newest open session: the head of a day-file chain, or the newest legacy `Work/rp/rp_session_*.md` unless `/rp:end` closed it or it moved to day files; an older legacy log is never offered, so another campaign opens with `/rp:start load <session>`; when nothing is open but `/rp:end` closed a legacy log that can still rotate, the warning names it to `load` with the opening day), the gate settings, where current state is (`live_state`), the continuity read (`continuity`: the last `previousBeats` beats, and the day's `plans`), the files this session wrote (`session_files`) and any warnings |
 | `check` | lints one GM turn and routes it (ship, fix or review; a rewrite is always reviewed); appends `lint` (and `skipped`) lines |
+| `rotate` | before a beat ships: names the file it goes to, rotating to the next fiction day's file when the day moved (see **Day files**); `--start` records the session's opening in the marker; `--repair` only closes a file an interrupted rotation left open |
 | `log` | appends a `review`, `adjudicate` or `turn` line |
 | `invariants` | reports live state in `Memory/invariants.md` and its age against the run's state; `--strict` exits 1 on live state (the `/rp:extract-invariants` check) |
+| `split` | read-only: plans how existing logs would cut into day files, every step-back, and (`--cite`) where each `rp_session_<date>.md:N` or `<MM-DD>:N` citation would land and whether the remap is exact |
 
 **Current state never comes from the invariants.** `session` reports it as line
 ranges for the GM and the reviewer to read: the session file's frontmatter and
@@ -140,8 +143,8 @@ embeds a current value ("90 vs 59 = 81%"), or a snapshot in a table row, is not
 caught. Reading the invariants and the run state adds 1–3 ms to a `check`.
 
 The lint checks what is mechanical: exactly one closing anchor; SCENE_STATE_DELTA
-keys are schema keys (no root mirrors), and its participants and time agree
-with the anchor; and every mention of a known cast member in narration (outside
+keys are schema keys (no root mirrors), and its participants, time and day
+(`currentDate` against the anchor's `Scene: Day N`) agree with the anchor; and every mention of a known cast member in narration (outside
 dialogue) is someone in the scene, in the anchor's `Present:` list, arriving on
 the page or sending word. A mention is let off only when it is plainly not that
 person on the page: a possession ("Velathra's plans"), "the Vey brothers",
@@ -189,6 +192,86 @@ value falls back to its default with a warning in the check output. The
 Per-spawn model choice is a Claude Code Task parameter. Codex, Copilot and
 OpenCode were not checked: where a spawn ignores `model`, the routine pass and
 the adjudicator run on the same model.
+
+## Day files
+
+A campaign that counts fiction days (`currentDate: "Day 196 (Monday)"`) and
+names a `log_dir` in its session frontmatter keeps one log file per fiction
+day: `<log_dir>/day-0196.md`, the day zero-padded to four digits, so files sort
+by day and each campaign has its own directory. A campaign without either keeps
+one file per session, as before. A run reset moves the old run out of `Work/rp/`
+(to `Work/archive/<campaign>-run-<date>/`, as the 2026-09-20 reset did) and gives
+the new run a fresh `log_dir`: a day file stays open after `/rp:end`, so an old
+run's last day file left under `Work/rp/` remains a fallback candidate, and the
+new run's Day 1, written by hand, would overwrite the old run's `day-0001.md`
+(`/rp:start` stops when that file exists; a later rotation refuses one).
+
+A beat belongs to the day it ends on: the logs write the next day's Day Plan
+before the night beat that reaches it. Its day is the delta's `currentDate`
+(the lint holds it to the anchor's `Scene: Day N`), else the frontmatter's; the
+beat heading is only checked against it, so a slip in the heading warns
+instead of rotating. Before a beat ships, `/rp:turn` runs `rotate`. When the
+day is later than the file's, rotation, in this order:
+
+1. publishes the next day's file whole: the current frontmatter (with
+   `log_day`, `continues` and `opened` set, `status` dropped) and the header
+   between the frontmatter and the first Day Plan, copied as written (tier,
+   register, GM line, standing facts, live workings and the trigger table,
+   open threads), under a generated title and a "Continues `<file>`" line;
+2. swaps the marker atomically to the new file;
+3. closes the old file with a one-line footer pointing to the new one.
+
+A closed file is never edited again, so its `file:line` citations stay valid.
+An open file's lines move each time a delta grows or shrinks its frontmatter,
+so cite a line only in a closed file (closed by rotation's footer; a legacy log's
+`status: closed` does not count, since `/rp:start` can reopen it). While a file is open, cite the beat
+(`B4161`), including the beat that set a header or frontmatter fact, never a
+line or a header section; add the line once rotation has closed the file.
+Outside the campaign's own directory a citation is path-qualified
+(`garret/log/day-0197.md:12`), since every campaign has a `day-0197.md`.
+Only a footer that ends a file closes it; a footer quoted elsewhere (a "Resume
+point, verbatim") does not, and `session` warns about it.
+Each step is safe to repeat: a re-run after a crash adopts the new file,
+writes no second footer, and `/rp:turn`, `/rp:end` (`rotate --repair`) or the
+next rotation closes a file a crash left without its footer. The marker never
+goes missing, so the UserPromptSubmit hooks, which test only its existence,
+are never switched off mid-rotation. An existing day file that does not
+continue the current one (another run, or a closed file) is refused, not
+overwritten. A beat on an earlier day than its file (a flashback or a numbering
+slip) stays in the current file with a STEP-BACK flag in its heading: rotation
+only moves forward. A legacy log's day is the highest its beats reached, so a flashback's delta
+does not pull it back. The lint holds the delta's `currentDate` to the anchor's
+`Scene: Day N` (the day its leading span ends on; a clock later in the field,
+"THE CURE Day 3 of 30", is not it), and sends to review a day move the anchor
+does not confirm (`delta_day_unanchored`) or a jump of more than 7 days
+(`delta_day_jump`); `rotate` itself refuses such a jump unless the Keeper confirms it
+(`--allow-jump`), since a typo would split the log past every day between, for good. A day
+file a crash left between publish and marker swap, with nothing written after
+its header (rotation records how many lines it wrote), is renamed to a hidden
+`.day-NNNN.md.orphan-<date>` by the next `rotate` (never deleted).
+
+Each turn the GM and the reviewer read the header and the last
+`sessionLog.previousBeats` beats (default 20), wherever they fall, as line
+ranges from `session` (`continuity`; `LIVE_STATE`'s `day` and `earlier`
+lines). A day with that many beats is read from its last ones only, never
+whole; while it holds fewer, the read takes the day so far (its Day Plan
+included) and tops up from the beats before it: a legacy log's earlier beats,
+then the files before, as far back as it takes. In a legacy log the day starts
+with its first Day Plan or beat. `plans` names each Day Plan section of the day
+(an ADDENDUM or a second session's plan too) that the window does not hold. A session can span several day files; `session_files` lists them
+(and `session_opened_line` where the session began in the first) for `/rp:end`, whose summary and ratification cover them all and whose END
+block goes in the current day file. A day file stays open after `/rp:end`; the
+next `/rp:start` continues it on the same day or rotates from it.
+
+```yaml
+sessionLog:
+  rotation: day        # day | off
+  previousBeats: 20    # 0-200: the last beats the GM and the reviewer read, wherever they fall
+```
+
+Both keys are optional; a mode file without the block keeps the defaults.
+`split` plans, without writing anything, how an existing log would cut into
+day files and how each old citation would remap.
 
 ## Design note — projection vs source
 

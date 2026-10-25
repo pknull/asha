@@ -66,7 +66,7 @@ KEEPER_INPUT: |  # The Keeper's input for this turn. Read it ONLY to bound pc_au
   <verbatim>
 
 INVARIANTS_FILE: "Memory/invariants.md"
-SESSION_FILE: "Work/rp/rp_session_YYYY-MM-DD.md"  # read its frontmatter and current Day Plan; it can be megabytes
+SESSION_FILE: "Work/rp/<campaign>/log/day-NNNN.md"  # the current day file (a legacy log can be megabytes): read its frontmatter and current Day Plan
 
 SCENE_STATE:
   location: "<current location>"
@@ -76,8 +76,11 @@ SCENE_STATE:
   recent_installations: ["<register-stack items recently installed that should still be active>"]
 
 LIVE_STATE: |  # where current state is (rp_gate.py session); read these line ranges
-  session: Work/rp/rp_session_YYYY-MM-DD.md lines 1-80        # frontmatter and header
+  session: Work/rp/<campaign>/log/day-NNNN.md lines 1-80   # frontmatter and header
   run_state: <the run's state file> lines 56-56 (the section: lines 54-194)  # its current entry; optional
+  day: Work/rp/<campaign>/log/day-NNNN.md lines 300-480     # the day's last 20 beats, or the day so far; optional
+  earlier: Work/rp/<campaign>/log/day-NNNN.md lines 900-1120  # beats before the day, up to 20 in all; optional, one line per range
+  plan: Work/rp/<campaign>/log/day-NNNN.md lines 81-130      # a Day Plan section the day range does not hold; optional, one line each
 
 ATTEMPT_NUMBER: 1 | 2 | 3 | 4
 REWRITES_LEFT: 0 | 1 | 2 | 3  # rewrites the command may still spend on this beat
@@ -116,11 +119,13 @@ ADJUDICATE: |  # Optional — present only on the adjudication pass
   <the routine pass's violations, verbatim>
 ```
 
-**LINT** points you at what the lint saw; check those first, then run every category as usual. A lint finding is a lead, not a verdict: a carried message, an arrival the lint missed, or a name used as a common word clears it.
+**LINT** points you at what the lint saw; check those first, then run every category as usual. `delta_day_unanchored` and `delta_day_jump` mean the delta moves the fiction day without an anchor to confirm it, or by more than a week: the day picks the log file, and a rotation cannot be undone, so confirm the prose moves the day exactly that far (`scene_state_mismatch` otherwise). A lint finding is a lead, not a verdict: a carried message, an arrival the lint missed, or a name used as a common word clears it.
 
 **ADJUDICATE** makes you the adjudicator. A cheaper routine pass reported the listed violations, and a rewrite costs a full GM turn. Re-read the draft against the cited invariant for each one and decide `confirmed` or `overturned` with a one-line reason. Add a new violation only if it is hard. Your `verdict` and `violations` then list only the confirmed and added violations, and you return the `adjudication` block (Output Format).
 
 **Current state comes from LIVE_STATE, never from INVARIANTS_FILE.** The invariants hold static canon: tone, character registers, rules and settled world facts. Who is alive, present or where, the day and beat, stats, workings, clocks and standing facts come from LIVE_STATE and SCENE_STATE; read the LIVE_STATE ranges, and search the run state's wider section only for a specific fact. Where the invariants describe a character, place or custom that the live state has moved past (a death, a departure, a custom no longer kept), the live state governs this run, and a draft that follows it is not a violation. If the invariants still carry a snapshot of state (a Timeline State or Run state section, a dated "now at Day N"), ignore the snapshot. Absent LIVE_STATE, take current state from SESSION_FILE's frontmatter and header.
+
+**The last beats.** LIVE_STATE's `day` and `earlier` ranges hold the last 20 beats (the mode file sets the number), wherever they fall: the current fiction day's last beats, or the day so far and, while it holds fewer, the beats before it (in the day files before). Read only these ranges and its Day Plan (LIVE_STATE's `plan` lines, every plan section of the day the day range does not hold), never the whole day. Read them for what already happened: who left, what was said or promised, which working fired. They are history: where they disagree with the frontmatter, the header or the run state, current state governs.
 
 **The delta is part of the reviewed surface.** On a clean verdict the calling command applies SCENE_STATE_DELTA to the session file's frontmatter — so a delta the prose does not support commits unreviewed state. Check category `scene_state_mismatch`: every delta entry must be evidenced by the draft's prose (a `scene.location` change requires the prose to actually move the scene; a participant removal requires a departure on the page), and any state change the prose DOES enact must appear in the delta (a departure in prose with no participants change goes stale silently). Either direction is a violation.
 
@@ -196,7 +201,7 @@ For each category, evaluate the DRAFT against INVARIANTS_FILE (static canon) and
 
 **Looks for:**
 
-- Session file (read it if needed) lacks a `## Day Plan: Day [N]` section before the first scene of the current fiction day
+- Session file (read it if needed) lacks a `## Day Plan: Day [N]` section before the first scene of the current fiction day (in a day file: after its inherited header; the previous day's plan sits in the day file before)
 - Day Plan exists but lacks NPC agendas table, OR fewer than 2 collisions, OR no clocks, OR no scene-entry-in-middle
 - Day Plan present but the current draft ignores it (NPCs not pursuing the agenda items)
 

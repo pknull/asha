@@ -29,7 +29,7 @@ Globs are project-relative. Multiple globs per kind are allowed — list them co
 | `artifact` | `Lore/World/Magic/Artefacts/*.md` | |
 | `faction` | `Lore/World/Factions/*.md` | |
 | `magic` | `Lore/World/Magic/*.md`, `Lore/World/Magic/Spheres/*.md` | systems and effects |
-| `session_record` | `Work/rp/rp_session_*.md` | raw session logs (plugin-owned, rarely changed) |
+| `session_record` | `Work/rp/*/log/day-*.md`, `Work/rp/rp_session_*.md` | raw session logs (plugin-owned, rarely changed): one day file per fiction day under each campaign's `log_dir`, and legacy one-per-session logs |
 | `session_curated` | `Lore/TTRPG/Notes/*.md` | promoted / edited session write-ups |
 
 > The values above are the **historical default**, preserved so existing projects keep working without edits. They are not a recommendation — a new project should replace them wholesale.

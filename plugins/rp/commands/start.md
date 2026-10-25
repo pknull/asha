@@ -15,7 +15,7 @@ Initiates an interactive roleplay session by deploying the multi-agent `roleplay
 2. **Retrieves session continuity** via timeline-search subagent
 3. **Builds initial scene state** in session file
 4. **Deploys roleplay-gm orchestrator** with subagent coordination
-5. **Sessions logged to**: `Work/rp/rp_session_YYYY-MM-DD.md`, named by the day the session starts; it keeps that name however many days it runs
+5. **Sessions logged to**: one file per fiction day, `<log_dir>/day-NNNN.md` (default `log_dir`: `Work/rp/<campaign>/log`), the day zero-padded to four digits. A session may span several day files; `/rp:turn` closes each day's file and opens the next as the fiction day moves on. A campaign with no fiction day (`Day N`) keeps one `Work/rp/rp_session_YYYY-MM-DD.md` per session, named by the real day it starts
 
 ## Project conventions
 
@@ -35,16 +35,26 @@ This command carries no campaign of its own. The consuming project supplies:
 ### Step 1: Choose the session file
 
 - `load <session>` → that file (under `Work/rp/`).
-- Otherwise → today's `Work/rp/rp_session_YYYY-MM-DD.md`. If it already exists, read its last scene state for continuity. A new session that continues a closed one starts today's file and names the old one in its header.
+- Otherwise find the run's open file:
+
+  ```bash
+  ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" session --project-dir .
+  ```
+
+  With no marker it prints the newest open session as `path` (`source: latest`): the head of the campaign's day files (a day file stays open after `/rp:end`; only rotation closes it), or the newest legacy `Work/rp/rp_session_*.md` when it is not closed and has not moved to day files. An older legacy log is never offered (none was ever closed), so a vault with several campaigns opens the other one with `load <session>`. A day-file campaign continues the file printed. Read its last scene state for continuity. When it prints `source: new` and the warning names a closed legacy log that can still rotate (`/rp:end` closed it before its day rotated), continue that run from it: `load` the file it names and pass the opening day to Step 2. A later day closes it and opens the day file; on its own day it reopens the log, and play goes on there until the day moves. Never write that run's first day file by hand: rotation copies the header, sets `continues:` and footers the old log, and the continuity read needs all three.
+- A legacy campaign moving to day files: add `log_dir` to its frontmatter (one line, between turns), keep playing in the legacy log, and let rotation open the first day file: Step 2's `rotate --start --day N` with a later opening day, or the first beat whose day moves on. Never write that first day file by hand: rotation copies the header, sets `continues:`, footers the legacy log, and the continuity read needs all three.
+- A new campaign: the first day file is `<log_dir>/day-NNNN.md` for the opening fiction day, and its frontmatter names `log_dir` (Step 5). If that file already exists, stop: it belongs to another run (a run reset moves the old run out of `Work/rp/` first), and writing it would overwrite that run's log.
+- A campaign with no fiction day: today's `Work/rp/rp_session_YYYY-MM-DD.md`. A new session that continues a closed one starts today's file and names the old one in its header. If today's file already exists, never write over it: `load` it (a closed log reopens) or ask the Keeper.
 
 ### Step 2: Mark RP Mode Active and record the session file
 
 ```bash
-SESSION_FILE="Work/rp/rp_session_$(date +%Y-%m-%d).md"   # or the file chosen in Step 1
-mkdir -p Work/markers && printf 'session_file: %s\n' "$SESSION_FILE" > Work/markers/rp-active
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" rotate --start --project-dir . --session-file "<the file from Step 1>" --day <the opening fiction day, if the campaign counts days>
 ```
 
-Creates the RP routing/safeguard marker and records the session file in it. `/rp:turn` and `/rp:end` read the session file from the marker (`rp_gate.py session`), because one session can run across several real days. Mechanical recovery remains independent.
+The file must exist: for a brand-new session file, do Step 5 first, then run this step, then go on from Step 3.
+
+`rotate --start` writes the RP routing/safeguard marker (`session_file:` and `session_opened:`) and appends a `<!-- rp-session-opened: <date> -->` line to the file the session opens in, which `/rp:end` reads through `session` (`session_opened_line`). An opening day more than 7 days after the file's is refused like a turn's: ask the Keeper, and only on the Keeper's word run it again with `--allow-jump`. When the opening day is later than the file's, it first closes that file with a footer and opens the next day's file with the header copied as written, and the marker names the new file (`action: rotated`, `path`). Use the printed `path` as the session file from here on. On `refused` (exit 1: a day file of that name belongs to another run or is closed) no marker is written: halt and show the Keeper the warning. Any other error is printed as is; fix what it names rather than repeating the command. `/rp:turn` and `/rp:end` read the session file from the marker (`rp_gate.py session`), because one session can run across several real and fiction days. Mechanical recovery remains independent.
 
 ### Step 3: Retrieve Session Context
 
@@ -111,7 +121,9 @@ Create or update session file with scene state schema:
 ---
 campaign: "<campaign-name>"
 run_state: "<the run's state file>#<section>"   # e.g. Work/rp/<run>/<pc>.md#Run state; omit if none
-currentDate: "<in-fiction date>"
+log_dir: "Work/rp/<campaign>/log"   # the day files; omit for a campaign with no fiction day
+log_day: <N>                        # a day file's fiction day; rotation writes it on every later file
+currentDate: "Day <N> (<weekday>)"  # "Day N" is the fiction day the log rotates on
 startDate: "<in-fiction date>"
 currentLocation: "<location>"
 currentTime: "00:00"
@@ -133,6 +145,8 @@ scene:
 ```
 
 `run_state:` names where the run's current state lives (PC stats, workings, standing facts), taken from the `run_state` register in `Memory/canon-layout.md` (a project with several campaigns may name it in each campaign's own table instead). `/rp:turn` reads current state from it and from this file's frontmatter and header, never from `Memory/invariants.md`, which holds static canon. A continuing session carries the previous session's `run_state:` forward. Without the key, the gate falls back to a ``State: `<path>` § <section>`` line in the session header.
+
+`log_dir:` names the campaign's day-file directory, under `Work/rp/` (the campaign's run directory plus `log`, e.g. `Work/rp/garret/log`). Each day file is `<log_dir>/day-NNNN.md`; rotation copies this frontmatter forward, adding `log_day`, `continues` (the file before) and `opened` (the real date it opened). The header between the frontmatter and the first Day Plan (tier, register, GM line, standing facts, live workings and the trigger table, open threads) is copied into each new day file as written, so keep it current there. Without `log_dir`, or without a `Day N` in `currentDate`, the log stays one file per session.
 
 ### Step 6: Enforce Scene Pressure Protocol
 

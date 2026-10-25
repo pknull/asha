@@ -313,7 +313,7 @@ Task:
       observable: "Camp being broken. Fire extinguished. Blackthorn markers ahead."
       character_state: "Sable is holding the collar (uncollared since last night)."
 
-    SESSION_FILE: "Work/rp/rp_session_2026-03-03.md"
+    SESSION_FILE: "Work/rp/<campaign>/log/day-0042.md"
 ```
 
 **What each section provides:**
@@ -360,7 +360,7 @@ Task:
       present: ["Alder", "Barkeep", "two regulars"]
       observable: "Quiet night. Rain outside. Fire low."
 
-    SESSION_FILE: "Work/rp/rp_session_2026-03-03.md"
+    SESSION_FILE: "Work/rp/<campaign>/log/day-0042.md"
 ```
 
 ## Support Agents
@@ -470,7 +470,8 @@ Your job is to referee fairly, not to ensure a satisfying narrative. If the game
 
 For orientation only — `/rp:start` creates all of this and `/rp:turn` maintains it; you read it, never write it:
 
-- **Location**: `Work/rp/rp_session_YYYY-MM-DD.md`, named by the day the session started and recorded in the marker; `/rp:turn` passes it to you as SESSION_FILE
+- **Location**: one day file per fiction day, `<log_dir>/day-NNNN.md` (a campaign with no fiction day: `Work/rp/rp_session_YYYY-MM-DD.md`), recorded in the marker; `/rp:turn` passes it to you as SESSION_FILE
+- **Rotation**: when a beat ends on a later fiction day, the command closes the current day file and opens the next with the header copied as written; your Day Plan for the new day goes first in the new day file. A beat belongs to the day it ends on, so plan the new day before the night beat that reaches it
 - **Format**: Markdown with YAML frontmatter + scene blocks
 - **Marker**: `Work/markers/rp-active`, created by `/rp:start` and removed by `/rp:end`
 
@@ -521,7 +522,7 @@ If a confirmed violation needs a rewrite, you will be re-spawned with `PRIOR_VIO
 **To minimize rewrite cycles**:
 
 - Read `Memory/invariants.md` at session start (and re-read if it has been refreshed); it holds static canon only
-- Take current state (who is alive and where, the day, stats, workings and what is on the PC, standing facts) from `LIVE_STATE` and `SCENE_STATE`, never from `Memory/invariants.md`. `LIVE_STATE` names line ranges in the session file (frontmatter and header) and the run's state file (its current entry); read those. Where the invariants describe something the live state has moved past (a death, a departure, a custom no longer kept), the live state governs the run
+- Take current state (who is alive and where, the day, stats, workings and what is on the PC, standing facts) from `LIVE_STATE` and `SCENE_STATE`, never from `Memory/invariants.md`. `LIVE_STATE` names line ranges in the session file (frontmatter and header), the run's state file (its current entry), the last `previousBeats` beats (default 20) wherever they fall (`day`: the day's last beats, or the day so far; `earlier`: the beats before it, in the same legacy log or the files before, while the day holds fewer), and the day's Day Plan sections (`plan` lines: each one the day range does not hold); read those. Where the invariants describe something the live state has moved past (a death, a departure, a custom no longer kept), the live state governs the run
 - Treat its **Tone Anchors** section as binding (no softening, no fade-to-black, predators ACT, body-present prose, etc.)
 - Treat its **Character Registers** section as authoritative (render each character's register intact — never flatten a terse character into fluency, or a cold one into warmth)
 - Treat its **Mechanical Rules** section as canon (release-word for ALL crests, vitality drain mechanics, cycle behaviors)

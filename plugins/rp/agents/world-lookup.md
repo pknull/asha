@@ -21,7 +21,8 @@ CONTEXT: |
   PC mentioned wanting to visit "Ashfield House" to meet a contact.
   Scene is set in the campaign setting.
 TYPE_HINT: "location|character|artifact|faction|magic|any"
-SESSION_FILE: "Work/rp/rp_session_2026-02-03.md"  # Current session for pending canon
+SESSION_FILE: "Work/rp/<campaign>/log/day-0042.md"  # Current day file, for pending canon
+SESSION_FILES: ["Work/rp/<campaign>/log/day-0041.md", "Work/rp/<campaign>/log/day-0042.md"]  # optional: the whole session
 ```
 
 ## Search Protocol
@@ -51,7 +52,7 @@ If `Memory/canon-layout.md` does not exist, fall back to the historical default 
 
 ### 2. Session-Pending Canon
 
-Search the current session file for:
+Search the current session for (SESSION_FILE, and each file in SESSION_FILES when given; a session that crossed fiction days spans one day file per day, and each day file's frontmatter `continues:` names the one before):
 
 - New locations established during play
 - Character details revealed during scene
@@ -103,7 +104,7 @@ found: false
 query: "Ashfield House"
 searched:
   - "Lore/World/Places/**/*.md"
-  - "Work/rp/rp_session_2026-02-03.md"
+  - "Work/rp/<campaign>/log/day-0042.md"
 suggestions:
   - "May be a new location - GM should establish details"
   - "Similar: 'The Velvet Room' in Dreamlands section"
