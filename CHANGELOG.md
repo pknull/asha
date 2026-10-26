@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased — struck RP drafts, typed run state and day summaries (rp 0.4.0, write 1.12.0)
+
+- A draft the gate rejects (each draft a rewrite replaces, and a surrender's
+  final draft) is kept as a record, never as story. `/rp:turn` runs the new
+  `rp_gate.py strike`, which stashes it under `Work/rp/.gate/struck/`; `rotate`
+  writes it once, before the beat, into the file that beat goes to, as a folded
+  `> [!struck]` callout. Every read range skips it (one with a block inside
+  lists `parts`), and the ratifier, canon-writer, `/rp:end` and the search
+  agents leave it out. No model call.
+- A surrendered draft is struck, no longer appended under
+  `## VALIDATOR SURRENDER`; accept-anyway ships it as a beat of its own through
+  the ship step. A legacy surrender block is still honoured.
+- A session may keep its run state typed, in an optional `run:` block of its
+  frontmatter (stats, body, workings, clocks). The GM's delta changes it as
+  `run.<section>.<name>` entries, which the lint checks without a model call;
+  a clock past its day is a note, never a finding. A campaign without the
+  block is unchanged.
+- The new `rp_gate.py ship` replaces the GM's hand append and frontmatter edit:
+  one replace appends the beat (the new day's Day Plan first) and applies its
+  gated delta, so state never lands without its beat. A retry ships once, a
+  closed file is refused, and only the frontmatter lines the delta changes are
+  rewritten. `state --refresh` copies `run:` into the run state file's
+  generated block after a rotation and at `/rp:end`.
+- When rotation closes a fiction day, one haiku `timeline-search` call writes
+  that day's summary, and `summary --publish` checks it (its `## Day N`
+  heading, no beat after the day, a line cited only in a closed file and never
+  in a struck draft) and writes `Work/rp/summaries/<campaign>/day-NNNN.md`
+  once. `/rp:end` writes only the open day and the session's notes, and
+  `summary --stitch` assembles the session summary, with the state at close
+  copied from `run:`.
+
 ## Unreleased — one RP log file per fiction day (rp 0.4.0, write 1.12.0)
 
 - A campaign whose session frontmatter counts fiction days and names a

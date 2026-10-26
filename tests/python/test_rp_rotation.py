@@ -1423,7 +1423,7 @@ class ContractTests(unittest.TestCase):
         text = self.read("plugins/rp/commands/turn.md")
         ship = text.split("# 3e. Ship", 1)[1].split("# 3f.", 1)[0]
         self.assertIn('rp_gate.py" rotate', ship)
-        self.assertLess(ship.index('rp_gate.py" rotate'), ship.index("APPEND"))
+        self.assertLess(ship.index('rp_gate.py" rotate'), ship.index('rp_gate.py" ship'))  # ship appends the beat
         self.assertIn("earlier:", text)  # LIVE_STATE carries the continuity read, one line per range
         self.assertNotIn("previous_day", text)
         self.assertIn("never the whole day", text)

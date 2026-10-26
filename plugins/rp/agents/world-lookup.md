@@ -158,6 +158,7 @@ If exact match fails:
 
 ### Session-Pending Canon
 
+- Never take a fact from a `> [!struck]` block (a draft the gate struck); if you show one, mark it `[Struck]`, never `[Session-Pending]`
 - Mark clearly as `[Session-Pending]`
 - Include session file reference
 - Note these facts aren't canonized yet

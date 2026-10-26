@@ -80,9 +80,9 @@ Path conventions, matching the `write` plugin's posture (plugin content addresse
 | `Work/markers/rp-active` | session marker; records `session_file:` and `session_opened:`; `/rp:start` also appends a `<!-- rp-session-opened: <date> -->` line where the session opens, which `session` reports as `session_opened_line`; also gates the session plugin's per-turn routing nudge |
 | `Work/rp/<campaign>/log/day-NNNN.md` | session record, one file per fiction day (see **Day files**); the marker, not the clock, says which is live |
 | `Work/rp/rp_session_YYYY-MM-DD.md` | legacy session record, one per session, named by the day it starts; a campaign with no fiction day keeps it |
-| `Work/rp/_validator_log.jsonl` | one line per gate step: `lint`, `skipped`, `review`, `adjudicate`, `turn` |
+| `Work/rp/_validator_log.jsonl` | one line per gate step: `lint`, `skipped`, `review`, `adjudicate`, `turn`, `rotate`, `strike`, `ship` |
 | `.claude/modes/rp.yaml` | optional `turnGate` and `sessionLog` blocks (below) |
-| `Work/rp/{summaries,characters,pending-canon}/` | derived session artifacts |
+| `Work/rp/{summaries,characters,pending-canon}/` | derived session artifacts; `summaries/<campaign>/day-NNNN.md` holds one summary per closed fiction day |
 | `Memory/invariants.md` | the compiled invariants projection the per-turn gate reads: static canon only |
 | *(the run's state file)* | named by the session's `run_state:` frontmatter (or a ``State: `<path>` § <section>`` header line); with the session's frontmatter and header, the source of current state |
 | `Memory/canon-layout.md` | **the canon register** — maps entity kind → project path. Copy from `templates/canon-layout.md` |
@@ -110,10 +110,14 @@ disabled with `Work/markers/rp-priced-stakes-off` (the historical
 |---|---|
 | `session` | prints the live session file (the marker's `session_file:`, else with a warning the newest open session: the head of a day-file chain, or the newest legacy `Work/rp/rp_session_*.md` unless `/rp:end` closed it or it moved to day files; an older legacy log is never offered, so another campaign opens with `/rp:start load <session>`; when nothing is open but `/rp:end` closed a legacy log that can still rotate, the warning names it to `load` with the opening day), the gate settings, where current state is (`live_state`), the continuity read (`continuity`: the last `previousBeats` beats, and the day's `plans`), the files this session wrote (`session_files`) and any warnings |
 | `check` | lints one GM turn and routes it (ship, fix or review; a rewrite is always reviewed); appends `lint` (and `skipped`) lines |
-| `rotate` | before a beat ships: names the file it goes to, rotating to the next fiction day's file when the day moved (see **Day files**); `--start` records the session's opening in the marker; `--repair` only closes a file an interrupted rotation left open |
+| `rotate` | before a beat ships: names the file it goes to, rotating to the next fiction day's file when the day moved (see **Day files**), then writes the turn's struck drafts into it (see **Struck drafts**); `--start` records the session's opening in the marker; `--repair` only closes a file an interrupted rotation left open and writes struck drafts still waiting |
+| `strike` | keeps a draft the gate rejected: stashes the turn file's DRAFT for `rotate` to write |
 | `log` | appends a `review`, `adjudicate` or `turn` line |
 | `invariants` | reports live state in `Memory/invariants.md` and its age against the run's state; `--strict` exits 1 on live state (the `/rp:extract-invariants` check) |
 | `split` | read-only: plans how existing logs would cut into day files, every step-back, and (`--cite`) where each `rp_session_<date>.md:N` or `<MM-DD>:N` citation would land and whether the remap is exact |
+| `ship` | after `rotate`: appends the shipped text (the new day's Day Plan, then the beat) and applies the gated delta to the frontmatter in one write; never a closed file; a retry ships once (see **Run state**) |
+| `state` | reports the `run:` block's health; `--refresh` copies it into the run state file's generated block |
+| `summary` | lists the days a session closed and their summaries; `--publish` checks and writes a closed day's summary once; `--stitch` writes the session summary from them |
 
 **Current state never comes from the invariants.** `session` reports it as line
 ranges for the GM and the reviewer to read: the session file's frontmatter and
@@ -272,6 +276,137 @@ sessionLog:
 Both keys are optional; a mode file without the block keeps the defaults.
 `split` plans, without writing anything, how an existing log would cut into
 day files and how each old citation would remap.
+
+## Struck drafts
+
+A draft the gate rejects is kept as an audit trail, as SillyTavern keeps swipes
+beside the reply chosen: each draft a rewrite replaces, and a surrender's final
+draft. It is never canon and never state. `/rp:turn` runs `strike`, which
+stashes the turn file's DRAFT (the text the gate checked) under
+`Work/rp/.gate/struck/`; `rotate`, which runs before every shipped beat and at
+`/rp:start` and `/rp:end`, writes each stashed draft into the file it names,
+before the beat, then clears it. The beat's file is known only when its final
+draft ships (its day may rotate the log), so a strike never writes a log itself,
+and never a closed one: a struck draft lands in the file its beat goes to. A
+draft whose beat never shipped lands where its session went on: the current
+file at `/rp:end` or at the next `/rp:start` (before a later opening day closes
+that file), or the file that continues it when a session moved on without
+`/rp:end`.
+
+```markdown
+> [!struck]- STRUCK, not canon: Beat 4174, attempt 1, struck 2026-10-26. Reason: presence, scene_state_mismatch
+>
+> <the draft, line by line, as the gate checked it>
+>
+> <!-- rp-struck: 3f9c0a1b2c3d4e5f -->
+```
+
+Why an Obsidian callout: every line starts with `>`, so the block ends itself
+at the first line that does not, and a block cut short by a crash never takes in
+the beat after it. No heading, beat, Day Plan, footer or marker pattern matches
+a quoted line, so beat parsing, the day and rotation logic, the header copy and
+the footer test never see one. Obsidian shows it folded, under a title that
+says what it is. The key, a digest of beat, attempt and text, sits on the last
+line: a re-run never writes a block twice, and a block cut short (no key) is
+written again whole. The log already uses the word STRUCK for the Keeper's
+rulings, so the type `[!struck]`, not the word, marks a block.
+
+It costs play nothing: no model call, and nothing in the per-turn read. The
+header range, the header copied into the next day file and every continuity
+range skip struck drafts, as if they were not there; a range with one inside
+lists its `parts`, the pieces to read. A struck draft never breaks a range or
+ends the header, and a broken stash entry never stops a beat from shipping.
+The ratifier, canon-writer, the `/rp:end` summary, `timeline-search` and
+`world-lookup` exclude struck drafts, or label one struck wherever they show it;
+a closed day's summary range skips them like every other range.
+The edit pass and the mechanical fixes amend a draft rather than reject it, so
+they strike nothing; a beat the Keeper strikes in chat after it shipped stays in
+the log as played.
+
+## Run state
+
+A session may keep its PC's run state typed, in a `run:` block of its
+frontmatter beside `scene:`:
+
+```yaml
+run:
+  stats:                  # an integer, or "current/max"
+    POW: "54/60"
+  body:                   # one line of text per part, citing the beat that worked it
+    antlers: "stumps (broken D160, D162; B3328, B3709)"
+  workings:               # on or off
+    FIGHTS THE BIT: on
+    HOMING: off
+  clocks:                 # the fiction day it fires, and what fires (time optional)
+    vine-test: {day: 198, fires: "the vine test at the wall"}
+```
+
+The block is opt-in: without it, run state stays free text in the run state
+file and the session header, and nothing here changes. With it, the GM's
+SCENE_STATE_DELTA carries changes as `run.<section>.<name>` entries, and the lint
+checks each one: a known section, an existing stat (only the Keeper adds one),
+the stat's type as it stands, a body fact as one line of text, a working
+toggled only to `on` or `off` (a new working lands `on`; a new one turned `off`
+is a misspelling), and a clock as `{day, fires}` with its day between the
+beat's day and a year ahead. These findings are mechanical: the edit pass fixes
+them, one it leaves never sends a beat to the reviewer, and `ship` does not
+apply it. The reviewer sees `run.*` entries only in the deltas of beats already
+routed to it, and checks them against the prose (`scene_state_mismatch`).
+A clock past its day that no delta has fired or cleared is a note in `check`
+and `session`, never a finding.
+
+`ship` writes the beat and its delta in one replace of the open file, and
+records `shipped: "<beat>@<digest>"`: no state lands without its beat or the
+reverse, a retry after a crash ships once, a closed file is refused, and a
+concurrent hand edit is kept (`ship` starts again from the fresh file).
+Rotation copies the block into each day file, so each closed day file's
+frontmatter holds the state at the end of its day.
+
+After a rotation, `state --refresh` copies the block into the run state file
+(the session's `run_state:` pointer) as its section's first entry, between
+`<!-- rp-run-state ... -->` markers that record its digest, and puts it back
+first when a prose entry was written above it. Every other line is kept; a
+block edited by hand is not overwritten (the refresh refuses and says so); the
+block is never written into a session log or the invariants. The block is a
+copy: the frontmatter governs, and `session` warns when the section's current
+entry is hand-written prose while a `run:` block exists. With the block first,
+the per-turn read skips the run state file (the frontmatter holds the state),
+so a standing ruling or steer the GM must see each turn belongs in the session
+header, which every turn reads, not in a prose entry of the run state file.
+
+`ship` rewrites only the frontmatter lines its delta changes: every other line
+of a block, its comments, blank lines and values the gate's YAML subset does
+not model (floats, block scalars), stays as written. It then reads the whole
+frontmatter back and refuses, writing nothing, if any key would read
+differently from what it meant (a value the subset cannot hold, a line it
+cannot place). Bytes it does not change are kept: a BOM, CRLF line ends, bytes
+that are not UTF-8.
+
+## Day summaries
+
+When rotation closes a fiction day, `/rp:turn` writes that day's summary
+after the beat is shown: one haiku call (`timeline-search`, DAY SUMMARY) over
+the day's beats and Day Plans, struck drafts left out (`parts`), then
+`summary --publish`, which writes
+`Work/rp/summaries/<campaign>/day-NNNN.md` (the campaign directory is the
+`log_dir` under `Work/rp/`, without its trailing `/log`) under generated
+frontmatter, once. It refuses a summary that cites a line in a file still open
+(cite beats; a line only in a file rotation has footered), a line of a struck
+draft, a beat after the day's highest, or the wrong `## Day N` heading; a
+different text for a day already summarised is refused, never overwritten.
+Only `<file>.md:<line>`
+citations without spaces in the path are checked; the logs' short forms
+(`10-24:42`) are not. A day closed by `/rp:start`, before the session's own
+files, is due all the same: `summary` (run at each rotation and at `/rp:end`)
+walks back through every closed day of the run, at most 64, and lists each
+without its summary; `session`'s `summaries_due` stops at the first summarised
+day, so it costs a hop or two per turn. A closed day's range stops before a
+later day's Day Plan written early into its file. `/rp:end` then writes only
+the open day's part and the session's own notes, and `summary --stitch`
+assembles the session summary: the day summaries in day order, those notes,
+and last the GM's own "State at close" (place, gear, what typed state does not
+hold) with a copy of the `run:` block under it. `session` lists closed days
+still without a summary (`summaries_due`).
 
 ## Design note — projection vs source
 

@@ -26,7 +26,7 @@ You are spawned by the modified `/rp-end` flow, between session-summary generati
 SESSION_FILE: "Work/rp/<campaign>/log/day-NNNN.md"  # the current day file (a legacy log: Work/rp/rp_session_YYYY-MM-DD.md)
 SESSION_FILES: ["<day file>", "..."]  # every file the session wrote, oldest first; absent means SESSION_FILE alone
 INVARIANTS_FILE: "Memory/invariants.md"
-SUMMARY_FILE: "Work/rp/summaries/YYYY-MM-DD.md"  # If already generated
+SUMMARY_FILE: "Work/rp/summaries/YYYY-MM-DD.md"  # If already generated: the stitched session summary, holding each closed day's summary
 
 # Either CANON_PROPOSALS is provided directly, or you derive them from the session
 CANON_PROPOSALS:
@@ -52,6 +52,7 @@ If CANON_PROPOSALS is absent, you derive them yourself by reading the session (e
 
 - Read INVARIANTS_FILE in full
 - Read the session: each file in SESSION_FILES in order, else SESSION_FILE (or SUMMARY_FILE if dense). A session that crossed fiction days spans one day file per day
+- Never take a candidate from a `> [!struck]` callout block (a draft the gate struck, kept as a record: never canon), nor from a legacy `## VALIDATOR SURRENDER` block without the `KEEPER: accepted` marker. A CANON_PROPOSALS item whose only source is one is dropped, and named as such in the summary
 - If CANON_PROPOSALS not provided, scan session for canon candidates:
   - New named locations (proper nouns describing places)
   - New named NPCs introduced
