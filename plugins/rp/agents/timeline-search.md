@@ -33,7 +33,8 @@ SESSION_RANGE:
 | Source | Path | Content |
 |--------|------|---------|
 | Session Logs | the `session_record` globs in `Memory/canon-layout.md`; default `Work/rp/rp_session_*.md` and `Work/rp/*/log/day-*.md` | Raw session transcripts: one day file per fiction day, or one legacy log per session |
-| Summaries | `Work/rp/summaries/*.md` | Condensed session summaries |
+| Summaries | `Work/rp/summaries/*.md` | Condensed session summaries (each stitches its day summaries in) |
+| Day summaries | `Work/rp/summaries/<campaign>/day-NNNN.md` | One per fiction day, written when rotation closed the day |
 | Character States | `Work/rp/characters/*.md` | Character evolution notes |
 
 ### Secondary Sources (for deeper context)
@@ -81,6 +82,7 @@ A closed day file ends with a footer naming the file it continues in, and each d
 
 Within files, look for:
 
+- Never an event from a `> [!struck]` callout block: a draft the gate struck, kept as a record. Show one only when the query asks for a struck or rejected draft, labelled `struck: true` with its beat and attempt
 - YAML frontmatter `currentDate` for in-fiction date
 - Character mentions in prose
 - Scene transitions
@@ -157,6 +159,24 @@ search_metadata:
 
 Return the summary of the most recent session: the newest file in `Work/rp/summaries/`, and the open day file (the one with no rotation footer) for where play stands.
 
+### "DAY SUMMARY: Day N"
+
+Spawned by `/rp:turn` once rotation has closed a fiction day. You get `BEATS` (the closed file and the line range of the day's beats, or its `parts`, several ranges, when struck drafts lie between them) and `PLANS` (the day's Day Plan ranges, likewise as `parts` when a struck draft lies inside one). Read only those ranges. Return markdown text, not YAML, that opens with `## Day N (<weekday>)` and then lists what happened in order, one bullet per beat or run of beats:
+
+```markdown
+## Day 197 (Tuesday)
+
+- **~06:37, the barn (B4177):** Liss: "Neck's red." / "Caught you." He took the twelve oak boards down from the loft.
+- **~07:02 (B4179):** Mira paid game one: Liss at the forge-lane oak at night, more than once. Why is HIDDEN.
+- **Clocks:** the vine test D198 (the Day Plan); THE CURE Day 2 of 30.
+```
+
+- Cite every event by beat number (`B4177`). A line may be cited only in the closed file you were given (`garret/log/day-0197.md:120`); cite no line in any other session file.
+- Quote speech exactly or not at all. Mark anything the log does not say outright `INFERRED`. Never invent, and cite no beat after the day's last.
+- The PC's moves are the Keeper's: report what he did and said as the log records it. Never add his thoughts, feelings or choices.
+- A struck or rejected draft (a struck callout, a VALIDATOR SURRENDER block without "KEEPER: accepted") is a record of what the gate refused, not an event: leave it out.
+- No frontmatter: the publisher writes it. Keep it under about 4 KB; it is a summary, not a retelling.
+
 ### "What happened with [character]"
 
 Search for all events involving character, chronologically sorted.
@@ -203,6 +223,8 @@ This agent is spawned by the **roleplay-gm** orchestrator when:
 - NPC needs to reference shared history
 
 Results return to GM for synthesis. The GM uses timeline data to maintain narrative consistency.
+
+`/rp:turn` and `/rp:end` also spawn it, on haiku, for a closed day's **DAY SUMMARY**; the command publishes the text it returns.
 
 ## Performance Notes
 

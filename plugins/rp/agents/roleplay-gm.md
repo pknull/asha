@@ -261,7 +261,7 @@ tactical choices. Trust it and do not override it.
 
 # Scene State Schema
 
-This state lives in the session file's YAML frontmatter. **You do not maintain that file: Claude Code prevents it through the tool allowlist, and on every other harness it remains a mandatory instruction.** Instead, whenever your draft changes any of these fields (time advances, the scene moves, someone enters or leaves, power shifts), emit a `SCENE_STATE_DELTA` block alongside the draft listing only the changed keys and their new values. **Key format: schema dot-paths in the `scene.*` namespace only** (`scene.time`, `scene.location`, `scene.participants`, `scene.mood`, `scene.power_holder`). Never emit the root mirrors (`currentTime`, `currentLocation`, `participants`) — the calling command derives those from `scene.*` in one direction, which is what keeps the two copies from drifting.
+This state lives in the session file's YAML frontmatter. **You do not maintain that file: Claude Code prevents it through the tool allowlist, and on every other harness it remains a mandatory instruction.** Instead, whenever your draft changes any of these fields (time advances, the scene moves, someone enters or leaves, power shifts), emit a `SCENE_STATE_DELTA` block alongside the draft listing only the changed keys and their new values. **Key format: schema dot-paths in the `scene.*` namespace** (`scene.time`, `scene.location`, `scene.participants`, `scene.mood`, `scene.power_holder`), plus `currentDate`, and `run.*` when the session keeps typed run state (below). Never emit the root mirrors (`currentTime`, `currentLocation`, `participants`) — the calling command derives those from `scene.*` in one direction, which is what keeps the two copies from drifting.
 
 The calling command applies your delta to the frontmatter when — and only when — the draft clears the continuity gate, and the reviewer checks the delta against your prose both ways (`scene_state_mismatch`): claim only what the prose enacts, and delta everything the prose enacts. A rejected draft's delta is discarded with it, which is what keeps phantom state out of the session file.
 
@@ -288,8 +288,15 @@ scene:
   pending_rolls: []
   power_holder: "the Proprietor"
   power_method: "social position"
+run:                      # only in a session that keeps typed run state
+  stats: {POW: "54/60", HP: "20/20"}
+  body: {hooves: "feathered draught hooves, shod (T21, B3549)"}
+  workings: {SURE-FOOTED: "on", HOMING: "off"}
+  clocks: {vine-test: {day: 198, fires: "the vine test at the wall"}}
 ---
 ```
+
+When the frontmatter carries `run:`, the PC's run state changes through the same delta, one entry per change, as `run.<section>.<name>`: `run.stats.POW: "53/60"` (the type it has now), `run.workings.HOMING: on` (only `on` or `off`; a working laid for the first time lands `on`), `run.body.antlers: "stumps, velvet over them (B4131)"` (one line, citing the beat that worked it; `null` when the part is gone), `run.clocks.wheels: {day: 200, fires: "Jory's wheels"}` (the day it fires, not before the beat's day; `null` once it has fired). Only the Keeper adds a stat. Keep this state out of the PC's `role` string: a role string that changes every beat makes every beat a `pc_change`. Without `run:` in the frontmatter, emit no `run.*` keys.
 
 ---
 
@@ -472,6 +479,7 @@ For orientation only — `/rp:start` creates all of this and `/rp:turn` maintain
 
 - **Location**: one day file per fiction day, `<log_dir>/day-NNNN.md` (a campaign with no fiction day: `Work/rp/rp_session_YYYY-MM-DD.md`), recorded in the marker; `/rp:turn` passes it to you as SESSION_FILE
 - **Rotation**: when a beat ends on a later fiction day, the command closes the current day file and opens the next with the header copied as written; your Day Plan for the new day goes first in the new day file. A beat belongs to the day it ends on, so plan the new day before the night beat that reaches it
+- **Struck drafts**: a `> [!struck]` callout is a draft the gate rejected, kept as a record. It is never story or state: never build on it, cite it as history or count it as a beat. LIVE_STATE's ranges leave it out
 - **Format**: Markdown with YAML frontmatter + scene blocks
 - **Marker**: `Work/markers/rp-active`, created by `/rp:start` and removed by `/rp:end`
 

@@ -24,7 +24,9 @@ This command uses the conventional RP layout. A project adopting it supplies:
 | `Work/rp/<campaign>/log/day-NNNN.md` | the live session record, one file per fiction day (resolved through the marker, never the date); its frontmatter and header carry current state. A legacy `Work/rp/rp_session_*.md` log works too, and rotates into day files once its frontmatter names a `log_dir` |
 | the run's state file | named by the session: `run_state: "<path>#<section>"` in its frontmatter, else a ``State: `<path>` § <section>`` line in its header |
 | `Work/rp/_validator_log.jsonl` | per-turn telemetry: one line per gate step |
-| `Work/rp/.gate/turn.md` | scratch: the current GM turn, overwritten on each attempt |
+| `Work/rp/.gate/turn.md` | scratch: the current GM turn, overwritten on each attempt (and `beat.md`, the text `ship` appends; `day-summary.md`, a closed day's summary before it is published) |
+| `Work/rp/.gate/struck/` | drafts the gate struck, kept until `rotate` writes them into the log (see **Struck drafts**) |
+| `Work/rp/summaries/<campaign>/day-NNNN.md` | one summary per fiction day, published once after rotation closes the day |
 | `.claude/modes/rp.yaml` | optional: the `turnGate` block (policy, rewrite caps, models; see the plugin README) |
 
 ## Preconditions
@@ -53,9 +55,11 @@ The `session` command prints `{"path", "source", "warning", "gate", "live_state"
 
 `live_state` says where current state is, as line ranges: `frontmatter` and `header` in SESSION_FILE (the header runs to the first Day Plan or beat heading), and `run_state` (the run's state file, its section, and `current`, the section's first entry). Its `warnings` say what could not be resolved; with no `run_state`, current state comes from the session alone.
 
-`continuity` is the continuity read, as line ranges: the last `beats` beats (`sessionLog.previousBeats` in the mode file, default 20), wherever they fall, and never the whole day once it holds more. `current` is its part in SESSION_FILE: the day's last `beats` beats (`whole_day: false`), or, while the day holds fewer, the day so far with its Day Plan (`whole_day: true`; in a legacy log the day starts at its first Day Plan or beat). `previous` is a list, oldest first, that tops the read up to `beats` from before the day: a legacy log's earlier beats, then the files before it, a day file's `continues:` first. `plans` lists, in order, every Day Plan section of the current day that the `day` range does not hold (the first plan, an ADDENDUM, a second session's plan, or one written early before an earlier day's last beat, in this file or the file before), since a long day's window no longer reaches them; it is empty when the `day` range holds them all or the day has none. `current` is null and `previous` empty when there is nothing to read; `continuity` is null when the session has no fiction day. A `rotation_warning` means an earlier rotation stopped before closing the old file; Step 3e's `rotate` closes it, so do not tell the Keeper.
+`continuity` is the continuity read, as line ranges: the last `beats` beats (`sessionLog.previousBeats` in the mode file, default 20), wherever they fall, and never the whole day once it holds more. `current` is its part in SESSION_FILE: the day's last `beats` beats (`whole_day: false`), or, while the day holds fewer, the day so far with its Day Plan (`whole_day: true`; in a legacy log the day starts at its first Day Plan or beat). `previous` is a list, oldest first, that tops the read up to `beats` from before the day: a legacy log's earlier beats, then the files before it, a day file's `continues:` first. `plans` lists, in order, every Day Plan section of the current day that the `day` range does not hold (the first plan, an ADDENDUM, a second session's plan, or one written early before an earlier day's last beat, in this file or the file before), since a long day's window no longer reaches them; it is empty when the `day` range holds them all or the day has none. `current` is null and `previous` empty when there is nothing to read; `continuity` is null when the session has no fiction day. Every range leaves struck drafts out: an entry with one inside carries `parts`, the pieces to read. A `rotation_warning` means an earlier rotation stopped before closing the old file; Step 3e's `rotate` closes it, so do not tell the Keeper.
 
 `invariants.warnings` lists `live_state` (the invariants still carry a snapshot of state, with its lines), `stale` (`last_extraction` predates the run's state) or `no_extraction_date`. Tell the Keeper each once per session, in one line, with the fix (`/rp:extract-invariants`), and proceed: the gate reads current state from LIVE_STATE either way, and the reviewer ignores any snapshot in the invariants.
+
+`run` reports typed run state: `schema` is true when the session frontmatter carries a `run:` block (stats, body facts, workings on or off, clocks; see the plugin README). Its `warnings` are yours, not the Keeper's: a malformed entry is fixed by hand between turns (as a `log_dir` line is added), and a hand-written current entry in the run state file goes back below the block at the next `state --refresh`. `notes` lists clocks past their day that no delta has fired or cleared (`key`, `day`): fire each in the fiction when it is due, then clear it (`<key>: null`) or move it in a delta. `check` reports the same as `lint.run_notes`. `state_block` says whether the run state file's generated copy of the block is behind the fiction day, and `summaries_due` lists closed days just behind the session with no summary yet, including one `/rp:start` closed (`summary`, run by Step 3e and `/rp:end`, walks the whole run and writes every missing one).
 
 If any precondition fails, halt and inform the Keeper. Do not proceed.
 
@@ -79,7 +83,7 @@ LIVE_STATE:
   plan: <path> lines <start>-<end>  (<heading>)   # one line per continuity.plans entry, in order
 ```
 
-When `header` is null (the Day Plan follows the frontmatter), the session range ends at `frontmatter.end`; when `header.truncated` is true, add "(header cut at 250 lines)". When `current` is null (the section opens with a subheading), give the section's range instead, marked "search it; do not read it whole". Omit the `run_state` line when `live_state.run_state` is null, the `day` line when `continuity.current` is null, and the `earlier` lines when `continuity.previous` is empty. Write "so far" when `whole_day` is true, else "its last <beats> beats"; omit the beat span when `first_beat` is null (a day with only its Day Plan). Write a `plan` line for each `continuity.plans` entry (none when the list is empty: the `day` range holds the plan). The reader reads these ranges, never the whole day. Current state is never read from `Memory/invariants.md`, which holds static canon: where the two disagree (a death, a departure, a custom no longer kept), LIVE_STATE governs the run.
+When `header` is null (the Day Plan follows the frontmatter), the session range ends at `frontmatter.end`; when `header` has `parts`, or `header.start` is past `frontmatter.end + 1` (a struck draft sits in the header region), write the session range as `<frontmatter.start>-<frontmatter.end>` and then the header's parts, or `<header.start>-<header.end>`; when `header.truncated` is true, add "(header cut at 250 lines)". When `current` is null (the section opens with a subheading), give the section's range instead, marked "search it; do not read it whole". Omit the `run_state` line when `live_state.run_state` is null or `generated` (that entry is the copy of the frontmatter's `run:` block, which the session range already holds), the `day` line when `continuity.current` is null, and the `earlier` lines when `continuity.previous` is empty. Write "so far" when `whole_day` is true, else "its last <beats> beats"; omit the beat span when `first_beat` is null (a day with only its Day Plan). When an entry has `parts`, write its lines as those parts (`lines 1000-1180, 1210-1380`): the lines between are struck drafts, never read. Write a `plan` line for each `continuity.plans` entry (none when the list is empty: the `day` range holds the plan). The reader reads these ranges, never the whole day. Current state is never read from `Memory/invariants.md`, which holds static canon: where the two disagree (a death, a departure, a custom no longer kept), LIVE_STATE governs the run.
 
 ### Step 3: Attempt loop
 
@@ -127,9 +131,10 @@ LOOP:
 
       Emit GM_SPAWN_LOG, SOURCE_LOG (with priced_stake_touched,
       canon_proposed and pc_changed) and SCENE_STATE_DELTA (changed
-      frontmatter keys only — time, location, participants, power) with
-      the draft. You cannot write files; the delta is how state changes
-      reach the session file.
+      frontmatter keys only — time, location, participants, power, and
+      run.* when the session keeps a run: block) with the draft. You
+      cannot write files; the delta is how state changes reach the
+      session file.
 
   Receive DRAFT, GM_SPAWN_LOG, SOURCE_LOG and SCENE_STATE_DELTA from roleplay-gm output.
 
@@ -214,6 +219,10 @@ LOOP:
     clean (all overturned) or soft only → apply any soft fixes in the edit
       pass, run check with --final, go to 3e.
     confirmed hard, not hard_fail, and REWRITES < MAX_REWRITES →
+      STRIKE the draft the rewrite replaces, before the GM is spawned again
+      (the rewrite's 3b overwrites the turn file; drop --beat only when the
+      session numbers no beats):
+        ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" strike --project-dir . --session-file "<SESSION_FILE>" --turn-file Work/rp/.gate/turn.md --attempt <ATTEMPT_NUMBER> --beat <label> --reason "<confirmed categories>"
       ESCALATED = true; PRIOR_VIOLATIONS = the confirmed violations;
       REWRITES += 1; ATTEMPT_NUMBER += 1; continue LOOP at 3a.
     otherwise (hard_fail, or no rewrites left) → 3f.
@@ -223,13 +232,15 @@ LOOP:
   Work/rp/.gate/turn.md holds the turn as it ships (after any edit pass).
   Run (add --beat <label> when the session numbers its beats):
     ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" rotate --project-dir . --session-file "<SESSION_FILE>" --turn-file Work/rp/.gate/turn.md
-  It prints {"action", "path", "previous", "day", "flag", "warnings"}. From
-  here on SESSION_FILE is `path`, for the append, the delta and the turn line.
+  It prints {"action", "path", "previous", "day", "flag", "struck",
+  "warnings"}. From here on SESSION_FILE is `path`, for the append, the delta
+  and the turn line. `struck` names the struck drafts now in `path` (this
+  turn's and any a crash left waiting), in place before the beat.
   The beat heading you write carries `day` (Day <day>).
     rotated   → the day moved on: `previous` now ends with a footer pointing
                 to `path`, which opens with the header copied as written.
-                Never edit `previous` again. Write the GM's Day Plan for the
-                new day into `path` first, then the beat.
+                Never edit `previous` again. The GM's Day Plan for the new
+                day goes first in the shipped text, then the beat.
     step_back → the beat's day is earlier than the file's (a flashback or a
                 numbering slip): it stays in this file. Append `flag` (already
                 in parentheses) at the very end of the beat heading, after the
@@ -243,26 +254,53 @@ LOOP:
                 with --allow-jump.
   The day comes from the gated delta, never from a heading. A failed rotate
   is safe to run again as is.
-  APPEND DRAFT to SESSION_FILE
-  APPLY SCENE_STATE_DELTA to SESSION_FILE's YAML frontmatter
-    (state rides the same gate as prose: a delta is applied only once the
-    draft clears the gate, so rejected drafts leave no phantom state behind.
-    Without this step the frontmatter goes stale and every later turn's
-    SCENE_STATE and lint are built from the wrong scene.)
-    Merge semantics: delta keys are schema dot-paths with scene.* as the
-    canonical namespace (scene.time, scene.location, scene.participants,
-    scene.mood, scene.power_holder, ...). After applying scene.*, sync the
-    root mirrors from it: currentTime := scene.time, currentLocation :=
-    scene.location, participants := scene.participants names. The GM never
-    emits the root keys directly — one namespace, one merge direction, or
-    the mirrors drift apart.
-  Log the turn (Step 4) and OUTPUT DRAFT to Keeper. BREAK.
+  SHIP: write Work/rp/.gate/beat.md with the text the log gets (the new
+  day's Day Plan first when rotate said rotated, then the beat heading, then
+  DRAFT), and run (add --beat <label> when the session numbers its beats):
+    ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" ship --project-dir . --session-file "<SESSION_FILE>" --turn-file Work/rp/.gate/turn.md --append-file Work/rp/.gate/beat.md
+  ship appends the text and applies SCENE_STATE_DELTA to the frontmatter in
+  one write, so neither lands without the other, and it refuses a closed
+  file. State rides the same gate as prose: a delta is applied only once
+  its draft clears the gate, so rejected drafts leave no phantom state;
+  their text is kept only as struck drafts.
+  Merge semantics: scene.* is the canonical namespace, and ship syncs the
+  root mirrors from it (currentTime := scene.time, currentLocation :=
+  scene.location, participants := scene.participants names); run.* changes
+  the run: block. A run.* entry, an unknown key or a root mirror the lint
+  would still flag is not applied: ship lists it under `dropped`; name it in
+  the turn line. A ship re-run after a crash ships once. On this path never
+  append the beat or edit the frontmatter by hand.
+  Log the turn (Step 4) and OUTPUT DRAFT to Keeper.
+  Only when rotate said rotated, after the output (the Keeper waits on
+  neither):
+    1. Refresh the state block (no model call):
+       ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" state --refresh --project-dir .
+       It copies the frontmatter's run: block into the run state file's
+       generated block, keeping every hand-written line; without run: it does
+       nothing. refused means the block was edited by hand: tell the Keeper
+       once, and go on.
+    2. Summarise the closed day (one model call per fiction day). Run
+       `rp_gate.py summary --project-dir .`; take each `days` entry that does
+       not `exist` (rotate's `previous`, and any earlier day still due). Spawn
+       timeline-search (model haiku, in the background where the harness
+       allows) with QUERY "DAY SUMMARY: Day <day>" and the entry's `beats`
+       and `plans` ranges, each as its `parts` when it has them (the lines
+       between are struck drafts). Write the text it returns to
+       Work/rp/.gate/day-summary.md, then run
+       `rp_gate.py summary --project-dir . --day <day> --publish Work/rp/.gate/day-summary.md`.
+       A refusal names what to fix (a line cited in a file still open or in a
+       struck draft, a beat after the day): fix the text yourself and publish
+       again, never with a second model call. A day summary is published
+       once, never overwritten.
+  BREAK.
 
   # 3f. Surrender
-  APPEND DRAFT + violations report to SESSION_FILE under a "## VALIDATOR SURRENDER" block
-    (no rotate: a surrendered draft stays in the current file; if the
-    Keeper accepts it and its delta moves the day, the next shipped beat
-    rotates)
+  STRIKE the final draft: the gate rejected it, so it is kept as a record,
+  never as story (drop --beat only when the session numbers no beats):
+    ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" strike --project-dir . --session-file "<SESSION_FILE>" --turn-file Work/rp/.gate/turn.md --attempt <ATTEMPT_NUMBER> --beat <label> --reason "surrendered: <categories>"
+  Nothing is appended to SESSION_FILE now: the next rotate (3e of the beat
+  that ships, or /rp:end) writes the turn's struck drafts into the file that
+  beat goes to.
   Log the turn (Step 4) with verdict surrendered.
   OUTPUT DRAFT to Keeper plus violations report plus prompt:
     "Validator surrendered after <ATTEMPT_NUMBER> attempts. Draft above with violations.
@@ -272,13 +310,18 @@ LOOP:
   Log the Keeper's choice as a second turn line (--verdict keeper_accepted,
   keeper_edited or keeper_retry; a retry then starts a new turn).
   On (1) accept-anyway: the Keeper's acceptance IS the gate decision for
-  this draft. Apply its SCENE_STATE_DELTA (same merge semantics as the
-  ship path — skipping it reintroduces the stale-frontmatter bug through
-  the surrender door) and append the line "KEEPER: accepted" inside the
-  VALIDATOR SURRENDER block. /rp:end treats surrender blocks WITHOUT that
-  marker as non-canon: their events never enter ratification.
-  On (3): apply the delta only after the Keeper's edit ships, and revise
-  the delta first if the edit changed the state facts.
+  this draft. Ship it through 3e as it stands, "KEEPER: accepted after
+  surrender" in its beat heading: rotate, write Work/rp/.gate/beat.md as 3e
+  does (the new day's Day Plan first when rotate said rotated, then the beat
+  heading, then the draft), and ship it, which appends it and applies its
+  SCENE_STATE_DELTA in one write (skipping the delta reintroduces the
+  stale-frontmatter bug through the surrender door); then 3e's refresh and
+  summary if rotate said rotated. The struck copy stays as the record of
+  what the gate rejected; only the shipped beat is story.
+  On (2): the new turn's rejected drafts are struck in turn, and all of them
+  reach the file its beat goes to.
+  On (3): put the Keeper's edit in Work/rp/.gate/turn.md, revising the
+  delta first if the edit changed the state facts, and ship it through 3e.
   BREAK.
 
 END LOOP
@@ -324,7 +367,12 @@ Do not narrate the validation process to the Keeper unless they ask. The gate ru
 | continuity-reviewer spawn fails | Surface error and offer to ship the draft unvalidated (Keeper's choice); log the turn with verdict `unreviewed` |
 | No rewrites left | Surrender flow as above |
 | `rp_gate.py rotate` fails | Surface the error and run the same command again: every step is safe to repeat. Do not append the beat until it names a file |
+| `rotate` warns about struck drafts (an entry it cannot read or write, or one whose session file is gone) | Ship the beat anyway: a struck draft never holds one back. Tell the Keeper once, naming the stash file; it stays in `Work/rp/.gate/struck/` |
+| `rp_gate.py strike` fails | Run the same command again (a kept draft is never kept twice). If it still fails, tell the Keeper once that the draft was not kept, and go on: a struck draft is a record, never story |
 | `rotate` answers `refused` | Halt; show the Keeper the warning (a day file of that name belongs to another run or is closed, or the day jumps more than 7 days; for a real jump the Keeper confirms and `rotate` runs again with `--allow-jump`) |
+| `rp_gate.py ship` fails | Surface the error and run the same command again: a retry ships once. An `ERROR` (a closed file, a malformed delta) wrote nothing: fix what it names. Never append the beat by hand |
+| `state --refresh` answers `refused` | The block was edited by hand, or the run state pointer names a log or the invariants: tell the Keeper once; play goes on (the frontmatter governs) |
+| The day summary fails | Play goes on; `summaries_due` keeps the day, and `/rp:end` writes it |
 
 ## Arguments
 
@@ -348,5 +396,20 @@ ARGUMENTS: {command_args}
   | Worst case, routine (1 rewrite) | 8 sonnet | 4 sonnet + 1 haiku |
   | Worst case, consequential (3 rewrites) | 8 sonnet | 8 sonnet + 1 haiku |
 
+- Run state with a `run:` block adds no model call per beat: its entries are linted (a known field, the right type, a working only on or off, a clock's day from the beat's day to a year ahead), a finding the edit pass leaves never sends a beat to the reviewer, and the reviewer sees `run.*` entries only in the deltas of beats already routed to it. Once per fiction day, after the beat that closed the day is shown, one haiku call writes that day's summary.
 - The table assumes the harness honours a per-spawn `model`, as Claude Code's Task tool does. Codex, Copilot and OpenCode were not checked here: where a spawn ignores it, the routine pass and the adjudicator run on the same model and adjudication buys a second opinion rather than a cheaper first one.
 - `turnGate.review: every` restores review on every beat; `lint-only` spends a model call on review only for `[validate]`.
+
+## Struck drafts
+
+A draft the gate rejects is kept as a record, never as story: each draft a rewrite replaces (3d), and a surrender's final draft (3f). `strike` stashes the turn file's DRAFT, and `rotate` writes it into the file the beat goes to, before the beat, as a folded callout:
+
+```markdown
+> [!struck]- STRUCK, not canon: Beat 4174, attempt 1, struck 2026-10-26. Reason: presence, scene_state_mismatch
+>
+> <the draft, line by line, as the gate checked it>
+>
+> <!-- rp-struck: 3f9c0a1b2c3d4e5f -->
+```
+
+No model call and nothing extra in any read: the continuity ranges leave it out (`parts`), it is no beat, header or Day Plan, and ratification, the summary and canon exclude it. The edit pass and the mechanical fixes amend a draft rather than reject it, so they strike nothing. A beat the Keeper strikes in chat after it shipped has no path here: it stays in the log as played.

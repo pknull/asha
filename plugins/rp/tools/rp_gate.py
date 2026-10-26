@@ -7,15 +7,20 @@ draft; it decides whether a model reviewer is worth spending on the beat.
   session     print the live session file (marker first, never the clock), where
               its live state is, the day's continuity read, and any warnings
   check       lint one GM turn, route it, append the lint (and skipped) lines
-  rotate      before a beat ships: move to the next fiction day's log file
+  rotate      before a beat ships: move to the next fiction day's log file, then write the turn's struck drafts
+  strike      keep a draft the gate rejected, for rotate to write as a STRUCK block
+  ship        append the beat and apply its gated delta, in one write
+  state       the run: block's health; --refresh copies it into the run state file
+  summary     the days a session closed; --publish one day's summary; --stitch the session's
   log         append one review, adjudicate or turn line to the validator log
   invariants  report live state in Memory/invariants.md and its staleness
   split       plan, read-only, how existing logs would cut into day files
 
 The lint checks only what can be checked mechanically: the closing
-Scene/Location/Present anchor, named actors against the scene's people, and
-SCENE_STATE_DELTA keys and their agreement with the anchor. Everything that
-needs judgement belongs to the continuity reviewer.
+Scene/Location/Present anchor, named actors against the scene's people,
+SCENE_STATE_DELTA keys and their agreement with the anchor, and the form of
+each typed run state change. Everything that needs judgement belongs to the
+continuity reviewer.
 
 Current state is never read from the invariants: it lives in the session's
 frontmatter and header and in the run's state file, which the session names.
@@ -23,18 +28,25 @@ frontmatter and header and in the run's state file, which the session names.
 One log file per fiction day: when a beat's day is later than its file's, the
 file closes with a footer and the next day's file opens with the header copied
 as written. A closed file is never edited again, so file:line citations hold.
+
+A draft the gate rejects is kept, never as story: strike stashes it, and rotate
+writes it into the file its beat goes to as a STRUCK callout that every reader
+here skips.
 """
 from __future__ import annotations
 
 import argparse
 import copy
 import datetime
+import difflib
 import errno
 import glob
+import hashlib
 import itertools
 import json
 import os
 import re
+import stat
 import sys
 import time
 from pathlib import Path
@@ -92,8 +104,13 @@ SECTIONS = ("KEEPER_INPUT", "DRAFT", "GM_SPAWN_LOG", "SOURCE_LOG", "SCENE_STATE_
 
 
 def _strip_comment(line: str) -> str:
-    out, quote = [], None
-    for i, ch in enumerate(line):
+    out, quote, i = [], None, 0
+    while i < len(line):
+        ch = line[i]
+        if quote and ((quote == '"' and ch == "\\") or (quote == "'" and line[i:i + 2] == "''")):
+            out.append(line[i:i + 2])  # an escaped quote does not close the scalar
+            i += 2
+            continue
         if quote:
             if ch == quote:
                 quote = None
@@ -102,13 +119,18 @@ def _strip_comment(line: str) -> str:
         elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
             break
         out.append(ch)
+        i += 1
     return "".join(out).rstrip()
 
 
 def _split_flow(text: str) -> list[str]:
-    parts, buf, quote, depth = [], [], None, 0
+    parts, buf, quote, depth, escaped = [], [], None, 0, False
     for ch in text:
-        if quote:
+        if escaped:
+            escaped = False
+        elif quote == '"' and ch == "\\":
+            escaped = True
+        elif quote:
             quote = None if ch == quote else quote
         elif ch in "\"'":
             quote = ch
@@ -155,7 +177,7 @@ def _scalar(text: str):
     return t
 
 
-KEY_RE = re.compile(r"""^("[^"]*"|'[^']*'|[^\s"'\-#][^:]*?|-[^\s][^:]*?)\s*:(?:\s+(.*)|)$""")
+KEY_RE = re.compile(r"""^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s"'\-#][^:]*?|-[^\s][^:]*?)\s*:(?:\s+(.*)|)$""")
 
 
 def _split_key(text: str):
@@ -163,8 +185,13 @@ def _split_key(text: str):
     if not m:
         return None, None
     key = m.group(1)
-    if key[:1] in "\"'":
-        key = key[1:-1]
+    if key[:1] == '"':
+        try:
+            key = json.loads(key)
+        except ValueError:
+            key = key[1:-1]
+    elif key[:1] == "'":
+        key = key[1:-1].replace("''", "'")
     return key, (m.group(2) or "")
 
 
@@ -218,7 +245,7 @@ def _seq(rows, i, indent):
                 out.append(None)
             continue
         key, _rest = _split_key(item)
-        if key is not None and item[:1] not in "\"'[":
+        if key is not None and item[:1] not in "\"'[{":  # "- {a: b}" is a flow mapping, not a key "{a"
             child = indent + len(text) - len(item)
             sub = [(child, item)]
             while i < len(rows) and rows[i][0] > indent:
@@ -231,9 +258,12 @@ def _seq(rows, i, indent):
     return out, i
 
 
+YAML_BREAK_RE = re.compile(r"\r\n|\n|\r")  # YAML's line breaks; a U+2028 in a value is not one
+
+
 def parse_yaml(text: str):
     rows = []
-    for raw in text.splitlines():
+    for raw in YAML_BREAK_RE.split(text):
         if raw.strip().startswith("```"):
             continue
         line = _strip_comment(raw.replace("\t", "  "))
@@ -264,6 +294,63 @@ def read_frontmatter(path: Path) -> dict:
         return {}
     data = parse_yaml("".join(lines))
     return data if isinstance(data, dict) else {}
+
+
+# Writing the same subset back: strings as JSON (a double-quoted YAML scalar
+# the parser above reads exactly), on and off bare, mappings and lists as blocks.
+BARE_KEY_RE = re.compile(r"[A-Za-z0-9_][\w .()/+-]*")
+LINE_BREAKS = "\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"  # where str.splitlines breaks a line
+
+
+def _yaml_scalar(value) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if value in ("on", "off"):
+        return value
+    return _json(str(value))
+
+
+def _json(value) -> str:
+    """JSON text with the line separators json.dumps leaves raw escaped: the gate's line counts split there."""
+    text = json.dumps(value, ensure_ascii=False)
+    return text.replace("\x85", "\\u0085").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
+
+
+def _yaml_key(key) -> str:
+    key = str(key)
+    if any(ch in key for ch in LINE_BREAKS + "\t"):
+        raise ValueError(f"the name {key!r} cannot be written as a YAML key here")
+    if BARE_KEY_RE.fullmatch(key) and not key.endswith(" "):
+        return key
+    if '"' not in key and "\\" not in key:
+        return f'"{key}"'
+    return "'" + key.replace("'", "''") + "'"  # single quotes take a double quote or a backslash as written
+
+
+def emit_yaml(key, value, indent: int = 0) -> list[str]:
+    """One key and its value as YAML lines, read back exactly by parse_yaml."""
+    head = " " * indent + _yaml_key(key) + ":"
+    if isinstance(value, dict) and value:
+        return [head + "\n"] + [line for k, v in value.items() for line in emit_yaml(k, v, indent + 2)]
+    if isinstance(value, list) and value:
+        return [head + "\n"] + [line for item in value for line in _emit_item(item, indent + 2)]
+    if isinstance(value, (dict, list)):
+        return [head + (" {}\n" if isinstance(value, dict) else " []\n")]
+    return [f"{head} {_yaml_scalar(value)}\n"]
+
+
+def _emit_item(item, indent: int) -> list[str]:
+    pad = " " * indent
+    if isinstance(item, dict) and item and _yaml_key(next(iter(item))) == str(next(iter(item))):
+        lines = [line for k, v in item.items() for line in emit_yaml(k, v, indent + 2)]
+        return [pad + "- " + lines[0][indent + 2:]] + lines[1:]
+    if isinstance(item, (dict, list)):  # a flow collection; also a mapping whose first key needs quotes ("- 'k': v"
+        return [pad + "- " + _json(item) + "\n"]  # reads as a scalar item)
+    return [f"{pad}- {_yaml_scalar(item)}\n"]
 
 
 # ------------------------------------------------------------ session file
@@ -401,6 +488,7 @@ def _in_its_log_dir(project: Path, path: Path) -> bool:
 RUN_STATE_SECTION = "Run state"
 HEADER_MAX_LINES = 250
 HEADER_END_RE = re.compile(r"^#{1,6}\s+(?:(?i:day plan\b|beat\s+\d+\b)|B\d+\b)")  # "### B4100 — Day 195"
+STRUCK_RE = re.compile(r"(?i)^>\s?\[!struck\]")  # a struck draft's callout; it ends at the first line without ">"
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})(.*)$")
 # "State: `path` § Section" or "Run state: `path`", never "Scene state: `map.md`".
@@ -468,18 +556,27 @@ def _session_layout(path: Path) -> dict:
             else:
                 return layout
         start = layout["frontmatter"]["end"] + 1 if layout["frontmatter"] else 1
-        end, ended_by, truncated = start - 1, "eof", False
+        end, ended_by, truncated, counted, in_struck = start - 1, "eof", False, 0, False
         for n, line in itertools.chain(pending, numbered):  # lazily: a log runs to megabytes
             if HEADER_END_RE.match(line):
                 ended_by = line.strip()[:80]
                 break
-            if n - start + 1 > HEADER_MAX_LINES:
+            in_struck = bool(STRUCK_RE.match(line)) or (in_struck and line.startswith(">"))
+            counted += 0 if in_struck else 1  # struck drafts are no header, and do not use up its lines
+            if counted > HEADER_MAX_LINES:
                 truncated = True
                 break
             end = n
             layout["text"].append(line.rstrip("\n"))
     if end >= start:
-        layout["header"] = {"start": start, "end": end, "ended_by": ended_by, "truncated": truncated}
+        text = layout["text"]
+        struck = struck_spans(text)
+        header = _skip_struck({"start": start, "end": end}, text, struck, first=start)
+        if header:
+            header.update(ended_by=ended_by, truncated=truncated)
+        layout["header"] = header
+        hidden = {i for s, e in struck for i in range(s, e)}
+        layout["text"] = [line for i, line in enumerate(text) if i not in hidden]
     return layout
 
 
@@ -511,12 +608,8 @@ def _inside_project(project: Path, raw: str):
     return Path(path)
 
 
-def _section(path: Path, name: str):
-    """A heading's line range and its first entry (the current one by convention)."""
-    try:
-        lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
-    except OSError:
-        return None
+def _section_bounds(lines: list[str], name: str):
+    """(heading index, end index) of the section a heading names, or None. Fenced headings do not count."""
     fenced = _fenced(lines)
     headings = [(i, len(m.group(1)), _heading_text(m.group(2))) for i, m in
                 ((i, HEADING_RE.match(line)) for i, line in enumerate(lines) if i not in fenced) if m]
@@ -528,7 +621,19 @@ def _section(path: Path, name: str):
     if chosen is None:
         return None
     start, level = chosen[0], chosen[1]
-    end = next((i for i, lvl, _ in headings if i > start and lvl <= level), len(lines))
+    return start, next((i for i, lvl, _ in headings if i > start and lvl <= level), len(lines))
+
+
+def _section(path: Path, name: str):
+    """A heading's line range and its first entry (the current one by convention)."""
+    try:
+        lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    except OSError:
+        return None
+    bounds = _section_bounds(lines, name)
+    if bounds is None:
+        return None
+    start, end = bounds
     j = start + 1
     while j < end and not lines[j].strip():
         j += 1
@@ -547,7 +652,8 @@ def _section(path: Path, name: str):
             "beat": int(beat.group(1)) if beat else None,
             "dates": sorted({d for d in DATE_RE.findall(text) if _iso(d)}),
         }
-    return {"heading_line": start + 1, "end_line": end, "current": current}
+    generated = current is not None and lines[j].startswith(STATE_START)  # the block state --refresh writes
+    return {"heading_line": start + 1, "end_line": end, "current": current, "generated": generated}
 
 
 def live_state(project, session_file, today: str | None = None) -> dict:
@@ -710,7 +816,7 @@ SECTION_RE = re.compile(r"^\s*(?:#+\s*)?(?:\*\*)?(%s)(?:\*\*)?\s*:(?:\*\*)?\s*(.
 def parse_turn(text: str) -> dict:
     """Split a GM turn file into its blocks. Text before any header is the draft."""
     sections, preamble, current, buf = {}, [], None, []
-    for line in text.splitlines():
+    for line in YAML_BREAK_RE.split(text):
         if line.strip().startswith("```"):
             continue
         m = SECTION_RE.match(line)
@@ -822,6 +928,7 @@ def load_scene(project, session_file) -> dict:
         "time": scene.get("time", data.get("currentTime")),
         "day": fiction_day(data.get("currentDate")),
         "log_day": _log_day(data),
+        "run": data.get("run") if "run" in data else None,  # absent: run state is free text
         "warning": warning,
     }
 
@@ -1046,6 +1153,17 @@ def _day_findings(scene_field: str, delta: dict, scene_day, file_day=None) -> li
     return findings
 
 
+def _turn_day(delta: dict, scene_field, fallback):
+    """The beat's fiction day, as the lint and ship both take it: the delta's currentDate, else the anchor's
+    Scene: Day N, else the fallback (the session's day)."""
+    stated = delta.get("currentDate")
+    day = fiction_day(stated) if isinstance(stated, str) else None
+    m = ANCHOR_DAY_RE.match(scene_field or "") if day is None else None
+    if m:
+        day = int(m.group(3) or m.group(2) or m.group(1))
+    return day if day is not None else fallback
+
+
 NO_DELTA = ("none", "null", "{}", "-", "n/a", "no change", "no changes", "unchanged")
 
 
@@ -1061,9 +1179,171 @@ def parse_delta(text: str):
     for key, value in data.items():
         if key == "scene" and isinstance(value, dict):
             delta.update({f"scene.{k}": v for k, v in value.items()})
+        elif key == "run" and isinstance(value, dict):  # run: {workings: {HOMING: on}}
+            for section, entries in value.items():
+                if isinstance(entries, dict):
+                    delta.update({f"run.{section}.{name}": v for name, v in entries.items()})
+                else:
+                    delta[f"run.{section}"] = entries
+        elif key.startswith("run.") and key.count(".") == 1 and isinstance(value, dict):  # run.workings: {...}
+            delta.update({f"{key}.{name}": v for name, v in value.items()})
         else:
             delta[key] = value
     return delta, True
+
+
+# ------------------------------------------------------------- run state
+# Typed run state, opt-in: a run: block in the session frontmatter beside
+# scene:. Its four sections hold the PC's stats, body facts, standing workings
+# (on or off) and clocks (the day each fires, and what fires). The gated delta
+# changes it (run.<section>.<name>) and ship applies it with the beat. A session
+# without the block keeps its run state as free text, as before.
+
+RUN_SECTIONS = ("stats", "body", "workings", "clocks")
+TOGGLES = ("on", "off")
+CLOCK_FIELDS = ("day", "fires", "time")
+MAX_CLOCK_AHEAD = 366  # a clock set further ahead than this is a typo
+STAT_PAIR_RE = re.compile(r"\s*-?\d+\s*/\s*\d+\s*")  # "54/60": current and maximum
+
+
+def _stat_shape(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return "int"
+    return "pair" if isinstance(value, str) and STAT_PAIR_RE.fullmatch(value) else None
+
+
+def _good_name(name) -> bool:
+    return (isinstance(name, str) and 0 < len(name) <= 80 and name == name.strip()
+            and not any(ch in name for ch in LINE_BREAKS + "\t"))
+
+
+def _near(name: str, names) -> str | None:
+    fold = {re.sub(r"[\W_]+", "", str(n)).lower(): n for n in names}
+    found = fold.get(re.sub(r"[\W_]+", "", name).lower())
+    if found is None:
+        close = difflib.get_close_matches(name, [str(n) for n in names], n=1, cutoff=0.8)
+        found = close[0] if close else None
+    return found
+
+
+def _entry_problem(section: str, name: str, value, entries: dict, standing: bool = False):
+    """(check, detail) for one run entry's type, or None. standing: an entry already in the block."""
+    where = f"run.{section}.{name}"
+    if section == "stats":
+        want, got = (None if standing else _stat_shape(entries.get(name))), _stat_shape(value)
+        if got is None or (want is not None and got != want):
+            forms = {"int": "an integer, as now", "pair": 'a "current/max" string such as "54/60", as now'}
+            form = forms.get(want or "", "an integer or current/max")
+            return "run_bad_value", f"{where} is {value!r}; a stat is {form}."
+    elif section == "body":
+        if value is not None and not (isinstance(value, str) and value.strip()
+                                      and not any(ch in value for ch in LINE_BREAKS)):
+            return "run_bad_value", f"{where} is {value!r}; a body fact is one line of text (or null: the part is gone)."
+    elif section == "workings":
+        if value not in TOGGLES or not isinstance(value, str):
+            return "run_bad_value", f"{where} is {value!r}; a working is toggled only to on or off."
+    elif section == "clocks" and value is not None:
+        if (not isinstance(value, dict) or set(value) - set(CLOCK_FIELDS) or "day" not in value
+                or "fires" not in value):
+            return "run_bad_value", (f"{where} is {value!r}; a clock is {{day: N, fires: \"what happens\"}} "
+                                     "(time optional), or null once it has fired.")
+        day, fires, at = value.get("day"), value.get("fires"), value.get("time")
+        if isinstance(day, bool) or not isinstance(day, int) or not (isinstance(fires, str) and fires.strip()) \
+                or (at is not None and not isinstance(at, str)):
+            return "run_bad_value", f"{where}: day is a whole fiction day and fires says what happens."
+    return None
+
+
+def run_delta_findings(delta: dict, run, beat_day=None):
+    """(findings, events): the deterministic checks on each run.* entry of a delta.
+
+    Each finding is mechanical (fix: edit) and carries run: true, so it never
+    sends a beat to the model reviewer on its own; ship drops what still fails.
+    """
+    keys = [k for k in delta if k == "run" or k.startswith("run.")]
+    findings, events = [], []
+    for key in keys:
+        def found(check, detail, typed=True):
+            findings.append({"check": check, "fix": "edit", "run": typed, "key": key, "detail": detail})
+        if not isinstance(run, dict):  # an unknown key, as before typed run state: routed like one
+            found("run_no_schema", f"{key}: this session keeps its run state as free text (no run: block in "
+                                   "its frontmatter). Drop the key; the prose and the run state file carry it.",
+                  typed=False)
+            continue
+        parts = key.split(".", 2)
+        if len(parts) < 3 or parts[1] not in RUN_SECTIONS:
+            found("run_unknown_field", f"{key}: run state has the sections {', '.join(RUN_SECTIONS)}; write "
+                                       "run.<section>.<name>.")
+            continue
+        _, section, name = parts
+        if not _good_name(name):
+            found("run_bad_name", f"{key}: a name holds no tab or line break, and is 1-80 characters with no "
+                                  "space at either end.")
+            continue
+        entries = run.get(section)
+        entries = entries if isinstance(entries, dict) else {}
+        value, exists = delta[key], name in entries
+        near = None if exists else _near(name, entries)
+        hint = f" Did you mean {near!r}?" if near else ""
+        if section == "stats" and not exists:
+            found("run_unknown_field", f"{key}: no stat {name!r} in the run block.{hint} A new stat is the "
+                                       "Keeper's, written between turns.")
+            continue
+        problem = _entry_problem(section, name, value, entries)
+        if problem:
+            found(*problem)
+        elif value is None and not exists:
+            found("run_unknown_field", f"{key}: nothing named {name!r} to clear.{hint}")
+        elif section == "workings" and not exists and value == "off":
+            found("run_unknown_field", f"{key}: no working {name!r} is on to turn off.{hint}")
+        elif section == "clocks" and value is not None and beat_day is not None \
+                and not beat_day <= value["day"] <= beat_day + MAX_CLOCK_AHEAD:
+            found("run_clock_day", f"{key}: Day {value['day']} is not between the beat's Day {beat_day} and "
+                                   f"Day {beat_day + MAX_CLOCK_AHEAD}.")
+        elif not exists and value is not None:
+            events.append({"kind": "run_added", "key": key})
+    return findings, events
+
+
+def standing_run_warnings(run) -> list[str]:
+    """What is wrong with a session's run: block as it stands (the Keeper or the GM may edit it by hand)."""
+    if run is None:
+        return []
+    if not isinstance(run, dict):
+        return ["run: in the session frontmatter must be a mapping of stats, body, workings and clocks."]
+    warnings = []
+    for section, entries in run.items():
+        if section not in RUN_SECTIONS:
+            warnings.append(f"run.{section} is not a run state section ({', '.join(RUN_SECTIONS)}).")
+            continue
+        if entries is None:
+            continue
+        if not isinstance(entries, dict):
+            warnings.append(f"run.{section} must be a mapping of names to values.")
+            continue
+        for name, value in entries.items():
+            problem = (("run_bad_name", f"run.{section}.{name}: the name cannot be written back.")
+                       if not _good_name(name) else _entry_problem(section, name, value, entries, standing=True))
+            if problem:
+                warnings.append(problem[1])
+    return warnings
+
+
+def run_notes(run, beat_day, delta=None) -> list[dict]:
+    """Clocks past due at the beat's day that the delta neither clears nor moves: a note, never a finding."""
+    clocks = run.get("clocks") if isinstance(run, dict) else None
+    clocks = clocks if isinstance(clocks, dict) else {}
+    notes = []
+    for name, value in clocks.items():
+        key = f"run.clocks.{name}"
+        if delta and key in delta:
+            continue
+        day = value.get("day") if isinstance(value, dict) else None
+        if beat_day is not None and isinstance(day, int) and not isinstance(day, bool) and day < beat_day:
+            notes.append({"key": key, "day": day})  # fire it in the fiction, then clear (null) or move it
+    return notes
 
 
 def lint(turn: dict, scene: dict, config: dict, project) -> dict:
@@ -1127,7 +1407,8 @@ def lint(turn: dict, scene: dict, config: dict, project) -> dict:
                          "detail": "SCENE_STATE_DELTA is not a key: value mapping."})
     known = DELTA_KEYS | set(config["deltaKeys"])
     mirrors = sorted(k for k in delta if k in ROOT_MIRRORS)
-    unknown = sorted(k for k in delta if k not in known and k not in ROOT_MIRRORS)
+    unknown = sorted(k for k in delta if k not in known and k not in ROOT_MIRRORS
+                     and k != "run" and not k.startswith("run."))  # run.* has its own checks, below
     if mirrors:
         findings.append({"check": "delta_root_mirror", "fix": "edit",
                          "detail": f"Root mirror keys {', '.join(mirrors)}: emit scene.* keys; the command syncs mirrors."})
@@ -1156,9 +1437,16 @@ def lint(turn: dict, scene: dict, config: dict, project) -> dict:
                 findings.append({"check": "delta_time_missing", "fix": "edit",
                                  "detail": f"The anchor moves the clock to ~{anchor_time} but the delta has no scene.time."})
         findings += _day_findings(fields.get("scene") or "", delta, scene.get("day"), scene.get("log_day"))
+
+    # Run state: each run.* entry against the session's run: block, the beat's day bounding clocks.
+    beat_day = _turn_day(delta, fields.get("scene") if fields else None, scene.get("day"))
+    run_findings, run_events = run_delta_findings(delta, scene.get("run"), beat_day)
+    findings += run_findings
+    events += run_events
     return {
         "findings": findings,
         "events": events,
+        "run_notes": run_notes(scene.get("run"), beat_day, delta),
         "present": present,
         "anchored": bool(fields),
         "prior": scene["participants"],
@@ -1222,17 +1510,19 @@ def route(result: dict, triggers: list[str], config: dict, recheck: bool = False
     findings = result["findings"]
     review_findings = [f for f in findings if f["fix"] == "review"]
     edit_findings = [f for f in findings if f["fix"] == "edit"]
+    # A run-state finding the edit pass left never costs a model call: ship drops that entry.
+    mechanical = [f for f in edit_findings if not f.get("run")]
     beat = "consequential" if triggers else "routine"
     policy = config["review"]
     if final:
-        step = "fix" if edit_findings else "ship"
+        step = "fix" if mechanical else "ship"
     elif edit_findings and not recheck:
         step = "fix"  # mechanical: the edit pass corrects it, then check --recheck
     elif rewrite or "validate_tag" in triggers:
         step = "review"
     elif policy == "lint-only":
         step = "ship"
-    elif policy == "every" or triggers or review_findings or edit_findings:
+    elif policy == "every" or triggers or review_findings or mechanical:
         step = "review"
     else:
         step = "ship"
@@ -1516,7 +1806,9 @@ def _previous_file(project: Path, data: dict, lines: list[str]):
     named = _continues_target(project, data)
     if named or data.get("log_day") is not None:
         return named
-    for line in lines[:_body_start(lines)]:
+    header = lines[:_body_start(lines)]
+    hidden = {i for s, e in struck_spans(header) for i in range(s, e)}
+    for line in (line for i, line in enumerate(header) if i not in hidden):
         m = CONTINUES_RE.search(line)
         target = _inside_sessions(project, m.group(1)) if m else None
         if target and target.is_file():
@@ -1535,7 +1827,7 @@ def _days(data: dict, lines: list[str] | None = None):
     """(file_day, state_day). A day file's day is its log_day; a legacy log's, the highest day its
     beats reached (its frontmatter only when no beat names a day). state_day, the day a beat without
     a day of its own is on, is the later of that and the frontmatter's: a flashback's delta lowers
-    the frontmatter but not the log, an accepted surrender raises it before any beat.
+    the frontmatter but not the log, a delta applied without its beat raises it before any beat.
     A log's frontmatter can also go stale: the 10-17 log's says Day 176, its beats end on Day 195.
     """
     stated = fiction_day(data.get("currentDate")) if isinstance(data.get("currentDate"), str) else None
@@ -1566,8 +1858,59 @@ def _range(rel: str, lines: list[str], start: int, stop: int):
     return {"path": rel, "start": first + 1, "end": last} if last > first else None
 
 
+def struck_spans(lines: list[str]) -> list[tuple[int, int]]:
+    """[start, end) indices of the struck-draft callouts: a "> [!struck]" line and the lines after it that start
+    with ">". A block cut short ends at its last such line, so it never takes in what follows."""
+    spans, fenced, i = [], _fenced(lines), 0
+    while i < len(lines):
+        if i in fenced or not STRUCK_RE.match(lines[i]):
+            i += 1
+            continue
+        j = i + 1
+        while j < len(lines) and lines[j].startswith(">") and not STRUCK_RE.match(lines[j]):
+            j += 1
+        spans.append((i, j))
+        i = j
+    return spans
+
+
+def _skip_struck(entry, lines: list[str], spans=None, first: int = 1):
+    """A read range (1-based lines) with struck drafts left out: start and end move off any at its edges, and
+    parts lists the pieces when one falls inside. None when nothing but struck lines is left. lines[0] is line
+    `first` (1 for a whole file)."""
+    if not entry:
+        return entry
+    spans = struck_spans(lines) if spans is None else spans
+    inside = [(s + first, e + first - 1) for s, e in spans
+              if e + first - 1 >= entry["start"] and s + first <= entry["end"]]
+    if not inside:
+        return entry
+    pieces, lo = [], entry["start"]
+    for top, bottom in inside:
+        if top > lo:
+            pieces.append([lo, top - 1])
+        lo = max(lo, bottom + 1)
+    if lo <= entry["end"]:
+        pieces.append([lo, entry["end"]])
+    parts = []
+    for a, b in pieces:
+        while a <= b and not lines[a - first].strip():
+            a += 1
+        while b >= a and not lines[b - first].strip():
+            b -= 1
+        if a <= b:
+            parts.append([a, b])
+    if not parts:
+        return None
+    entry["start"], entry["end"] = parts[0][0], parts[-1][1]
+    entry.pop("parts", None)
+    if len(parts) > 1:
+        entry["parts"] = parts
+    return entry
+
+
 def _last_beats(project: Path, rel, beats: int):
-    """The last beats of a file, its footer excluded; any END block after them included."""
+    """The last beats of a file, its footer excluded; any END block after them included; struck drafts left out."""
     lines = _read_lines(project / rel) if rel and beats else None
     if not lines:
         return None
@@ -1577,7 +1920,7 @@ def _last_beats(project: Path, rel, beats: int):
         return None
     span = _span(rel, units, beats)
     span["end"] = (_range(rel, lines, units[-1]["cut"], stop) or {"end": span["end"]})["end"]
-    return span
+    return _skip_struck(span, lines)
 
 
 def _outside(plans: list[dict], current) -> list[dict]:
@@ -1594,8 +1937,8 @@ def _day_plans(rel: str, lines: list[str], lo: int, start: int, stop: int, day: 
     """Every Day Plan section for `day` in lines[lo:stop], in order: from lo, a heading that names the day (a plan
     written early, before an earlier day's last beat); from start, the day's own region, a heading that names no day
     too (an ADDENDUM, a second session's plan). Each runs through its subheadings to the next beat, beat working or
-    Day Plan heading; a fenced heading neither opens nor ends one."""
-    fenced, found = _fenced(lines), []
+    Day Plan heading; a fenced heading neither opens nor ends one. Struck drafts inside a section are left out."""
+    fenced, found, struck = _fenced(lines), [], struck_spans(lines)
     for i in range(lo, stop):
         if i in fenced or not DAY_PLAN_RE.match(lines[i]):
             continue
@@ -1604,7 +1947,7 @@ def _day_plans(rel: str, lines: list[str], lo: int, start: int, stop: int, day: 
             continue
         end = next((j for j in range(i + 1, stop) if j not in fenced
                     and (DAY_PLAN_RE.match(lines[j]) or BEAT_HEADING_RE.match(lines[j]))), stop)
-        section = _range(rel, lines, i, end)
+        section = _skip_struck(_range(rel, lines, i, end), lines, struck)
         if section:
             section["heading"] = lines[i].strip()[:120]
             found.append(section)
@@ -1619,6 +1962,7 @@ def continuity(project, session_file, beats: int = LOG_DEFAULTS["previousBeats"]
     first, tops the read up to `beats` from before the day: the same legacy log's
     earlier beats, then the files before it, as far back as it takes. A day file
     is one day; a legacy log holds many, and its day starts with the day's first unit.
+    Every range leaves struck drafts out; when one falls inside, parts lists the pieces.
     """
     project = Path(project)
     rel = _relative(project, project / session_file)
@@ -1643,6 +1987,7 @@ def continuity(project, session_file, beats: int = LOG_DEFAULTS["previousBeats"]
         elif units:  # no beat of the day yet: it starts at the first forward heading after the last beat
             start = next((i for i in range(units[-1]["heading"], stop) if _goes_forward(lines[i])), stop)
     today, earlier = units[k:], units[:k]
+    struck = struck_spans(lines)
     plans = _day_plans(rel, lines, body, start, stop, day)
     if not plans:  # the day's plan written early in the file before, before that file's last beat
         back = _previous_file(project, data, lines)
@@ -1654,13 +1999,13 @@ def continuity(project, session_file, beats: int = LOG_DEFAULTS["previousBeats"]
     if beats <= 0:
         return result
     if len(today) >= beats:  # never the whole day: its last beats only
-        current = _range(rel, lines, today[-beats]["cut"], stop)
+        current = _skip_struck(_range(rel, lines, today[-beats]["cut"], stop), lines, struck)
         if current:
             current.update(beats=beats, whole_day=False, first_beat=today[-beats]["beat"], last_beat=today[-1]["beat"])
         result["current"] = current
         result["plans"] = _outside(plans, current)
         return result
-    current = _range(rel, lines, start, stop)
+    current = _skip_struck(_range(rel, lines, start, stop), lines, struck)
     if current:
         current.update(beats=len(today), whole_day=True, first_beat=today[0]["beat"] if today else None,
                        last_beat=today[-1]["beat"] if today else None)
@@ -1673,7 +2018,7 @@ def continuity(project, session_file, beats: int = LOG_DEFAULTS["previousBeats"]
         while before > 0 and not lines[before - 1].strip():
             before -= 1
         span["end"] = min(span["end"], before)
-        previous.append(span)
+        previous.append(_skip_struck(span, lines, struck))  # beats are never struck: something is left
         need -= span["beats"]
     seen, here = {rel}, (data, lines)
     for _hop in range(MAX_READ_HOPS):
@@ -1737,35 +2082,107 @@ def _log_dir(project: Path, data: dict):
     return Path(os.path.relpath(lexical, project)).as_posix(), None
 
 
-def _yaml_value(value) -> str:
-    return str(value) if isinstance(value, int) else json.dumps(value, ensure_ascii=False)
+MISSING = object()  # a key the new value no longer has
 
 
-def _upsert_frontmatter(lines: list[str], updates: dict) -> list[str]:
-    """Set or drop top-level scalar keys in raw frontmatter lines; every other line is kept as written."""
-    body = lines[1:-1]
-    for key, value in updates.items():
-        index = next((i for i, line in enumerate(body) if re.match(r"%s\s*:" % re.escape(key), line)), None)
-        new = [] if value is None else [f"{key}: {_yaml_value(value)}\n"]
-        if index is None:
-            body += new
+def _untab(line: str) -> str:
+    return line.replace("\t", "  ")  # as parse_yaml reads a tab
+
+
+def _indent(line: str) -> int:
+    line = _untab(line)
+    return len(line) - len(line.lstrip(" "))
+
+
+def _is_content(line: str) -> bool:
+    text = line.strip()
+    return bool(text) and not text.startswith("#")
+
+
+def _key_of(line: str, indent: int):
+    """(key, rest) a raw line sets at exactly this indent, else (None, None)."""
+    if _indent(line) != indent or not _is_content(line):
+        return None, None
+    text = _strip_comment(_untab(line).rstrip("\r\n")).strip()
+    return (None, None) if _is_item(text) else _split_key(text)
+
+
+def _entry_end(lines: list[str], i: int, indent: int, stop: int) -> int:
+    """End (exclusive) of the entry at lines[i]: its deeper lines, with the blank or comment lines between
+    them (a blank line inside a block does not end it), but not those after its last deeper line."""
+    end = i + 1
+    for j in range(i + 1, stop):
+        if not _is_content(lines[j]):
             continue
-        stop = index + 1
-        while stop < len(body) and (body[stop][:1] in (" ", "\t") or body[stop].startswith("- ")):
-            stop += 1
-        body[index:stop] = new
-    return [lines[0]] + body + [lines[-1]]
+        if _indent(lines[j]) > indent or (_indent(lines[j]) == indent and _is_item(_untab(lines[j]).strip())):
+            end = j + 1
+        else:
+            break
+    return end
+
+
+def _set_key(lines: list[str], start: int, stop: int, indent: int, path: tuple, value_at, prefix=()) -> list[str]:
+    """Set one key path in the mapping that lines[start:stop] hold at this indent, from value_at(path),
+    keeping every other line as written: a block mapping is entered, a leaf (or an inline value) is
+    written whole, a key value_at reports MISSING is deleted, a new key goes at the mapping's end."""
+    key, here = path[0], prefix + (path[0],)
+    found = max((i for i in range(start, stop) if _key_of(lines[i], indent)[0] == key), default=None)  # the
+    # parser keeps a duplicate key's last value, so that is the line to set
+    if found is None:
+        value = value_at(here)
+        return lines if value is MISSING else lines[:stop] + emit_yaml(key, value, indent) + lines[stop:]
+    end = _entry_end(lines, found, indent, stop)
+    if len(path) > 1 and not (_key_of(lines[found], indent)[1] or "").strip():  # a block mapping: go down
+        child = next((j for j in range(found + 1, end) if _is_content(lines[j])), None)
+        if child is not None and _indent(lines[child]) > indent and not _is_item(_untab(lines[child]).strip()):
+            return _set_key(lines, found + 1, end, _indent(lines[child]), path[1:], value_at, here)
+    value = value_at(here)
+    return lines[:found] + ([] if value is MISSING else emit_yaml(key, value, indent)) + lines[end:]
+
+
+def _value_at(root: dict):
+    def value_at(path):
+        node = root
+        for part in path:
+            if not isinstance(node, dict) or part not in node:
+                return MISSING
+            node = node[part]
+        return node
+    return value_at
+
+
+def _set_paths(lines: list[str], root: dict, paths) -> list[str]:
+    """Raw frontmatter lines (--- first and last) with each key path set from root."""
+    lines, value_at = list(lines), _value_at(root)
+    for path in paths:
+        path = tuple(path)
+        while len(path) > 1 and value_at(path) is MISSING and value_at(path[:-1]) == {}:
+            path = path[:-1]  # its last child gone: write the mapping itself, as {}
+        lines = _set_key(lines, 1, len(lines) - 1, 0, path, value_at)
+    return lines
+
+
+def _upsert_frontmatter(lines: list[str], updates: dict, drop_none: bool = True) -> list[str]:
+    """Set or drop top-level keys in raw frontmatter lines (a mapping or list is written whole, as a
+    block); every other line is kept as written. None drops the key, or with drop_none off writes null."""
+    root = {k: v for k, v in updates.items() if v is not None or not drop_none}
+    return _set_paths(lines, root, [(key,) for key in updates])
 
 
 def _inherited_header(lines: list[str], start: int) -> list[str]:
     """The header as written, minus the old file's generated block (or a legacy log's title)."""
-    end = start
-    while end < len(lines) and not HEADER_END_RE.match(lines[end]) and not ROTATED_RE.search(lines[end]):
+    end, counted, in_struck = start, 0, False
+    while end < len(lines) and not HEADER_END_RE.match(lines[end]):
+        in_struck = bool(STRUCK_RE.match(lines[end])) or (in_struck and lines[end].startswith(">"))
+        if not in_struck and ROTATED_RE.search(lines[end]):  # a footer quoted in a struck draft is none
+            break
         end += 1
-        if end - start > HEADER_COPY_LIMIT:
+        counted += 0 if in_struck else 1  # struck drafts do not use up the limit
+        if counted > HEADER_COPY_LIMIT:
             raise ValueError(f"the header runs past {HEADER_COPY_LIMIT} lines without a Day Plan or beat heading")
-    region = [line if line.endswith("\n") else line + "\n" for line in lines[start:end]
-              if not line.startswith(OPENED_MARK)]  # a session's opening belongs to the file it opened in
+    hidden = {i for s, e in struck_spans(lines[start:end]) for i in range(s, e)}  # struck drafts are never copied
+    region = [line if line.endswith("\n") else line + "\n" for i, line in enumerate(lines[start:end])
+              if not line.startswith(OPENED_MARK) and i not in hidden]  # an opening belongs where it opened
     opening = next((i for i, line in enumerate(region) if line.startswith(DAY_BLOCK_START)), None)
     closing = next((i for i in range(opening, len(region)) if region[i].strip() == DAY_BLOCK_END), None) \
         if opening is not None else None
@@ -1786,12 +2203,13 @@ def _inherited_header(lines: list[str], start: int) -> list[str]:
 
 
 def _day_file_text(path: Path, rel: str, data: dict, day: int, current_date: str, log_dir: str, today: str) -> str:
-    lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines(keepends=True)
+    lines = _lines(path.read_text(encoding="utf-8-sig", errors="replace"))
     fm_end = _frontmatter_end([line.rstrip("\n") for line in lines])
     frontmatter = lines[:fm_end + 1] if fm_end is not None else ["---\n", "---\n"]
     frontmatter = [line if line.endswith("\n") else line + "\n" for line in frontmatter]
-    frontmatter = _upsert_frontmatter(frontmatter, {"status": None, "log_dir": log_dir, "log_day": day,
-                                                    "continues": rel, "opened": today, "currentDate": current_date})
+    frontmatter = _upsert_frontmatter(frontmatter, {"status": None, "shipped": None, "log_dir": log_dir,
+                                                    "log_day": day, "continues": rel, "opened": today,
+                                                    "currentDate": current_date})
     header = _inherited_header(lines, fm_end + 1 if fm_end is not None else 0)
     campaign = data.get("campaign")
     title = f"# {campaign}: Day {day}" if isinstance(campaign, str) and campaign.strip() else f"# Day {day}"
@@ -1923,7 +2341,7 @@ def rotate(project, session_file, *, day=None, turn_text=None, heading=None, bea
         raise ValueError(f"{rel} was closed by rotation into {lost}, which is missing; it is never written "
                          "again. Ask the Keeper")
     result = {"action": "none", "path": rel, "previous": None, "day": None, "file_day": None,
-              "repaired": None, "set_aside": [], "flag": None, "reason": None, "warnings": []}
+              "repaired": None, "set_aside": [], "flag": None, "reason": None, "struck": [], "warnings": []}
     if hops:
         result["warnings"].append(f"{_relative(project, named)} was closed by rotation; using {rel}.")
     data = read_frontmatter(path)
@@ -1931,12 +2349,13 @@ def rotate(project, session_file, *, day=None, turn_text=None, heading=None, bea
     interrupted = _interrupted(project, rel)
     if interrupted and _append_footer(project / interrupted, rel, file_day, today):
         result["repaired"] = interrupted
-    if repair_only:  # /rp:end: close what an interrupted rotation left open, move nothing
+    if repair_only:  # /rp:end: close what an interrupted rotation left open, write struck drafts, move nothing
         result["file_day"] = file_day
         result["set_aside"] = _set_aside_orphans(project, rel, data, today)
-        if log and (result["repaired"] or result["set_aside"]):
+        _write_struck(project, rel, result)
+        if log and (result["repaired"] or result["set_aside"] or result["struck"]):
             append_log(project, {"session": rel, "path": "rotate", "action": "none", "repaired": result["repaired"],
-                                 "set_aside": result["set_aside"] or None})
+                                 "set_aside": result["set_aside"] or None, "struck": result["struck"] or None})
         return result
     beat_day, source = _beat_day(day, turn_text, state_day, heading)
     result["day"], result["file_day"] = beat_day, file_day
@@ -1960,6 +2379,8 @@ def rotate(project, session_file, *, day=None, turn_text=None, heading=None, bea
                                   f"{beat_day}, and a rotation cannot be undone. Ask the Keeper; only on the Keeper's "
                                   "word that the jump is real does rotate run again with --allow-jump.")
     elif beat_day > file_day:
+        if start:  # drafts a session left without /rp:end go where it ended, before this rotation closes that file
+            _write_struck(project, rel, result)
         _rotate_forward(project, path, rel, data, beat_day, today, beat, start, turn_text, result)
     # An earlier crash's unused day file continuing this one (after a rotation the new file is the marker's)
     result["set_aside"] = _set_aside_orphans(project, rel, data, today)
@@ -1968,14 +2389,16 @@ def rotate(project, session_file, *, day=None, turn_text=None, heading=None, bea
             result["warnings"].append(f"{rel} was closed by /rp:end; the session reopens it. Set status: open in its "
                                       "frontmatter if play continues there.")
         _swap_marker(project, {"session_file": rel, "session_opened": rel})
+    if result["action"] != "refused":  # after the rotation: into the file the beat goes to, before the beat
+        _write_struck(project, result["path"], result)
     if start and result["action"] in ("none", "step_back", "rotated"):
         _append_line(project / result["path"], f"{OPENED_MARK} {today} -->")
-    if log and (result["action"] != "none" or result["repaired"] or result["set_aside"]):
+    if log and (result["action"] != "none" or result["repaired"] or result["set_aside"] or result["struck"]):
         append_log(project, {"session": result["path"], "path": "rotate", "action": result["action"],
                              "day": beat_day, "file_day": file_day, "previous": result["previous"], "beat": beat,
                              "step_back": True if result["action"] == "step_back" else None,
                              "repaired": result["repaired"], "set_aside": result["set_aside"] or None,
-                             "start": True if start else None})
+                             "struck": result["struck"] or None, "start": True if start else None})
     return result
 
 
@@ -2062,6 +2485,869 @@ def _rotate_forward(project, path, rel, data, day, today, beat, start, turn_text
     _swap_marker(project, fields)
     _append_footer(path, target_rel, day, today, beat)
     result.update(action="rotated", path=target_rel, previous=rel)
+
+
+# ------------------------------------------------------------ struck drafts
+# A draft the gate rejects (one a rewrite replaces, or a surrender's final
+# draft) is kept as a record, never as story. strike stashes it whole under
+# STRIKE_DIR; rotate, which runs before every shipped beat and at /rp:start and
+# /rp:end, writes each stashed draft into the file it names, once, as a STRUCK
+# callout. The beat's file is known only when its final draft ships, so a
+# strike never writes a log itself, and never a closed one.
+
+STRIKE_DIR = "Work/rp/.gate/struck"
+STRUCK_CLOSE = "> <!-- rp-struck: {} -->"  # the block's last line; a block cut short lacks it
+
+
+def _one_line(value, limit: int) -> str:
+    return " ".join(str(value or "").split())[:limit]
+
+
+def struck_block(draft: str, key: str, beat, attempt: int, reason: str, today: str) -> str:
+    """An Obsidian callout, folded: every line starts with ">", so the block ends itself, and no heading,
+    footer or marker pattern matches inside it."""
+    label = f"Beat {beat}, " if beat else ""
+    lines = [f"> [!struck]- STRUCK, not canon: {label}attempt {attempt}, struck {today}. Reason: {reason}", ">"]
+    lines += [f"> {line}" if line.strip() else ">" for line in draft.splitlines()]
+    lines += [">", STRUCK_CLOSE.format(key)]
+    return "\n".join(lines) + "\n"
+
+
+def strike(project, session_file, *, turn_text, attempt, beat=None, reason=None, today=None, log=True) -> dict:
+    """Keep a draft the gate rejected: stash the turn file's DRAFT for rotate to write. Safe to repeat."""
+    project = Path(project)
+    today = today or datetime.date.today().isoformat()
+    named = _inside_sessions(project, str(session_file))
+    if named is None or not named.is_file():
+        raise ValueError(f"{session_file} is not a session file under {SESSION_DIR}/")
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or attempt < 1:
+        raise ValueError("--attempt must be 1 or more")
+    draft = parse_turn(turn_text or "")["DRAFT"]
+    if not draft.strip():
+        raise ValueError("the turn file has no DRAFT to strike")
+    beat = _one_line(beat, 40) or None
+    reason = _one_line(reason, 300) or "rejected by the gate"
+    key = hashlib.sha256(f"{beat or ''}\0{attempt}\0{draft}".encode("utf-8")).hexdigest()[:16]
+    rel = _relative(project, named)
+    stash = project / STRIKE_DIR
+    target = stash / f"{key}.json"
+    result = {"action": "already" if _stash_entry(target) else "stashed", "key": key, "session": rel, "beat": beat,
+              "attempt": attempt, "stash": _relative(project, target)}
+    if result["action"] == "stashed":
+        entry = {"key": key, "session": rel, "beat": beat, "attempt": attempt, "reason": reason, "date": today,
+                 "created": time.time_ns(), "block": struck_block(draft, key, beat, attempt, reason, today)}
+        stash.mkdir(parents=True, exist_ok=True)
+        tmp = stash / f".{key}.json.tmp-{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(entry, fh, ensure_ascii=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, target)  # whole or absent
+    if log:
+        append_log(project, {"session": rel, "beat": beat, "attempt": attempt, "path": "strike", "reason": reason,
+                             "key": key, "action": result["action"]})
+    return result
+
+
+MAX_CHAIN_BACK = 8  # files walked back from the target for a strike made before a session moved on
+
+
+def _head_lines(path: Path, limit: int = HEADER_COPY_LIMIT + 2000) -> list[str]:
+    """The first lines of a file, enough for its frontmatter and header, without reading a long log whole."""
+    try:
+        with open(path, encoding="utf-8-sig", errors="replace") as fh:
+            return [line.rstrip("\r\n") for line in itertools.islice(fh, limit)]
+    except OSError:
+        return []
+
+
+def _walk_back(project: Path, target_rel: str) -> list[str]:
+    """target_rel, then the files it continues, newest first: up to MAX_CHAIN_BACK, stopping at a loop."""
+    back = [target_rel]
+    for _hop in range(MAX_CHAIN_BACK):
+        data = read_frontmatter(project / back[-1])
+        lines = _head_lines(project / back[-1]) if data.get("log_day") is None else []  # a legacy header
+        before = _previous_file(project, data, lines)
+        if before is None or before in back:
+            break
+        back.append(before)
+    return back
+
+
+def _chain_to(project: Path, session_rel: str, target_rel: str, walk: dict | None = None):
+    """The files from session_rel to target_rel, oldest first: forward through rotation footers, else back from
+    target_rel through its continues (a session that moved on without /rp:end). None when they never meet.
+    walk caches the walk back, which is the same for every entry written into one target."""
+    path, chain = _inside_sessions(project, str(session_rel)), []
+    start = _relative(project, path) if path is not None else None
+    while path is not None and path.is_file():
+        rel = _relative(project, path)
+        if rel in chain:
+            break
+        chain.append(rel)
+        if rel == target_rel:
+            return chain
+        following = rotation_footer(path)
+        path = _inside_sessions(project, following) if following else None
+    if start is None or not (project / start).is_file():
+        return None
+    walk = {} if walk is None else walk
+    if "back" not in walk:
+        walk["back"] = _walk_back(project, target_rel)
+    back = walk["back"]
+    return list(reversed(back[:back.index(start) + 1])) if start in back[1:] else None
+
+
+def _stash_entry(path: Path):
+    try:
+        entry = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    whole = (isinstance(entry, dict) and all(isinstance(entry.get(k), str) for k in ("key", "session", "block"))
+             and isinstance(entry.get("created"), int) and entry["key"] == path.stem
+             and re.fullmatch(r"[0-9a-f]{16}", entry["key"]) is not None and STRUCK_RE.match(entry["block"]) is not None
+             and entry["block"].endswith(STRUCK_CLOSE.format(entry["key"]) + "\n"))
+    return entry if whole else None
+
+
+def _append_struck(path: Path, block: str, closing: str):
+    """One struck block in one write, under the lock: True written, False already there, None (nothing written)
+    when the file is closed."""
+    with open(path, "ab") as fh:
+        if fcntl:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        if rotation_footer(path):
+            return None
+        if closing in (_read_lines(path) or []):
+            return False
+        size = fh.seek(0, os.SEEK_END)
+        lead = ""
+        if size:
+            with open(path, "rb") as tail:
+                tail.seek(max(0, size - 2))
+                end = tail.read()
+            lead = "" if end.endswith(b"\n\n") or end == b"\n" else "\n" if end.endswith(b"\n") else "\n\n"
+        fh.write((lead + block + "\n").encode("utf-8"))  # a blank line ends the callout
+        fh.flush()
+        os.fsync(fh.fileno())
+    return True
+
+
+def _write_struck(project: Path, target_rel: str, result: dict) -> None:
+    """Write the stashed drafts of target's run into it, oldest first, each once, then clear them. Entries of
+    another run stay; one whose file is gone, or that cannot be read, stays and is reported. Never raises: a
+    struck draft is a record, and it never keeps a beat from shipping."""
+    result.setdefault("struck", [])
+    try:
+        _write_stash(project, target_rel, result)
+    except (OSError, ValueError) as exc:
+        result["warnings"].append(f"Struck drafts were not all written ({exc}); those not written stay in the "
+                                  "stash for the next rotate.")
+
+
+def _write_stash(project: Path, target_rel: str, result: dict) -> None:
+    stash = project / STRIKE_DIR
+    entries = []
+    for path in sorted(stash.glob("*.json")) if stash.is_dir() else ():
+        entry = _stash_entry(path)
+        if entry is None:
+            result["warnings"].append(f"{_relative(project, path)} is not a whole struck draft; left in place.")
+            continue
+        entries.append((entry["created"], entry.get("attempt") or 0, path.name, path, entry))
+    target, walk = project / target_rel, {}
+    for _created, _attempt, _name, path, entry in sorted(entries, key=lambda e: e[:3]):
+        try:
+            chain = _chain_to(project, entry["session"], target_rel, walk)
+            named = None if chain else _inside_sessions(project, entry["session"])
+        except (OSError, ValueError) as exc:  # a path no file can have
+            result["warnings"].append(f"{_relative(project, path)} names no session file ({exc}); left in place.")
+            continue
+        if chain is None:
+            if named is None or not named.is_file():
+                result["warnings"].append(f"A struck draft ({path.name}) was struck in {entry['session']}, which no "
+                                          "longer exists; it stays in the stash.")
+            continue  # another run's: it waits for its own rotate
+        closing = STRUCK_CLOSE.format(entry["key"])
+        try:
+            if not any(closing in (_read_lines(project / rel) or []) for rel in chain[:-1]):
+                written = _append_struck(target, entry["block"], closing)
+                if written is None:
+                    result["warnings"].append(f"{target_rel} is closed by rotation; no struck draft is written after "
+                                              "its footer. They stay in the stash.")
+                    return
+        except (OSError, ValueError) as exc:
+            result["warnings"].append(f"{_relative(project, path)} could not be written ({exc}); it stays in the stash.")
+            continue
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            result["warnings"].append(f"{_relative(project, path)} was written but not cleared ({exc}); the next "
+                                      "rotate clears it without writing it twice.")
+        result["struck"].append(entry["key"])
+
+
+# ------------------------------------------------- ship, state block, summaries
+# After rotate, ship appends the beat and applies its gated delta in one
+# replace, so state never moves without its beat. After a rotation, state
+# --refresh copies the frontmatter's run: block into the run state file, and
+# the closed day gets its summary, published once. Each step is safe to repeat.
+
+REWRITE_TRIES = 3
+STATE_START = "<!-- rp-run-state:"
+STATE_END = "<!-- /rp-run-state -->"
+STATE_START_RE = re.compile(r"^<!-- rp-run-state: .*\bsha256:([0-9a-f]{12}) -->\s*$")
+SUMMARY_DIR = "Work/rp/summaries"
+DAY_HEADING_RE = re.compile(r"^##\s+Day\s+(\d+)\b")
+LINE_CITE_RE = re.compile(r"(?<![\w./-])([\w./-]+\.md):(\d+)(?:[-–](\d+))?")  # a path with spaces is not checked
+BEAT_CITE_RE = re.compile(r"(?<!\w)(?:B|Beat\s+)(\d+)(?!\d)")
+
+
+class StateBlockEdited(ValueError):
+    pass
+
+
+def _stat_key(path: Path):
+    st = os.stat(path)
+    return st.st_ino, st.st_size, st.st_mtime_ns
+
+
+def _lines(text: str) -> list[str]:
+    """Lines with their endings, split at \\n only: a U+2028 inside a value is not a line break here."""
+    parts = text.split("\n")
+    return [part + "\n" for part in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+
+
+def _newline(lines: list[str]) -> str:
+    return "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
+
+
+def _as_newline(lines: list[str], nl: str) -> list[str]:
+    """Lines ending in the file's own line break (a CRLF file stays CRLF)."""
+    return [line[:-1].rstrip("\r") + nl if line.endswith("\n") else line for line in lines] if nl != "\n" else lines
+
+
+def _replace_text(path: Path, make) -> bool:
+    """Rewrite a file whole (temp file, then os.replace): a reader sees the old file or the new.
+
+    make(old) returns the new text, or None for no change. If the file changes
+    while the new text is being made (a hand edit in another tool), start again
+    from the fresh file rather than write over the edit. Every byte make leaves
+    alone is kept: a BOM, CRLF endings, bytes that are not UTF-8.
+    """
+    for _attempt in range(REWRITE_TRIES):
+        before = _stat_key(path)
+        raw = path.read_bytes()
+        bom = raw.startswith(b"\xef\xbb\xbf")
+        old = raw[3 if bom else 0:].decode("utf-8", "surrogateescape")
+        new = make(old)
+        if new is None or new == old:
+            return False
+        tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+        try:
+            with open(tmp, "wb") as fh:
+                fh.write((b"\xef\xbb\xbf" if bom else b"") + new.encode("utf-8", "surrogateescape"))
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.chmod(tmp, stat.S_IMODE(os.stat(path).st_mode))
+            if _stat_key(path) != before:
+                continue
+            os.replace(tmp, path)
+            return True
+        finally:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+    raise OSError(f"{path} kept changing while it was being rewritten; nothing was written. Run the command again")
+
+
+def _delta_updates(data: dict, delta: dict, config: dict, beat_day=None):
+    """(root, paths, applied, dropped): the frontmatter after a gated delta, and the key paths it changed
+    (root mirrors synced from scene.*).
+
+    An entry the lint would still flag as a key (an unknown key, a root mirror,
+    a malformed participants list, an invalid run entry) is dropped and named.
+    beat_day bounds clocks as the lint does: the delta's day, the anchor's, then
+    the frontmatter's.
+    """
+    known = DELTA_KEYS | set(config["deltaKeys"])
+    beat_day = beat_day if beat_day is not None else fiction_day(data.get("currentDate"))
+    run_findings, _events = run_delta_findings(delta, data.get("run") if "run" in data else None, beat_day)
+    bad = {f["key"]: f["check"] for f in run_findings}
+    root = copy.deepcopy(data)
+    paths, applied, dropped = [], [], []
+    for key, value in delta.items():
+        check = None
+        if key == "run" or key.startswith("run."):
+            check = bad.get(key)
+        elif key not in known:
+            check = "delta_root_mirror" if key in ROOT_MIRRORS else "delta_unknown_key"
+        elif key == "scene.participants" and not isinstance(value, list):
+            check = "delta_malformed"
+        if check:
+            dropped.append({"key": key, "check": check})
+            continue
+        applied.append(key)
+        path = tuple(key.split(".", 2)) if key.startswith("run.") else tuple(key.split(".", 1))
+        node = root
+        for part in path[:-1]:
+            if not isinstance(node.get(part), dict):
+                node[part] = {}
+            node = node[part]
+        if value is None and path[0] == "run":
+            node.pop(path[-1], None)  # a body part gone, a clock fired
+        else:
+            node[path[-1]] = value
+        paths.append(path)
+    scene = root.get("scene") if isinstance(root.get("scene"), dict) else {}
+    for key, mirror, value in (("scene.time", "currentTime", lambda: scene.get("time")),
+                               ("scene.location", "currentLocation", lambda: scene.get("location")),
+                               ("scene.participants", "participants",
+                                lambda: _participant_names(scene.get("participants")))):
+        if key in applied:
+            root[mirror] = value()
+            paths.append((mirror,))
+    return root, paths, applied, dropped
+
+
+def _ship_text(old: str, delta: dict, append_text, mark: str, config: dict, beat_day=None):
+    """(new text, applied, dropped) for one shipped beat; (None, [], []) when this beat already shipped.
+    Only the frontmatter lines the delta changes are rewritten; the body is kept byte for byte."""
+    lines = _lines(old)
+    plain = [line.rstrip("\r\n") for line in lines]
+    fm_end = _frontmatter_end(plain)
+    if fm_end is None:
+        raise ValueError("the session file has no YAML frontmatter to apply the delta to; nothing was shipped")
+    data = parse_yaml("".join(lines[1:fm_end]))
+    data = data if isinstance(data, dict) else {}
+    if str(data.get("shipped") or "") == mark:
+        return None, [], []
+    if _final_footer(plain):  # re-checked on every try: a rotation may have closed it meanwhile
+        raise ValueError("the session file was closed by rotation; it is never written again. Ship to the file "
+                         "rotate named")
+    root, paths, applied, dropped = _delta_updates(data, delta, config, beat_day)
+    root["shipped"] = mark
+    nl = _newline(lines)
+    head = [line if line.endswith("\n") else line + nl for line in lines[:fm_end + 1]]
+    head = _as_newline(_set_paths(head, root, paths + [("shipped",)]), nl)
+    written = parse_yaml("".join(head[1:-1]))
+    written = written if isinstance(written, dict) else {}  # a frontmatter that reads as a list: refused below
+    unread = []
+    for k in sorted(k for k in set(written) | set(root) if written.get(k, MISSING) != root.get(k, MISSING)):
+        leaves = [".".join(x) for x in paths + [("shipped",)]
+                  if x[0] == k and _value_at(written)(x) != _value_at(root)(x)]
+        unread += leaves or [k]
+    if unread:  # every key, changed or not: a rewrite must leave the rest of the frontmatter reading as it did
+        raise ValueError(f"the frontmatter would not read back as meant after this ship ({', '.join(unread)}): a "
+                         "value the gate's YAML cannot hold, or a frontmatter line it cannot place (a stray carriage "
+                         "return, uneven indentation). Nothing was shipped; fix the delta or the frontmatter line")
+    body = "".join(lines[fm_end + 1:])
+    if append_text:
+        text = append_text.replace("\r\n", "\n")
+        text = (text if text.endswith("\n") else text + "\n").replace("\n", nl)
+        if body and not body.endswith("\n"):
+            body += nl
+        if body.strip() and not body.endswith(nl + nl):
+            body += nl
+        body += text
+    return "".join(head) + body, applied, dropped
+
+
+def ship(project, session_file, *, turn_text: str, append_text=None, beat=None, today=None, config=None,
+         log=True) -> dict:
+    """Ship a gated beat: append its text (the new day's Day Plan first, if any) and apply its delta to the
+    open file's frontmatter, in one replace. Never a closed file; a retry after success changes nothing."""
+    project = Path(project)
+    config = config or load_config(project)
+    path = _inside_sessions(project, str(session_file))
+    if path is None or not path.is_file():
+        raise ValueError(f"{session_file} is not a session file under {SESSION_DIR}/")
+    rel = _relative(project, path)
+    if rotation_footer(path):
+        raise ValueError(f"{rel} is closed: rotation footered it, and it is never written again. Ship to the "
+                         "file rotate named")
+    turn = parse_turn(turn_text)
+    delta, parsed = parse_delta(turn.get("SCENE_STATE_DELTA", ""))
+    if not parsed:
+        raise ValueError("SCENE_STATE_DELTA is not a key: value mapping; nothing was shipped")
+    fields = _anchor(turn.get("DRAFT", ""), []) if turn.get("DRAFT", "").strip() else None
+    beat_day = _turn_day(delta, (fields or {}).get("scene"), None)
+    label = str(beat).strip() if beat else ""
+    key = "\0".join([label, append_text or "", json.dumps(delta, sort_keys=True, ensure_ascii=False, default=str)])
+    mark = f"{label}@{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
+    result = {"action": "already_shipped", "path": rel, "beat": label or None, "shipped": mark, "applied": [],
+              "dropped": []}
+
+    def make(old):
+        new, applied, dropped = _ship_text(old, delta, append_text, mark, config, beat_day)
+        result.update(action="shipped" if new is not None else "already_shipped", applied=applied, dropped=dropped)
+        return new
+
+    _replace_text(path, make)
+    if log and result["action"] == "shipped":
+        append_log(project, {"session": rel, "path": "ship", "beat": label or None, "applied": len(result["applied"]),
+                             "dropped": [d["key"] for d in result["dropped"]] or None})
+    return result
+
+
+def _is_log(path: Path) -> bool:
+    """A session log or day file: code never writes a state block into one."""
+    if path.match(SESSION_GLOB) or path.match(DAY_FILE_GLOB):
+        return True
+    data = read_frontmatter(path)
+    return "scene" in data or data.get("log_day") is not None
+
+
+def _state_target(project: Path, session_path: Path, data: dict):
+    """(target, section, warning): the run state file and section the session names, if code may write it."""
+    pointer, warning = _state_pointer(data, _session_layout(session_path)["text"])
+    if pointer is None:
+        return None, None, warning
+    target = _inside_project(project, pointer["raw"])
+    if target is None:
+        return None, None, f"run state {pointer['raw']} is outside the project or not markdown; nothing written."
+    if target == _inside_project(project, INVARIANTS):
+        return None, None, f"run state {pointer['raw']} names the invariants; the state block is never written there."
+    if not target.is_file():
+        return None, None, f"run state {pointer['raw']} does not exist."
+    if _is_log(target):
+        return None, None, f"run state {pointer['raw']} is a session log; the state block is never written into one."
+    return target, pointer["section"], None
+
+
+def _block_digest(lines: list[str]) -> str:
+    return hashlib.sha256("".join(line.rstrip("\r\n") + "\n" for line in lines).encode("utf-8")).hexdigest()[:12]
+
+
+def _state_block(rel: str, data: dict, today: str) -> list[str]:
+    body = ["```yaml\n"] + emit_yaml("run", data["run"]) + ["```\n"]
+    beat = str(data.get("shipped") or "").split("@", 1)[0]
+    day = fiction_day(data.get("currentDate"))
+    as_of = ", ".join(x for x in (f"Beat {beat}" if beat else "", f"Day {day}" if day is not None else "") if x)
+    head = (f"{STATE_START} generated from {rel}{' as of ' + as_of if as_of else ''} ({today}). The session "
+            f"frontmatter's run: block governs; change it by a delta, never here. sha256:{_block_digest(body)} -->\n")
+    return [head] + body + [STATE_END + "\n"]
+
+
+def _block_lines(plain: list[str], start: int, end: int):
+    """(first, last) indices of the state block inside lines[start:end], or None; last is None if unterminated."""
+    first = next((i for i in range(start + 1, end) if plain[i].startswith(STATE_START)), None)
+    if first is None:
+        return None
+    return first, next((i for i in range(first + 1, end) if plain[i].strip() == STATE_END), None)
+
+
+def _state_text(old: str, section: str, block: list[str]) -> str:
+    """The run state file with the block as its section's first entry, whether it was there, lower down (a
+    prose entry written above it) or absent. Every other line is kept. A block edited by hand is refused."""
+    lines = _lines(old)
+    plain = [line.rstrip("\r\n") for line in lines]
+    nl = _newline(lines)
+    bounds = _section_bounds(plain, section)
+    if bounds is None:
+        raise ValueError(f"the run state file has no '{section}' section")
+    start, end = bounds
+    found = _block_lines(plain, start, end)
+    if found is not None:
+        first, last = found
+        m = STATE_START_RE.match(plain[first])
+        if last is None or m is None or _block_digest(lines[first + 1:last]) != m.group(1):
+            raise StateBlockEdited(f"the state block in '{section}' (line {first + 1}) was edited by hand: it is "
+                                   "not overwritten. Carry the change in a delta (or the session frontmatter's run: "
+                                   "block), then delete the block and run state --refresh to write it again")
+        after = last + 1
+        if first > 0 and not plain[first - 1].strip() and after < len(lines) and not plain[after].strip():
+            after += 1  # one blank line stays where the block was
+        lines = lines[:first] + lines[after:]
+    rest = lines[start + 1:]
+    while rest and not rest[0].strip():
+        rest.pop(0)
+    heading = lines[start] if lines[start].endswith("\n") else lines[start] + nl
+    return "".join(lines[:start] + [heading, nl] + _as_newline(block, nl) + ([nl] if rest else []) + rest)
+
+
+def refresh_state(project, session_file, today=None) -> dict:
+    """Copy the session frontmatter's run: block into the run state file's generated block."""
+    project = Path(project)
+    today = today or datetime.date.today().isoformat()
+    path = Path(session_file)
+    path = path if path.is_absolute() else project / path
+    data = read_frontmatter(path)
+    result = {"action": "none", "path": None, "warnings": []}
+    if not isinstance(data.get("run"), dict):
+        result["reason"] = "the session has no run: block; its run state is free text"
+        return result
+    target, section, warning = _state_target(project, path, data)
+    if target is None:
+        result.update(action="refused", warnings=[warning])
+        return result
+    result["path"] = _relative(project, target)
+    try:
+        block = _state_block(_relative(project, path), data, today)
+        changed = _replace_text(target, lambda old: _state_text(old, section, block))
+    except (ValueError, UnicodeDecodeError) as exc:
+        result.update(action="refused", warnings=[str(exc)])
+        return result
+    result["action"] = "refreshed" if changed else "unchanged"
+    return result
+
+
+def state_block_status(project: Path, path: Path, data: dict):
+    """Whether the run state file's block is there, edited by hand, or behind the session's fiction day."""
+    if not isinstance(data.get("run"), dict):
+        return None
+    target, section, warning = _state_target(project, path, data)
+    status = {"path": _relative(project, target) if target else None, "present": False, "as_of_day": None,
+              "stale": True, "edited": False, "warning": warning}
+    lines = (_read_lines(target) or []) if target else []
+    bounds = _section_bounds(lines, section) if target else None
+    found = _block_lines(lines, *bounds) if bounds else None
+    if found:
+        first, last = found
+        m, day = STATE_START_RE.match(lines[first]), re.search(r"\bDay (\d+)\b", lines[first])
+        status.update(present=True, as_of_day=int(day.group(1)) if day else None,
+                      edited=last is None or m is None or _block_digest(lines[first + 1:last]) != m.group(1))
+        current = fiction_day(data.get("currentDate"))
+        status["stale"] = status["as_of_day"] is None or (current is not None and status["as_of_day"] < current)
+    return status
+
+
+def run_report(data: dict, state) -> dict:
+    """The session's typed run state, for session: present, malformed entries, overdue clocks."""
+    run = data.get("run") if "run" in data else None
+    report = {"schema": isinstance(run, dict), "warnings": standing_run_warnings(run),
+              "notes": run_notes(run, fiction_day(data.get("currentDate")))}
+    run_state = (state or {}).get("run_state")
+    if report["schema"] and run_state and run_state.get("current") and not run_state.get("generated"):
+        report["warnings"].append(
+            f"The current entry of {run_state['path']} § {run_state['section']} (line {run_state['current']['start']})"
+            " is hand-written, but this session keeps typed run state: its frontmatter run: block governs. Carry a "
+            "change in a delta; state --refresh writes the block and puts it first again, above the prose.")
+    return report
+
+
+def summary_dir(project, data: dict):
+    """Work/rp/summaries/<campaign>: the log_dir under Work/rp, without its trailing /log."""
+    log_dir, _warning = _log_dir(Path(project), data)
+    if log_dir is None:
+        return None
+    campaign = Path(os.path.relpath(log_dir, SESSION_DIR)).as_posix()
+    return f"{SUMMARY_DIR}/{campaign[:-4] if campaign.endswith('/log') else campaign}"
+
+
+def _day_of(project: Path, rel: str):
+    data = read_frontmatter(project / rel)
+    return _file_day(data, None if data.get("log_day") is not None else _read_lines(project / rel)), data
+
+
+def _day_span(project: Path, rel: str, day: int) -> dict:
+    """A day's beats in one file, from its first beat working to the end of its last beat, and its Day Plans.
+
+    The span stops before a later day's Day Plan or the next beat's working,
+    written early into this file (20 of 25 day boundaries in the logs). In a
+    legacy log the day starts where its beats first reach it. Struck drafts
+    are left out, as in every read range (parts).
+    """
+    lines = _read_lines(project / rel) or []
+    data = read_frontmatter(project / rel)
+    body, stop = _body_start(lines), _footer_start(lines)
+    units = _beat_units(lines, body, stop)
+    k, start = 0, body
+    if data.get("log_day") is None:
+        top, k = None, len(units)
+        for n, unit in enumerate(units):
+            top = unit["day"] if top is None else max(top, unit["day"] or top)
+            if top is not None and top >= day:
+                k = n
+                break
+        start = units[k]["cut"] if k < len(units) else stop
+    day_units, fenced, beats = units[k:], _fenced(lines), None
+    if day_units:
+        first = next((i for i in range(start, stop) if i not in fenced and BEAT_HEADING_RE.match(lines[i])), start)
+        last = day_units[-1]
+        end = next((i for i in range(last["heading"], stop) if i not in fenced and HEADING_RE.match(lines[i])
+                    and _goes_forward(lines[i], last["beat"])), stop)
+        beats = _skip_struck(_range(rel, lines, first, end), lines)
+        if beats:
+            top = max((n for u in day_units if (n := _beat_number(u["beat"])) is not None), default=None)
+            beats.update(beats=len(day_units), first_beat=day_units[0]["beat"], last_beat=last["beat"], top_beat=top)
+    plans = _day_plans(rel, lines, body, start, stop, day)
+    if not plans:  # written early, in the file before
+        back = _previous_file(project, data, lines)
+        back_lines = _read_lines(project / back) if back else None
+        if back and back_lines:
+            back_stop = _footer_start(back_lines)
+            plans = _day_plans(back, back_lines, _body_start(back_lines), back_stop, back_stop, day)
+    return {"beats": beats, "plans": plans}
+
+
+def _closed_days(project: Path, files: list[str]) -> list[dict]:
+    """The days rotation closed among files: each closed file's day and where its summary goes."""
+    days = []
+    for rel in files:
+        if not rotation_footer(project / rel):
+            continue
+        day, data = _day_of(project, rel)
+        folder = summary_dir(project, data)
+        if day is None or folder is None:
+            continue
+        path = f"{folder}/{DAY_FILE_NAME.format(day)}"
+        days.append({"day": day, "source": rel, "closed": True, "path": path, "exists": (project / path).is_file()})
+    return days
+
+
+def _due_days(project: Path, rel: str, deep: bool = True) -> list[dict]:
+    """Closed days behind rel still without a summary, oldest first: a day /rp:start closed lies before the
+    session's own files. deep walks back through every file rotation closed (at most MAX_READ_HOPS), so a
+    day whose summary failed stays due behind days that have theirs; otherwise the walk stops at the first
+    summarised day (session's per-turn view, which costs one hop or two)."""
+    due, here, seen = [], rel, {rel}
+    for _hop in range(MAX_READ_HOPS):
+        data = read_frontmatter(project / here)
+        back = _previous_file(project, data, [] if data.get("log_day") is not None
+                              else _read_lines(project / here) or [])
+        if back is None or back in seen:
+            break
+        seen.add(back)
+        found = _closed_days(project, [back])
+        if not found and rotation_footer(project / back):
+            here = back  # closed by rotation, but its day or log_dir is unreadable: walk past it
+            continue
+        if not found:
+            break  # the run's first file, or a legacy log /rp:end closed
+        if found[0]["exists"] and not deep:
+            break
+        if not found[0]["exists"]:
+            due.append(found[0])
+        here = back
+    return list(reversed(due))
+
+
+def _days_due_or_closed(project: Path, files: list[str], deep: bool = True) -> list[dict]:
+    """The days the session's files closed, and any earlier closed day still due, in day order."""
+    days = {d["source"]: d for d in _closed_days(project, files[:-1])}
+    for d in _due_days(project, files[0], deep):
+        days.setdefault(d["source"], d)
+    return sorted(days.values(), key=lambda d: (d["day"], d["source"]))
+
+
+def _session_files_for(project: Path, rel: str, opened=None) -> list[str]:
+    """The session's files: from the file it opened in (given, else the marker's session_opened) to rel."""
+    if opened is None:
+        fields = _marker_fields(project)
+        named = _inside_sessions(project, str(fields.get("session_file") or ""))
+        opened = fields.get("session_opened") if named and _relative(project, named) == rel else None
+    return session_files(project, rel, opened)
+
+
+def summary_plan(project, session_file, opened=None) -> dict:
+    """What to summarise: each day this session closed (its beats, plans and summary path) and the open day."""
+    project = Path(project)
+    rel = _relative(project, project / session_file)
+    files = _session_files_for(project, rel, opened)
+    days = [dict(d, **_day_span(project, d["source"], d["day"])) for d in _days_due_or_closed(project, files)]
+    day, data = _day_of(project, rel)
+    span = _day_span(project, rel, day) if day is not None else {"beats": None, "plans": []}
+    return {"dir": summary_dir(project, data), "days": days,
+            "open": {"day": day, "source": rel, "closed": False, **span}}
+
+
+def _closed_day_entry(project: Path, rel: str, day: int):
+    """The closed file holding a day, walking back from rel through the run, with its span and summary path."""
+    here, seen = rel, set()
+    while here is not None and here not in seen:  # as far back as the run goes: the plan lists up to
+        seen.add(here)                             # MAX_READ_HOPS days, a session up to 500 files
+        if here != rel and not rotation_footer(project / here):
+            return None  # before the run's day files: a legacy log /rp:end closed
+        found = _closed_days(project, [here])
+        if found and found[0]["day"] == day:
+            return dict(found[0], **_day_span(project, here, day))
+        if found and found[0]["day"] < day:
+            return None  # walked past it
+        data = read_frontmatter(project / here)
+        here = _previous_file(project, data, [] if data.get("log_day") is not None
+                              else _read_lines(project / here) or [])
+    return None
+
+
+def _strip_frontmatter(text: str) -> str:
+    lines = text.splitlines(keepends=True)
+    end = _frontmatter_end([line.rstrip("\r\n") for line in lines])
+    return "".join(lines[end + 1:]) if end is not None else text
+
+
+def _beat_number(label) -> int | None:
+    m = re.match(r"\d+", str(label or ""))
+    return int(m.group(0)) if m else None
+
+
+def _citation_problems(project: Path, entry: dict, body: str) -> list[str]:
+    """A day summary cites only beats up to the day's last, and a line only in a file rotation has closed, never
+    one of its struck drafts."""
+    problems, struck = [], {}
+    beats = entry.get("beats") or {}
+    last = beats.get("top_beat") if beats.get("top_beat") is not None else _beat_number(beats.get("last_beat"))
+    for m in BEAT_CITE_RE.finditer(body):
+        if last is not None and int(m.group(1)) > last:
+            problems.append(f"{m.group(0)} comes after the day's last beat, B{last}")
+    log_dir, _warning = _log_dir(project, read_frontmatter(project / entry["source"]))
+    bases = [project, project / SESSION_DIR] + ([project / log_dir, (project / log_dir).parent] if log_dir else [])
+    sessions = (project / SESSION_DIR).resolve()
+    for m in LINE_CITE_RE.finditer(body):
+        target = next((Path(os.path.normpath(base / m.group(1))) for base in bases if (base / m.group(1)).is_file()),
+                      None)
+        if target is None or sessions not in target.resolve().parents or not _is_log(target):
+            continue  # not a session log (a Lore file, say): no rule here
+        a, b = sorted((int(m.group(2)), int(m.group(3) or m.group(2))))  # a range written backwards: the same lines
+        if not rotation_footer(target):
+            problems.append(f"{m.group(0)} cites a line in {_relative(project, target)}, which is still open (its "
+                            "lines move until rotation closes it): cite the beat instead")
+        elif b > _line_count(target):
+            problems.append(f"{m.group(0)} is past the end of {_relative(project, target)}")
+        else:  # an end, past blank lines, on a struck line cites the draft; a range around one is fine
+            if target not in struck:
+                lines = _read_lines(target) or []
+                struck[target] = (lines, struck_spans(lines))
+            lines, spans = struck[target]
+            while 0 < a < b and not lines[a - 1].strip():
+                a += 1
+            while b > max(a, 1) and not lines[b - 1].strip():
+                b -= 1
+            if any(s < n <= e for s, e in spans for n in (a, b)):
+                problems.append(f"{m.group(0)} cites a struck draft in {_relative(project, target)}, which is "
+                                "never story: cite the beat instead")
+    return problems
+
+
+def _same_or_refuse(target: Path, body: str, what: str) -> dict:
+    existing = _strip_frontmatter(target.read_text(encoding="utf-8")).strip("\n")
+    if existing == body.strip("\n"):
+        return {"action": "unchanged", "path": str(target)}
+    raise ValueError(f"{what} already exists and differs; it is never overwritten (correct it by hand)")
+
+
+def publish_summary(project, session_file, day: int, text_path, today=None) -> dict:
+    """Publish a closed day's summary once: the summariser's text, checked, under generated frontmatter."""
+    project = Path(project)
+    today = today or datetime.date.today().isoformat()
+    rel = _relative(project, project / session_file)
+    entry = _closed_day_entry(project, rel, int(day))
+    if entry is None:
+        raise ValueError(f"Day {day} has no file that rotation has closed in this run; a day is summarised once "
+                         "it is closed")
+    body = _strip_frontmatter(Path(text_path).read_text(encoding="utf-8-sig")).strip("\n") + "\n"
+    heading = next((line for line in body.splitlines() if HEADING_RE.match(line)), "")
+    m = DAY_HEADING_RE.match(heading)
+    if not m or int(m.group(1)) != int(day):
+        raise ValueError(f"the summary must open with a '## Day {day}' heading")
+    problems = _citation_problems(project, entry, body)
+    if problems:
+        raise ValueError("; ".join(problems))
+    data, beats = read_frontmatter(project / entry["source"]), entry.get("beats") or {}
+    span = f"B{beats['first_beat']} to B{beats['last_beat']}" if beats.get("first_beat") else None
+    head = ["---\n"]
+    for key, value in (("campaign", data.get("campaign")), ("fiction_day", int(day)), ("source", entry["source"]),
+                       ("beats", span), ("written", today)):
+        if value is not None:
+            head += emit_yaml(key, value)
+    target = project / entry["path"]
+    if target.exists():
+        return dict(_same_or_refuse(target, body, entry["path"]), path=entry["path"], day=int(day))
+    try:
+        _publish(target, "".join(head) + "---\n\n" + body)
+    except FileExistsError:  # another summariser got there first
+        return dict(_same_or_refuse(target, body, entry["path"]), path=entry["path"], day=int(day))
+    return {"action": "published", "path": entry["path"], "day": int(day)}
+
+
+STATE_AT_CLOSE_RE = re.compile(r"^##\s+State at close\b", re.I)
+
+
+def _split_days(text: str):
+    """(preamble, {day: section}, closing, state at close) of a summary's ## sections; a ## line in a code
+    fence starts none. A section between two days stays with the day before it; sections after the last day,
+    or all of them when none names a day, close the summary; two sections for one day join. Its own title
+    is dropped (stitch writes one); its State at close is returned apart (stitch puts it last)."""
+    lines = _lines(_strip_frontmatter(text))
+    fenced = _fenced([line.rstrip("\r\n") for line in lines])
+    segments, current = [], []
+    for i, line in enumerate(lines):
+        title = re.match(r"#\s", line) and not segments and not "".join(current).strip()
+        if i not in fenced and (line.startswith("## ") or title):
+            if "".join(current).strip():
+                segments.append("".join(current).strip("\n"))
+            current = [] if title else [line]
+        else:
+            current.append(line)
+    if "".join(current).strip():
+        segments.append("".join(current).strip("\n"))
+    pre, days, post, state, last = [], {}, [], [], None
+    marks = [DAY_HEADING_RE.match(seg) for seg in segments]
+    any_day = any(marks)
+    for n, (seg, mark) in enumerate(zip(segments, marks)):
+        if STATE_AT_CLOSE_RE.match(seg):
+            state.append(seg)
+        elif mark:
+            last = int(mark.group(1))
+            days.setdefault(last, []).append(seg)
+        elif last is None and any_day:
+            pre.append(seg)
+        elif last is not None and any(marks[n + 1:]):
+            days[last].append(seg)
+        else:
+            post.append(seg)
+    return pre, {day: "\n\n".join(parts) for day, parts in days.items()}, post, state
+
+
+def stitch_summary(project, session_file, out, extra_path=None, today=None, opened=None) -> dict:
+    """The session summary: the published day summaries in day order, the extra text's preamble, open-day
+    and closing sections around them, and the state at close from the run: block. Published once; the
+    same stitch again changes nothing."""
+    project = Path(project)
+    today = today or datetime.date.today().isoformat()
+    target = _inside_sessions(project, str(out))
+    if target is None or (project / SUMMARY_DIR).resolve() not in target.resolve().parents:
+        raise ValueError(f"{out} must be a .md file under {SUMMARY_DIR}/")
+    rel = _relative(project, project / session_file)
+    files = _session_files_for(project, rel, opened)
+    closed = _closed_days(project, files[:-1])
+    missing = [str(d["day"]) for d in closed if not d["exists"]]
+    if missing:
+        raise ValueError(f"no summary yet for Day {', '.join(missing)}: publish each closed day's summary first")
+    sections = {d["day"]: _strip_frontmatter((project / d["path"]).read_text(encoding="utf-8")).strip("\n")
+                for d in closed}
+    pre, post, state = [], [], []
+    if extra_path:
+        pre, extra_days, post, state = _split_days(Path(extra_path).read_text(encoding="utf-8-sig"))
+        for day, text in extra_days.items():
+            if day in sections:
+                raise ValueError(f"Day {day} already has its day summary ({SUMMARY_DIR}/...); the extra text "
+                                 "covers only the open day and days no day summary holds")
+            sections[day] = text
+    data = read_frontmatter(project / rel)
+    days = sorted(sections)
+    span = (f"Day {days[0]}" + (f" to Day {days[-1]}" if days[-1] != days[0] else "")) if days else None
+    head = ["---\n"] + emit_yaml("session_files", files)
+    head += emit_yaml("fiction_days", span) if span else []
+    head += emit_yaml("day_summaries", [d["path"] for d in closed]) + emit_yaml("stitched", today) + ["---\n\n"]
+    campaign = data.get("campaign") if isinstance(data.get("campaign"), str) else None
+    title = "# Session summary" + (f": {campaign}" if campaign else "") + (f", {span}" if span else "")
+    parts = [title] + pre + [sections[d] for d in days] + post
+    state = ["\n\n".join(state)] if state else []  # the GM's: place, gear, what the run: block does not hold
+    if isinstance(data.get("run"), dict):
+        copy_of = (f"The run: block of `{rel}` as stitched (it governs; this is a copy):\n\n```yaml\n"
+                   + "".join(emit_yaml("run", data["run"])) + "```")
+        state = [state[0] + "\n\n### Run state\n\n" + copy_of] if state else ["## State at close\n\n" + copy_of]
+    parts += state
+    body = "\n\n".join(parts) + "\n"
+    result = {"action": "published", "path": _relative(project, target), "days": days}
+    try:
+        if not target.exists():
+            _publish(target, "".join(head) + body)
+            return result
+    except FileExistsError:
+        pass
+    return dict(result, action=_same_or_refuse(target, body, str(out))["action"])
 
 
 # ------------------------------------------------------------ split (plan)
@@ -2246,6 +3532,13 @@ def cmd_session(args) -> int:
     resolved["session_files"] = session_files(project, resolved["path"], fields.get("session_opened")) if exists else []
     resolved["session_opened_line"] = _opening_line(project, fields)
     resolved["continuity"] = continuity(project, resolved["path"], config["log"]["previousBeats"]) if exists else None
+    data = read_frontmatter(project / resolved["path"]) if exists else {}
+    resolved["run"] = run_report(data, resolved["live_state"])
+    resolved["state_block"] = state_block_status(project, project / resolved["path"], data) if exists else None
+    resolved["summaries_due"] = [d["day"] for d in _days_due_or_closed(project, resolved["session_files"], deep=False)
+                                 if not d["exists"]] if exists else []  # summary walks the whole run
+    for text in resolved["run"]["warnings"]:
+        print(f"WARNING: {text}", file=sys.stderr)
     interrupted = _interrupted(project, resolved["path"]) if exists else None
     resolved["rotation_warning"] = (
         f"The rotation from {interrupted} to {resolved['path']} was interrupted before {interrupted} got its "
@@ -2253,6 +3546,9 @@ def cmd_session(args) -> int:
     if interrupted:
         print(f"WARNING: {resolved['rotation_warning']}", file=sys.stderr)
     lines = _read_lines(project / resolved["path"]) if exists else None
+    if lines:
+        hidden = {i for s, e in struck_spans(lines) for i in range(s, e)}
+        lines = [line for i, line in enumerate(lines) if i not in hidden]
     if lines and "<!-- rp-rotated-to: " in "\n".join(lines[:_footer_start(lines)]):
         print(f"WARNING: a rotation footer appears before the end of {resolved['path']} (quoted, or text was written "
               "after it closed); only a footer that ends a file closes it, so this file counts as open.", file=sys.stderr)
@@ -2297,6 +3593,103 @@ def cmd_rotate(args) -> int:
         print(f"WARNING: {text}", file=sys.stderr)
     print(json.dumps(result, ensure_ascii=False))
     return 1 if result["action"] == "refused" else 0
+
+
+def cmd_strike(args) -> int:
+    project = Path(args.project_dir)
+    try:
+        text = sys.stdin.read() if args.turn_file == "-" else Path(args.turn_file).read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"ERROR: cannot read the turn file: {exc}", file=sys.stderr)
+        return 2
+    session, warning = _session_for(project, args.session_file)
+    if warning:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    try:
+        result = strike(project, session, turn_text=text, attempt=args.attempt, beat=args.beat, reason=args.reason,
+                        log=not args.no_log)
+    except ValueError as exc:
+        print(f"ERROR: {exc}.", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"ERROR: the struck draft was not kept: {exc}. Run the same command again.", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+def _read_arg_file(name):
+    return sys.stdin.read() if name == "-" else Path(name).read_text(encoding="utf-8")
+
+
+def cmd_ship(args) -> int:
+    project = Path(args.project_dir)
+    session, warning = _session_for(project, args.session_file)
+    if warning:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    try:
+        text = _read_arg_file(args.turn_file)
+        append = Path(args.append_file).read_text(encoding="utf-8") if args.append_file else None
+        result = ship(project, session, turn_text=text, append_text=append, beat=args.beat,
+                      config=load_config(project, args.config), log=not args.no_log)
+    except (ValueError, UnicodeDecodeError) as exc:
+        print(f"ERROR: {exc}.", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"ERROR: ship failed: {exc}. Run the same command again; it ships once.", file=sys.stderr)
+        return 2
+    for item in result["dropped"]:
+        print(f"WARNING: {item['key']} was not applied ({item['check']}).", file=sys.stderr)
+    print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+def cmd_state(args) -> int:
+    project = Path(args.project_dir)
+    session, warning = _session_for(project, args.session_file)
+    if warning:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    path = project / session
+    if args.refresh:
+        try:
+            result = refresh_state(project, session)
+        except OSError as exc:
+            print(f"ERROR: the refresh failed: {exc}. Run it again; it writes the block once.", file=sys.stderr)
+            return 2
+        for text in result["warnings"]:
+            print(f"WARNING: {text}", file=sys.stderr)
+        print(json.dumps(result, ensure_ascii=False))
+        return 1 if result["action"] == "refused" else 0
+    data = read_frontmatter(path)
+    print(json.dumps({"run": run_report(data, live_state(project, session)),
+                      "state_block": state_block_status(project, path, data)}, ensure_ascii=False))
+    return 0
+
+
+def cmd_summary(args) -> int:
+    project = Path(args.project_dir)
+    session, warning = _session_for(project, args.session_file)
+    if warning:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    try:
+        if args.publish:
+            if args.day is None:
+                raise ValueError("--publish needs --day")
+            result = publish_summary(project, session, args.day, args.publish)
+        elif args.stitch:
+            if not args.out:
+                raise ValueError("--stitch needs --out")
+            result = stitch_summary(project, session, args.out, args.extra, opened=args.opened)
+        else:
+            result = summary_plan(project, session, opened=args.opened)
+    except (ValueError, UnicodeDecodeError) as exc:
+        print(f"ERROR: {exc}.", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"ERROR: {exc}. Run the same command again; it publishes once.", file=sys.stderr)
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=None if args.publish or args.stitch else 1))
+    return 0
 
 
 def cmd_split(args) -> int:
@@ -2364,7 +3757,7 @@ def cmd_check(args) -> int:
         "session_file": session,
         "session_warning": warning,
         "scene_warning": scene["warning"],
-        "lint": {k: result[k] for k in ("findings", "events", "present", "delta", "elapsed_ms")},
+        "lint": {k: result[k] for k in ("findings", "events", "run_notes", "present", "delta", "elapsed_ms")},
         "triggers": triggers,
         "route": decision,
         "elapsed_ms": elapsed,
@@ -2431,22 +3824,54 @@ def main(argv=None) -> int:
     r.add_argument("--heading", help="the beat heading the command will write; checked against the day")
     r.add_argument("--beat", help="the beat label, for the footer and the log")
     r.add_argument("--start", action="store_true", help="/rp:start: record the session's opening in the marker")
-    r.add_argument("--repair", action="store_true", help="/rp:end: only close a file an interrupted rotation left open")
+    r.add_argument("--repair", action="store_true",
+                   help="/rp:end: only close a file an interrupted rotation left open, and write struck drafts waiting")
     r.add_argument("--allow-jump", action="store_true",
                    help=f"rotate past more than {MAX_DAY_JUMP} days: only on the Keeper's word")
     r.add_argument("--config", help=f"mode file (default: {MODE_FILE})")
     r.add_argument("--no-log", action="store_true")
+    k = sub.add_parser("strike", help="keep a draft the gate rejected, for rotate to write as a STRUCK block")
+    k.add_argument("--project-dir", default=".")
+    k.add_argument("--session-file", help="the live session file (default: from the marker)")
+    k.add_argument("--turn-file", required=True, help="the turn file the gate checked, or - for stdin")
+    k.add_argument("--attempt", type=int, required=True, help="the attempt number of the struck draft")
+    k.add_argument("--beat", help="the beat label")
+    k.add_argument("--reason", required=True, help="the verdict's violation categories, or one line")
+    k.add_argument("--no-log", action="store_true")
     p = sub.add_parser("split", help="plan, read-only, how existing logs would cut into day files")
     p.add_argument("--project-dir", default=".")
     p.add_argument("--log", action="append", required=True, help="a log to plan, in play order (repeatable)")
     p.add_argument("--log-dir", required=True, help=f"the day-file directory, e.g. {SESSION_DIR}/<campaign>/log")
     p.add_argument("--cite", action="append", help="a file or directory to scan for citations (repeatable)")
+    h = sub.add_parser("ship", help="after rotate: append the beat and apply its gated delta, in one write")
+    h.add_argument("--project-dir", default=".")
+    h.add_argument("--session-file", help="the file rotate named (default: from the marker)")
+    h.add_argument("--turn-file", required=True, help="the gated turn file, or - for stdin; its delta is applied")
+    h.add_argument("--append-file", help="the text to append: the new day's Day Plan, if any, then the beat")
+    h.add_argument("--beat", help="the beat label; with the text and the delta it makes a retry a no-op")
+    h.add_argument("--config", help=f"mode file (default: {MODE_FILE})")
+    h.add_argument("--no-log", action="store_true")
+    t = sub.add_parser("state", help="the run: block's health; --refresh copies it into the run state file")
+    t.add_argument("--project-dir", default=".")
+    t.add_argument("--session-file", help="the live session file (default: from the marker)")
+    t.add_argument("--refresh", action="store_true", help="write the generated block (after a rotation, /rp:end)")
+    m = sub.add_parser("summary", help="per-day summaries: plan, --publish a closed day's, or --stitch the session's")
+    m.add_argument("--project-dir", default=".")
+    m.add_argument("--session-file", help="the live session file (default: from the marker)")
+    m.add_argument("--day", type=int, help="the closed fiction day to --publish")
+    m.add_argument("--publish", help="a file holding the day's summary text, opening with '## Day N'")
+    m.add_argument("--stitch", action="store_true", help="write the session summary from the day summaries")
+    m.add_argument("--out", help=f"the session summary to write, under {SUMMARY_DIR}/ (--stitch)")
+    m.add_argument("--extra", help="text for --stitch: the session's own sections and the open day's")
+    m.add_argument("--opened", help="the file the session opened in (default: the marker's session_opened); "
+                                    "/rp:end passes it, having removed the marker")
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return int(exc.code or 0) if exc.code not in (None, 0) else 0
     commands = {"session": cmd_session, "check": cmd_check, "log": cmd_log, "invariants": cmd_invariants,
-                "rotate": cmd_rotate, "split": cmd_split}
+                "rotate": cmd_rotate, "strike": cmd_strike, "split": cmd_split, "ship": cmd_ship,
+                "state": cmd_state, "summary": cmd_summary}
     return commands[args.command](args)
 
 

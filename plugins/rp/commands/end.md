@@ -13,8 +13,8 @@ Ends an active roleplay session with canon synthesis and state management.
 
 1. **Removes rp-active marker** — Ends RP routing and safeguards
 2. **Saves session file** — Ensures all content written to disk
-3. **Generates session summary** — Creates `Work/rp/summaries/` entry
-4. **Updates character states** — Writes `Work/rp/characters/*.md` with current stats
+3. **Stitches the session summary** — Each closed fiction day already has its summary (`/rp:turn` writes it when rotation closes the day); this writes only the open day's part and stitches the rest into a `Work/rp/summaries/` entry
+4. **Updates character states** — With a `run:` block, refreshes the run state file's generated block (no model call); without one, writes `Work/rp/characters/*.md` as before
 5. **Ratifies canon (NEW)** — Per-item Keeper accept/reject/defer via `rp-ratifier` agent against `Memory/invariants.md`
 6. **Synthesizes ratified canon** — Promotes only accepted items to Vault via `canon-writer`
 7. **Optional: Git commit** — Commits session artifacts
@@ -23,7 +23,7 @@ Ends an active roleplay session with canon synthesis and state management.
 
 ### Step 1: Resolve the session file, then remove the RP marker
 
-The marker names the session file, so resolve it first. `rotate --repair` moves no beat and opens no file: it closes a file an interrupted rotation left without its footer, and hides (renames to `.day-NNNN.md.orphan-<date>`, never deletes) a day file such a crash left unused:
+The marker names the session file, so resolve it first. `rotate --repair` moves no beat and opens no file: it closes a file an interrupted rotation left without its footer, hides (renames to `.day-NNNN.md.orphan-<date>`, never deletes) a day file such a crash left unused, and writes any struck drafts still waiting into the current file, before the END block:
 
 ```bash
 ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"
@@ -44,52 +44,44 @@ This ends RP-specific routing for subsequent work.
 
 Ensure the current session file is written:
 
-- Location: SESSION_FILE (from Step 1). Append the END block (where play stopped, state, open clocks) at its end
+- Location: SESSION_FILE (from Step 1). Append the END block (where play stopped, state, open clocks) at its end. Play stopped at the last beat: Step 1 may have just written struck drafts after it, and a `> [!struck]` block is never where play stopped
 - A legacy `Work/rp/rp_session_*.md` log: set `status: closed` in its YAML frontmatter, so the session-file fallback no longer picks it. A day file stays open: only rotation closes it, and the next `/rp:start` continues it or rotates from it
 - Never edit an earlier file in `session_files`: rotation closed it, and its `file:line` citations must stay valid (cite a line only in a closed file: an open file's lines move with every frontmatter delta)
 - Use Edit/Write tool (never claim saved without tool use)
 
-### Step 3: Generate Session Summary
+### Step 3: Stitch the Session Summary
 
-Create or update `Work/rp/summaries/YYYY-MM-DD.md`. It covers the whole session: every file in `session_files`, from `session_opened_line` in the first through the END block in the last, citing each beat by number (`B4123`), and a line only in a closed file (`<day file>:<line>` into a day file rotation has footered; the current day file is still open, so cite its beats, never its lines):
+Each fiction day this session closed already has its summary: `/rp:turn` writes it, with one model call, when rotation closes the day. Pass the first file in Step 1's `session_files` as `--opened`, since the marker is gone:
 
-```markdown
----
-session_date: "2026-02-03"
-fiction_date: "<fiction-date>"
-participants: ["Alder", "Sable", "the Proprietor"]
-location: "Ashfield House"
----
-
-# Session Summary: 2026-02-03
-
-## Events
-
-- Alder visited Ashfield House seeking information
-- Met the Proprietor, established initial terms
-- Discovered back room and the Rival's Academy connection
-
-## Character States
-
-- **Alder**: HP 12/12, MP 38/90, SAN 65/75
-- **Sable**: Hunger level adequate, contained in Threshold
-
-## Canon Established
-
-- Ashfield House (new location)
-- the Rival's Academy connection
-- The Siphon artifact introduced
-
-## Threads Open
-
-- the Proprietor's true purpose unclear
-- the Rival requires follow-up
-- The Siphon's location unknown
+```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" summary --project-dir . --session-file "<SESSION_FILE>" --opened "<session_files[0]>"
 ```
+
+`days` lists each day the session closed, and any earlier closed day still without a summary (one `/rp:start` closed, say), with its summary `path` and whether it `exists`. Write each that is missing as `/rp:turn` Step 3e does: timeline-search on haiku with the entry's `beats` and `plans` (each as its `parts` when it has them: the lines between are struck drafts), then `summary --project-dir . --session-file "<SESSION_FILE>" --day N --publish Work/rp/.gate/day-summary.md`; one model call per missing day. If a summariser from the last rotation may still be running, wait for it first. `open` is the current day so far, with its `beats` and `plans` ranges; its file is still open.
+
+Then write `Work/rp/.gate/session-extra.md`, the one part of the summary written here:
+
+- the session's own sections, before any day (Keeper rulings and steers, OOC notes);
+- a `## Day N` section for the open day so far (from `session_opened_line` when the session opened in that file), and for any earlier day of the session in a legacy log that no day summary covers;
+- closing sections after the days (threads open, canon proposed for ratification).
+
+Cite each beat by number (`B4123`), and a line only in a file rotation has footered (`<day file>:<line>`; the open day's file is still open, so cite its beats, never its lines). Mark inference INFERRED and never invent; the PC's thoughts and choices are the Keeper's, and are never written beyond what the Keeper wrote. Leave out every `> [!struck]` block: a draft the gate struck is never an event, a state or canon; name one, if at all, only under a "Struck drafts (not canon)" line, by beat and attempt. Then stitch:
+
+```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" summary --project-dir . --session-file "<SESSION_FILE>" --opened "<session_files[0]>" --stitch --extra Work/rp/.gate/session-extra.md --out Work/rp/summaries/YYYY-MM-DD.md
+```
+
+It writes, under generated frontmatter, the extra text's opening sections, every day (the day summaries and the extra text's days, in day order; a section between two days stays with the day before it), its closing sections, and last its "State at close": the extra text's own (place, gear, what the `run:` block does not hold), with a copy of the `run:` block under it. It refuses while a closed day of the session has no summary or the extra text repeats one, and it never overwrites a summary: the same stitch again changes nothing, a different one is refused. A campaign without day files (no `log_dir`) has no day summaries, so the extra text covers the whole session, as before. The output name may follow the project's own convention (`YYYY-MM-DD_<campaign>-day-<first>-<last>.md`), under `Work/rp/summaries/`.
 
 ### Step 4: Update Character States
 
-Write/update `Work/rp/characters/{character}_state.md`:
+With a `run:` block in the session frontmatter, refresh the run state file's generated block (no model call). It keeps every hand-written line, and refuses (tell the Keeper) a block edited by hand:
+
+```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" state --refresh --project-dir . --session-file "<SESSION_FILE>"
+```
+
+The stitched summary's state at close and the block both come from the `run:` block, never from the prose. Write `Work/rp/characters/{character}_state.md` only for a campaign without one, from the beats and the END block, never from a `> [!struck]` block:
 
 ```markdown
 ---
@@ -133,12 +125,14 @@ prompt: |
   INVARIANTS_FILE: "Memory/invariants.md"
   SUMMARY_FILE: "Work/rp/summaries/YYYY-MM-DD.md"
 
-  Identify all canon-worthy additions from the session. EXCLUDE content
-  inside "## VALIDATOR SURRENDER" blocks unless the block carries the
-  "KEEPER: accepted" marker — a surrendered draft failed the continuity
-  gate, and only the Keeper's explicit acceptance (recorded by /rp:turn)
-  makes its events real. Canonizing an unmarked surrender block promotes
-  the exact fabrications the gate caught. For each addition:
+  Identify all canon-worthy additions from the session. EXCLUDE every
+  "> [!struck]" callout block: a draft the continuity gate struck, kept as a
+  record. A surrendered draft the Keeper accepted was shipped as a beat of
+  its own, so the struck copy is never the source. Also exclude a legacy
+  "## VALIDATOR SURRENDER" block (from before struck drafts) unless it
+  carries the "KEEPER: accepted" marker. Canonizing struck or unmarked
+  surrendered text promotes the exact fabrications the gate caught. For
+  each addition:
   1. Categorize against invariants (extends_existing | new_canon | conflicts_with_invariants | pending_resolution)
   2. Surface to Keeper via AskUserQuestion for accept / reject / defer (and accept-and-update-invariants for conflicts)
   3. Route accepted items into the canon-writer queue

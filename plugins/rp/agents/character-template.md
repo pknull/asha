@@ -93,7 +93,7 @@ If file not found: Return `{error: "CHARACTER_FILE not found", path: "..."}`
 
 ### Step 3: Load Session History (If Needed)
 
-Read `SESSION_FILE` only for **history** — what happened earlier in the session, past events, backstory context.
+Read `SESSION_FILE` only for **history** — what happened earlier in the session, past events, backstory context. Skip any `> [!struck]` block: a draft the gate rejected, never history.
 
 **Do NOT use session file for:**
 

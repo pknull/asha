@@ -263,6 +263,7 @@ The canon-writer handles file operations. The GM validates what should be promot
 
 ## Safety
 
+- **Never promote from a `> [!struck]` block**: it is a draft the gate struck, kept as a record. If a ratified item's only source is one, flag it and write nothing
 - **Never overwrite** existing content without explicit instruction
 - **Always preserve** existing information when editing
 - **Flag conflicts** rather than resolving them unilaterally
