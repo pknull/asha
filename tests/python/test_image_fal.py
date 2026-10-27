@@ -172,7 +172,7 @@ class HostAllowlistTests(HelperCase):
         for url in (
             f"https://queue.fal.run/{ENDPOINT}",
             "https://api.fal.ai/v1/models/pricing?endpoint_id=x",
-            "https://rest.fal.ai/storage/upload/initiate?storage_type=gcs",
+            "https://rest.fal.ai/storage/upload/initiate?storage_type=fal-cdn-v3",
             "https://QUEUE.FAL.RUN/fal-ai/x/requests/1/status",
             "https://queue.fal.run:443/fal-ai/x",
         ):
@@ -336,6 +336,25 @@ class ExplicitUploadTests(HelperCase):
         body = self.submitted_body(transport)
         self.assertEqual(body["image_url"], str(private))
         self.assertEqual(body["image_urls"], [str(private), "@" + str(private)])
+
+    def test_upload_initiates_on_the_storage_type_fal_accepts(self):
+        # fal answers storage_type=gcs with HTTP 400 "Invalid storage type"
+        # (2026-10-26); its own JS client initiates on fal-cdn-v3.
+        path = self.root / "a.png"
+        path.write_bytes(b"png")
+        transport = FakeTransport(self.happy_routes(extra=[
+            ("POST", "https://rest.fal.ai/storage/upload/initiate",
+             {"upload_url": "https://v3.fal.media/upload/a.png?sig=1",
+              "file_url": "https://v3.fal.media/files/x/a.png"}),
+            ("PUT", "https://v3.fal.media/upload/", b""),
+        ]))
+        self.install(transport)
+        code, _out, err = self.run_cli("--file", f"image_url={path}")
+        self.assertEqual(code, 0, err)
+        initiated = [r["url"] for r in transport.requests
+                     if "/storage/upload/initiate" in r["url"]]
+        self.assertEqual(initiated, [
+            "https://rest.fal.ai/storage/upload/initiate?storage_type=fal-cdn-v3"])
 
     def test_named_file_is_uploaded_into_its_field(self):
         first = self.root / "a.png"
