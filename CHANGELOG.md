@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased — image 2.2.0: Blender 5.2 tool layer
+
+- New `image-blender` skill (`plugins/image/skills/blender/`): the tool layer
+  for driving Blender 5.2 LTS from scripts. It covers headless invocation
+  (`-b`, `--factory-startup`, `--python-exit-code 1`, options after `--`, the
+  `RESULT {json}` line), etiquette (no GUI window, one Blender at a time,
+  absolute paths, idempotent scripts, saved copies instead of overwritten
+  inputs), render setup
+  for Cycles, EEVEE and Workbench, colour management, glTF, FBX, OBJ, USD and
+  STL import and export (PLY in the reference), and the checks that prove a run
+  worked.
+  Modelling and art judgement stay with a craft skill; installing Blender
+  stays with the packages layer.
+- `scripts/cycles_devices.py` probes the Cycles backends and enables the first
+  with a GPU (OptiX, CUDA, HIP, oneAPI, Metal) in the running process, or falls
+  back to the CPU; `--require-gpu` makes a missing GPU fail. Under
+  `--factory-startup` no compute device is enabled, so a scene set to GPU
+  renders on the CPU and exits 0; the skill proves the device from the
+  `Path tracing on:` line Cycles logs under `--debug-cycles`.
+- `scripts/smoke.py` renders a tiny scene, exports glb, fbx, obj, usd and stl,
+  and reads each back, printing one result line and exiting 1 on a failed
+  check. It refuses an output directory holding files it did not write. Both
+  scripts report a bad option on the result line instead of argparse's exit 2,
+  and never match another script's option by prefix.
+- Every snippet and script ran headless on 5.2.3. The version-trap table was
+  run on 4.5.14 and 5.2.3. The colour table records decoded 8-bit values per
+  view transform; both versions gave the same pixels, though no PNG matched
+  byte for byte (date and render-time metadata; 5.2 adds colour chunks). Credit: headless conventions
+  adapted from scenario-labs/skills `scenario-blender-expert` (MIT, commit
+  72b763c).
+- `tests/python/test_image_blender.py` covers the scripts' device choice,
+  fallback, `--require-gpu` and `--probe-only` paths, option errors, result
+  lines and exit codes through a stand-in `bpy`, guards the skill text against
+  host paths and one machine's GPU, and runs the smoke test when
+  `ASHA_TEST_BLENDER` names a Blender executable. Reinstall a target to pick up
+  the new skill.
+
 ## Unreleased — struck RP drafts, typed run state and day summaries (rp 0.4.0, write 1.12.0)
 
 - A draft the gate rejects (each draft a rewrite replaces, and a surrender's
