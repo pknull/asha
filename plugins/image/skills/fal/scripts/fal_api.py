@@ -288,7 +288,7 @@ def upload_file(path: Path) -> str:
     if path.suffix.lower() == ".glb":
         content_type = "model/gltf-binary"
     init = api_request(
-        "POST", f"{REST_URL}/storage/upload/initiate?storage_type=gcs",
+        "POST", f"{REST_URL}/storage/upload/initiate?storage_type=fal-cdn-v3",
         body={"file_name": path.name, "content_type": content_type}, retry=False,
     )
     upload_url = _require_https(init.get("upload_url"), "upload URL")
