@@ -4,7 +4,7 @@
 
 Image and asset generation with two backends, local Stable Diffusion through
 ComfyUI workflows and hosted generation through fal.ai, plus the tool layer for
-driving Blender from scripts.
+driving Blender from scripts and the craft layer for building 3D assets.
 
 ## When to use it
 
@@ -27,13 +27,15 @@ direct bitmap-generation tool supplied by a harness, use that tool instead.
 Blender work (`image-blender`) is separate from generation: it covers running
 Blender headless, `bpy` scripting, render setup and devices, colour management,
 import and export, and proving a run worked. Modelling and art judgement belong
-to a craft skill, and installing Blender to the packages layer.
+to the craft skill (`image-3d-craft`), which loads `image-blender` for the
+mechanics; installing Blender belongs to the packages layer, and a project's
+style to that project's own documents.
 
 ## Invocation by harness
 
 The plugin has no command or agent. Ask for the task naturally or name the
-skill (`image-generation`, `image-fal` or `image-blender`) on Claude, Codex,
-Copilot, or OpenCode.
+skill (`image-generation`, `image-fal`, `image-blender` or `image-3d-craft`) on
+Claude, Codex, Copilot, or OpenCode.
 
 ```text
 Use image-generation to turn this scene into an SDXL prompt and negative prompt.
@@ -43,6 +45,8 @@ Use image-fal to price a transparent drone sprite, then wait for my go-ahead.
 Use image-fal to turn art/drone-concept.png into a GLB model.
 Use image-blender to render scene.blend headless on the GPU and show which device ran.
 Use image-blender to export the selected objects of scene.blend to GLB and check the file.
+Use image-3d-craft to set a texel density and polycount budget for this prop at a 5 m camera.
+Use image-3d-craft to check crate.blend for floating and penetrating parts before export.
 ```
 
 ## Skills
@@ -98,6 +102,22 @@ Skill contents:
 - `skills/blender/scripts/cycles_devices.py` — probe Cycles backends and enable one in the running process
 - `skills/blender/scripts/smoke.py` — render, export and re-import a tiny scene to prove an install
 
+### 3d-craft (installs as `image-3d-craft`)
+
+The craft layer for real-time and game 3D assets, in any style: blockout and
+modelling routes, topology and edge flow, scale, units and pivots, UVs and
+texel density, PBR, flat-colour, vertex-colour and unlit materials, lighting
+for previews and look development, AO and normal baking, polycount and LOD
+budgets, collision, export hygiene, and checking an asset in Godot. It loads
+`image-blender` for mechanics and leaves a project's style to the project.
+Blender claims were run on 5.2.3 and Godot claims on 4.7.2.
+
+Skill contents:
+
+- `skills/3d-craft/SKILL.md` — the brief, the stage gates, everyday rules, the done checks
+- `skills/3d-craft/references/` — `modelling.md`, `uvs.md`, `materials.md`, `lighting-baking.md`, `budgets.md`, `godot.md`
+- `skills/3d-craft/scripts/godot_report.gd` — Godot report on imported scenes: surfaces, LODs, vertex colours, UV2, materials, collision, bounds
+
 ## Installation
 
 ```bash
@@ -113,7 +133,9 @@ SD prompts, request ComfyUI workflow creation, or mention Stable Diffusion,
 ComfyUI, LoRA, or image prompts. `image-fal` triggers when you ask for fal, or
 for finished-quality assets, 3D models, rigs, audio or video. `image-blender`
 triggers on Blender, bpy, headless renders, .blend files, Cycles devices and
-glTF or FBX export.
+glTF or FBX export. `image-3d-craft` triggers on topology, UV unwrapping, texel
+density, PBR materials, lighting an asset, baking, LODs, polycount budgets and
+preparing an asset for a game engine.
 
 ```text
 Design a prompt for: ethereal forest scene with bioluminescent mushrooms
@@ -126,7 +148,7 @@ assumptions rather than inventing a locally installed model or node.
 
 ## Version History
 
-- **2.2.0**: Added the `blender` skill (`image-blender`), the tool layer for scripting Blender 5.2 LTS headless
+- **2.2.0**: Added the `blender` skill (`image-blender`), the tool layer for scripting Blender 5.2 LTS headless, and the `3d-craft` skill (`image-3d-craft`), the craft layer for game 3D assets
 - **2.1.0**: Added the `fal` skill (`image-fal`) for paid hosted fal.ai generation, with the local-first routing rule and a per-job price gate
 - **2.0.0**: Converted `image-engineer` agent to `generation` skill (`image-generation`); moved generator templates into the skill directory
 - **1.1.0**: Agent-based release

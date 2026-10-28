@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — image 2.2.0: Blender 5.2 tool layer
+## Unreleased — image 2.2.0: Blender 5.2 tool layer and 3D craft layer
 
 - New `image-blender` skill (`plugins/image/skills/blender/`): the tool layer
   for driving Blender 5.2 LTS from scripts. It covers headless invocation
@@ -36,6 +36,31 @@
   host paths and one machine's GPU, and runs the smoke test when
   `ASHA_TEST_BLENDER` names a Blender executable. Reinstall a target to pick up
   the new skill.
+- New `image-3d-craft` skill (`plugins/image/skills/3d-craft/`): the craft
+  layer between `image-blender` and a project's style, for real-time and game
+  assets in any style. A lean `SKILL.md` (the brief, stage gates, everyday
+  rules, done checks) and six references: modelling (routes, topology, when
+  triangles and n-gons are fine, scale, pivots, multi-part assets, measuring
+  against a reference), UVs (seams, texel density from the camera, padding,
+  overlap, UV2), materials (choosing flat, palette, vertex-colour, PBR or
+  unlit; glTF channels and colour spaces; sidedness), lighting and baking,
+  budgets (polycount, materials, texture memory, LODs, collision) and Godot
+  (export hygiene, import defaults, report, first capture). It loads
+  `image-blender` for mechanics and leaves style to the project.
+- `scripts/godot_report.gd` reports what Godot imported: surfaces, primitive
+  types, LODs, vertex colours, UV2, tangents, materials and overrides,
+  collision and bounds.
+- Every Blender claim ran on 5.2.3 and every Godot claim on 4.7.2, or cites
+  the Godot 4.7 docs, the Blender manual or the glTF 2.0 spec. Findings worth
+  knowing: Godot 4.7.2 refuses Draco-compressed glTF, imports `COLOR_0`
+  without enabling vertex colour as albedo (the `-vcol` material suffix
+  does), and maps Blender's default double-sided materials to Cull Disabled.
+  Credit: UV, baking and export checklists adapted from
+  omer-metin/skills-for-antigravity `3d-modeling` (Apache-2.0, commit
+  e8dcf4e), rewritten.
+- `tests/python/test_image_3d_craft.py` guards the skill text (no Blender
+  trigger, links and anchors resolve, no persona or host paths) and runs the
+  Godot report live when `ASHA_TEST_GODOT` is set.
 
 ## Unreleased — struck RP drafts, typed run state and day summaries (rp 0.4.0, write 1.12.0)
 
