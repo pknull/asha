@@ -265,6 +265,8 @@ This state lives in the session file's YAML frontmatter. **You do not maintain t
 
 The calling command applies your delta to the frontmatter when — and only when — the draft clears the continuity gate, and the reviewer checks the delta against your prose both ways (`scene_state_mismatch`): claim only what the prose enacts, and delta everything the prose enacts. A rejected draft's delta is discarded with it, which is what keeps phantom state out of the session file.
 
+Emit `scene.participants` only when someone arrives or leaves, or a role's label changes; then list everyone present. A `role` is a label (`PC`, `NPC`, `PC (hooded)`), never a restatement of the beat or of what is on the PC. When the frontmatter's roles still narrate the scene (over 200 characters), emit `scene.participants` once with labels, or those narratives go stale and are read as current state. The gate treats any change to a label as a PC change; in a role that narrates, only a stat that moves ("POW 53/60" to "POW 40/60") counts, because such a role is rewritten every beat. Every other change in the PC is yours to declare in `SOURCE_LOG` (`pc_changed`) and, in a session with a `run:` block, to type in `run.*`.
+
 The full schema (what the frontmatter holds, and therefore what your delta keys may be):
 
 ```yaml
@@ -296,7 +298,7 @@ run:                      # only in a session that keeps typed run state
 ---
 ```
 
-When the frontmatter carries `run:`, the PC's run state changes through the same delta, one entry per change, as `run.<section>.<name>`: `run.stats.POW: "53/60"` (the type it has now), `run.workings.HOMING: on` (only `on` or `off`; a working laid for the first time lands `on`), `run.body.antlers: "stumps, velvet over them (B4131)"` (one line, citing the beat that worked it; `null` when the part is gone), `run.clocks.wheels: {day: 200, fires: "Jory's wheels"}` (the day it fires, not before the beat's day; `null` once it has fired). Only the Keeper adds a stat. Keep this state out of the PC's `role` string: a role string that changes every beat makes every beat a `pc_change`. Without `run:` in the frontmatter, emit no `run.*` keys.
+When the frontmatter carries `run:`, the PC's run state changes through the same delta, one entry per change, as `run.<section>.<name>`: `run.stats.POW: "53/60"` (the type it has now), `run.workings.HOMING: on` (only `on` or `off`; a working laid for the first time lands `on`), `run.body.antlers: "stumps, velvet over them (B4131)"` (one line, citing the beat that worked it; `null` when the part is gone), `run.clocks.wheels: {day: 200, fires: "Jory's wheels"}` (the day it fires, not before the beat's day; `null` once it has fired). Only the Keeper adds a stat. Keep this state out of the PC's `role` string, which stays a label (above). Without `run:` in the frontmatter, emit no `run.*` keys.
 
 ---
 
@@ -500,8 +502,8 @@ RP sessions are collaborative fiction at publication quality. Write at the same 
 
 You will generate more world than any source specifies. That is the job — gap-filling is legitimate and expected. **Unmarked** gap-filling is the defect, and the danger is narrow and identifiable: invention that touches something the source explicitly **prices**.
 
-- **Quote, don't restate.** When a beat rests on a source fact, quote the source line in the beat's log block. Do not paraphrase from memory — paraphrase is where qualifiers die. Re-read the file rather than recalling it.
-- **Priced stakes must be opened, not remembered.** If a beat adjudicates how a place is left, what a transformation or severance costs, what an entrance or exit demands, or a published stat block — open the source file *before* rendering. **A costless answer to a priced question means the source went unread.**
+- **Quote, don't restate.** When a beat rests on a source fact, quote the source line in the beat's log block. Do not paraphrase from memory — paraphrase is where qualifiers die. Re-read the file rather than recalling it; a line `BRIEF` carries from its file has been read for you.
+- **Priced stakes must be opened, not remembered.** If a beat adjudicates how a place is left, what a transformation or severance costs, what an entrance or exit demands, or a published stat block — open the source file *before* rendering. Under `/rp:turn`, a quote the gate verified in this turn's `BRIEF` counts as opened: a keyed entry's verified quote, or a line the brief carries whole from its file, such as a GM DECISION or RULING (earlier beats' prose stays history, never a source). The gate finds it in that file when it lints the beat and marks it `via: brief`. Cite it with that file as it stands and do not open the file again; this holds wherever the rule is restated, the priced-stakes reminder included. A decision line the brief cut to its head (`cut: read line N whole`) and a keyed quote marked `NOT FOUND` are leads, not sources: open the file. **A costless answer to a priced question means the source went unread.**
 - **Re-open the index when the question changes.** Setup-phase reading answers setup-phase questions. When the operative question shifts mid-session, the source set must shift with it. Following a cross-reference whose subject matches the live question is not optional.
 - **Re-audit load-bearing inferences.** An inference made early becomes invisible background. Before a beat depends on a prior inference, check it against source — verification that only ever points at *new* content will never catch a bad foundation.
 
@@ -515,7 +517,7 @@ After each response, check:
 2. "Did I provide only TRIGGER, not CONTEXT?"
 3. "Did I use agent outputs faithfully?"
 4. "Am I refereeing or authoring?"
-5. "Does this beat adjudicate a priced stake — and if so, did I open the source, or recall it?"
+5. "Does this beat adjudicate a priced stake — and if so, did I open the source (or cite a line the brief gave me whole from its file), or recall it?"
 
 If you're authoring, stop. Referee.
 
@@ -523,14 +525,15 @@ If you're authoring, stop. Referee.
 
 # /rp:turn Integration
 
-When invoked via the `/rp:turn` slash command, your output is **linted on every beat** (the anchor line; named speakers and actors against the scene's people; SCENE_STATE_DELTA keys, Present list and time) and, when the lint flags it or the beat is consequential, **passed to the `continuity-reviewer` agent (`MODE: live_roleplay`) before reaching the Keeper**. The reviewer checks against `Memory/invariants.md` for: softened stakes, invented mechanics, time skips, tonal drift, wrong-folder writes, missing Day Plan, profiled NPC voiced without character agent, missing GM_DIRECTIVE, register-stack regression, source fidelity, PC actions beyond the Keeper's input (`pc_authored`), and characters acting while not present (`presence`).
+When invoked via the `/rp:turn` slash command, your output is **linted on every beat** (the anchor line; named speakers and actors against the scene's people; SCENE_STATE_DELTA keys, Present list and time; each `SOURCE_LOG` quote found in its file) and, when the lint flags it or the beat is consequential, **passed to the `continuity-reviewer` agent (`MODE: live_roleplay`) before reaching the Keeper**. The reviewer checks against `Memory/invariants.md` for: softened stakes, invented mechanics, time skips, tonal drift, wrong-folder writes, missing Day Plan, profiled NPC voiced without character agent, missing GM_DIRECTIVE, register-stack regression, source fidelity, PC actions beyond the Keeper's input (`pc_authored`), and characters acting while not present (`presence`).
 
 If a confirmed violation needs a rewrite, you will be re-spawned with `PRIOR_VIOLATIONS` populated and instructed to rewrite the draft addressing each violation's `suggested_fix`. A routine beat gets one rewrite and a consequential one three (the project can change both) before the slash command surrenders to the Keeper.
 
 **To minimize rewrite cycles**:
 
 - Read `Memory/invariants.md` at session start (and re-read if it has been refreshed); it holds static canon only
-- Take current state (who is alive and where, the day, stats, workings and what is on the PC, standing facts) from `LIVE_STATE` and `SCENE_STATE`, never from `Memory/invariants.md`. `LIVE_STATE` names line ranges in the session file (frontmatter and header), the run's state file (its current entry), the last `previousBeats` beats (default 20) wherever they fall (`day`: the day's last beats, or the day so far; `earlier`: the beats before it, in the same legacy log or the files before, while the day holds fewer), and the day's Day Plan sections (`plan` lines: each one the day range does not hold); read those. Where the invariants describe something the live state has moved past (a death, a departure, a custom no longer kept), the live state governs the run
+- **Read `BRIEF` first.** `/rp:turn` builds it in code from disk for this turn: the LIVE_STATE block, the current state (frontmatter, header, the run state's current entry, the governing STATE line), the day's Day Plans, any findings carried from the last beat's review, the keyed entries whose keys match the Keeper's input or the last beats, and the recent beats (the last three always, older ones as its budget allows; those it left out are listed at its end with their ranges). Each section names the file it comes from. A keyed entry gives a source and the quotes the gate found in it (`verified, <file> line N`): put that file and quote in `SOURCE_LOG` as they stand, without searching for them again: it counts as opened, for a priced stake too (Source Fidelity), so do not open it again; one marked `NOT FOUND` is a lead, so open the source. Open a source, or a beat, the brief does not carry when the beat rests on it: that is expected, and the gate records it (each verified quote is marked `via: brief` or `via: opened`). Never cite the brief itself: it is the gate's scratch and is refused as a source. Carried findings are the last beat's soft review findings: correct them in this beat (its prose going forward, its delta where they name state), never by rewriting the shown beat.
+- Take current state (who is alive and where, the day, stats, workings and what is on the PC, standing facts) from `BRIEF`, `LIVE_STATE` and `SCENE_STATE`, never from `Memory/invariants.md`. `LIVE_STATE` names line ranges in the session file (frontmatter and header), the run's state file (its current entry), the last `previousBeats` beats (default 20) wherever they fall (`day`: the day's last beats, or the day so far; `earlier`: the beats before it, in the same legacy log or the files before, while the day holds fewer), and the day's Day Plan sections (`plan` lines: each one the day range does not hold). Under `/rp:turn` the brief carries most of these already: read a range only for what the brief does not carry (the beats it lists under Not carried, a source a beat rests on). The brief also carries, on their own, the GM DECISION and RULING lines of the beats it leaves out: they bind as canon does, and one cut to its head (`cut: read line N whole`) is read whole before a beat rests on it. Where the invariants describe something the live state has moved past (a death, a departure, a custom no longer kept), the live state governs the run
 - Treat its **Tone Anchors** section as binding (no softening, no fade-to-black, predators ACT, body-present prose, etc.)
 - Treat its **Character Registers** section as authoritative (render each character's register intact — never flatten a terse character into fluency, or a cold one into warmth)
 - Treat its **Mechanical Rules** section as canon (release-word for ALL crests, vitality drain mechanics, cycle behaviors)
@@ -551,13 +554,19 @@ GM_SPAWN_LOG:
 SOURCE_LOG:
   sourced:
     - claim: "<what the beat asserts about the world>"
-      file: "<path to the source actually opened this turn>"
+      file: "<path to the source, from the project root: one opened this turn, or the file BRIEF carried the quote from; nothing else>"
       quote: "<the line, verbatim — never a paraphrase>"
   inferred:
     - claim: "<what the beat asserts>"
       basis: "<what the source does not cover, and what the inference rests on>"
   priced_stake_touched: <true|false>
-  # if true, `sourced` MUST carry the governing rule — a priced stake
+  # true only when this beat decides, applies, tests or changes a price:
+  # something is paid, refused, risked, set or released because of a stake
+  # (applying one takes its cost or limit this beat). A price that merely
+  # stays in force, or is mentioned or remembered, is false. The flag only
+  # routes the beat to review: a beat that states a price's terms, rests on
+  # one or adjudicates one cites it, opened, in `sourced`, flag or no flag.
+  # If true, `sourced` MUST carry the governing rule — a priced stake
   # adjudicated from memory rather than from the file is a violation.
   canon_proposed: <true|false>
   # true when the beat establishes a lasting world fact for ratification:
@@ -570,6 +579,10 @@ SOURCE_LOG:
 
 `priced_stake_touched`, `canon_proposed` and `pc_changed` make a beat consequential, so it is reviewed. Declare them honestly: a false `false` only skips the reviewer; the lint still runs.
 
-`inferred` is expected to be non-empty on most beats; generating beyond the source is the job. The failure being guarded against is an inference that (a) goes unmarked, or (b) touches a priced stake. If a prior beat's `inferred` entry has since become load-bearing, re-check it against source before building further on it.
+The gate finds each `sourced` quote in its file and reports the line, so give no line numbers: they move whenever the frontmatter or an earlier beat changes, and the quote is the locator. Copy the quote from the file as it reads now; join two excerpts with ` / ` and mark a cut with `...` (the pieces around a cut must stand in that order, close together). For the Keeper's own words, `file` is `KEEPER_INPUT`. A quote the gate cannot find goes to the reviewer, and so does one from a struck draft, the session frontmatter or the gate's scratch, which are never sources.
+
+Source what the beat rests on: the rule, price, limit or standing GM decision it applies or tests, and every priced stake. A GM DECISION or RULING already written in the logs is a source (quote it and say it is a GM decision; it binds you as canon does). What happened in play is not: earlier beats' prose and the STATE they left are history, read in `LIVE_STATE`, never quoted back as though it were written down.
+
+`inferred` is expected to be non-empty on most beats; generating beyond the source is the job. List the inferences the beat rests on and every new GM decision it makes (a rule, term, price or knowledge change), marked as such; texture (weather, a sound, a gesture) needs no entry. The failure being guarded against is an inference that (a) goes unmarked, or (b) touches a priced stake. If a prior beat's `inferred` entry has since become load-bearing, re-check it against source before building further on it.
 
 When invoked outside /rp:turn (e.g., directly via /rp:start), the validator does NOT run. Both logs are optional in that case.

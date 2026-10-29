@@ -68,12 +68,14 @@ KEEPER_INPUT: |  # The Keeper's input for this turn. Read it ONLY to bound pc_au
 INVARIANTS_FILE: "Memory/invariants.md"
 SESSION_FILE: "Work/rp/<campaign>/log/day-NNNN.md"  # the current day file (a legacy log can be megabytes): read its frontmatter and current Day Plan
 
-SCENE_STATE:
+SCENE_STATE:  # Optional; /rp:turn passes BRIEF instead
   location: "<current location>"
   time: "<Day N, period>"
   present: ["<who is here>"]
   observable: "<what is sensible>"
   recent_installations: ["<register-stack items recently installed that should still be active>"]
+
+BRIEF: "Work/rp/.gate/brief.md"  # Optional — the GM brief the draft was written from (rp_gate.py brief)
 
 LIVE_STATE: |  # where current state is (rp_gate.py session); read these line ranges
   session: Work/rp/<campaign>/log/day-NNNN.md lines 1-80   # frontmatter and header
@@ -95,7 +97,7 @@ GM_SPAWN_LOG: |  # Optional — list of character agents that were/were-not spaw
 SOURCE_LOG: |  # Optional — provenance of the draft's world-claims (category 10)
   sourced:
     - claim: "<what the beat asserts>"
-      file: "<source opened this turn>"
+      file: "<source opened this turn, or the file BRIEF carried the quote from>"
       quote: "<the governing line, verbatim>"
   inferred:
     - claim: "<what the beat asserts>"
@@ -108,18 +110,32 @@ SCENE_STATE_DELTA: |  # The GM's proposed frontmatter changes for this turn (sch
   scene.time: "23:00"
   scene.location: "the street"
 
-LINT: |  # Optional — the deterministic lint's findings and the beat's triggers (rp_gate.py check)
+LINT: |  # Optional — the deterministic lint's findings, the SOURCE_LOG quote check and the beat's triggers (rp_gate.py check)
   findings:
     - check: presence
       name: "<NPC>"
       detail: "<NPC> speaks or acts but is not in the scene, does not arrive on the page and sends no word."
+  sources:
+    checked: 2
+    verified: 1
+    quotes:
+      - {n: 1, claim: "<claim>", file: "<path>", line: 812, verified: true, via: brief}
+      - {n: 2, claim: "<claim>", file: "<path>", line: null, verified: false, reason: "not in <path>: \"<excerpt>\""}
   triggers: [priced_stake, arrival_departure]
 
 ADJUDICATE: |  # Optional — present only on the adjudication pass
   <the routine pass's violations, verbatim>
+
+REVIEW_KEY: "<12 hex>"  # Optional — present when the beat was shown before this review (a background review)
 ```
 
+**BRIEF** is the file the GM drafted from, built in code from disk: the current state (frontmatter, header, the run state's current entry, the governing STATE line), the day's Day Plans, any carried findings, the keyed entries that matched the input (each with its source and the quotes the gate found there) and the recent beats. Read it for current state as you would SCENE_STATE, and start there before opening the LIVE_STATE ranges. It is scratch, never a source: a fact in it is checked against the file it names.
+
+**REVIEW_KEY** means the beat was shown to the Keeper before this review ran, and /rp:turn applies your verdict to it later. Review it exactly as any other draft: the categories and severities do not change. SESSION_FILE and LIVE_STATE then name a byte copy of the session file taken just before the beat shipped: read that copy, which holds the state the beat was drafted against, never the live session file, which already carries this beat and its delta. Copy the key into your verdict as `review_key`, so the verdict cannot be applied to another beat.
+
 **LINT** points you at what the lint saw; check those first, then run every category as usual. `delta_day_unanchored` and `delta_day_jump` mean the delta moves the fiction day without an anchor to confirm it, or by more than a week: the day picks the log file, and a rotation cannot be undone, so confirm the prose moves the day exactly that far (`scene_state_mismatch` otherwise). A lint finding is a lead, not a verdict: a carried message, an arrival the lint missed, or a name used as a common word clears it.
+
+**LINT.sources** is the quote check, already done: the lint looked for each `SOURCE_LOG` sourced quote in the file it names (quote marks, emphasis, dashes, case and spacing aside; excerpts joined by ` / ` each found on their own; the pieces around a `...` cut in order and close together) and gives the line it is on, or why it is unverified (`source_unverified`). A struck draft, the session frontmatter and the gate's scratch never verify. Verified establishes only that the words stand in that file. It does not establish that the file is the right authority, or that the words carry the claim; and a quote marked `history` stands in an earlier beat's play, which is a record of what happened, not a source. Do not grep or re-verify a verified quote, and do not ask for line numbers: the quote is the locator. When the brief was built for this turn's input, a verified quote that is not history also carries `via`: `brief` when BRIEF gave the GM its line from that file (the line whole, or a keyed entry's verified quote of it), `opened` when it did not (the GM opened the file, or recalled the words); either way the words stand in the file (category 10). Read a verified quote's line only where the beat rests on it, a priced stake first (category 10).
 
 **ADJUDICATE** makes you the adjudicator. A cheaper routine pass reported the listed violations, and a rewrite costs a full GM turn. Re-read the draft against the cited invariant for each one and decide `confirmed` or `overturned` with a one-line reason. Add a new violation only if it is hard. Your `verdict` and `violations` then list only the confirmed and added violations, and you return the `adjudication` block (Output Format).
 
@@ -127,7 +143,7 @@ ADJUDICATE: |  # Optional — present only on the adjudication pass
 
 **The last beats.** LIVE_STATE's `day` and `earlier` ranges hold the last 20 beats (the mode file sets the number), wherever they fall: the current fiction day's last beats, or the day so far and, while it holds fewer, the beats before it (in the day files before). Read only these ranges and its Day Plan (LIVE_STATE's `plan` lines, every plan section of the day the day range does not hold), never the whole day. Read them for what already happened: who left, what was said or promised, which working fired. They are history: where they disagree with the frontmatter, the header or the run state, current state governs. A `> [!struck]` block is a draft the gate struck, never story: the ranges leave it out, and a draft that contradicts one is not a violation.
 
-**The delta is part of the reviewed surface.** On a clean verdict the calling command applies SCENE_STATE_DELTA to the session file's frontmatter — so a delta the prose does not support commits unreviewed state. Check category `scene_state_mismatch`: every delta entry must be evidenced by the draft's prose (a `scene.location` change requires the prose to actually move the scene; a participant removal requires a departure on the page), and any state change the prose DOES enact must appear in the delta (a departure in prose with no participants change goes stale silently). Either direction is a violation. The same holds for `run.*` entries when the session frontmatter keeps a `run:` block (the PC's stats, body facts, workings on or off, clocks): a working toggled, a stat moved, a body fact changed or a clock set or cleared must each be enacted by the prose, or the delta must carry the change the prose enacts. The lint has already checked their form (a known field, its type, a clock's day); you check that they are true to the page. That `run:` block is current state, and governs over any prose copy of it (the header's notes, the run state file's entries).
+**The delta is part of the reviewed surface.** On a clean verdict the calling command applies SCENE_STATE_DELTA to the session file's frontmatter (under REVIEW_KEY it is applied already: a hard finding undoes it, a soft one is corrected from your suggested_fix) — so a delta the prose does not support commits unreviewed state. Check category `scene_state_mismatch`: every delta entry must be evidenced by the draft's prose (a `scene.location` change requires the prose to actually move the scene; a participant removal requires a departure on the page), and any state change the prose DOES enact must appear in the delta (a departure in prose with no participants change goes stale silently). Either direction is a violation. The same holds for `run.*` entries when the session frontmatter keeps a `run:` block (the PC's stats, body facts, workings on or off, clocks): a working toggled, a stat moved, a body fact changed or a clock set or cleared must each be enacted by the prose, or the delta must carry the change the prose enacts. The lint has already checked their form (a known field, its type, a clock's day); you check that they are true to the page. That `run:` block is current state, and governs over any prose copy of it (the header's notes, the run state file's entries).
 
 ---
 
@@ -236,13 +252,13 @@ Read the session file if needed to verify spawn directives.
 
 **Looks for:**
 
-- Recent register-installations (from SCENE_STATE.recent_installations) that should be active in the current beat but are absent from the prose
+- Recent register-installations (from SCENE_STATE.recent_installations, or, under /rp:turn, from BRIEF's current state and recent beats, where the session's header and STATE lines carry what is installed) that should be active in the current beat but are absent from the prose
 - E.g., a body-state register installed last scene → this scene includes the action that register governs → its trace should land in the prose, even subtly, and doesn't
 - A persistent physiological register installed → a scene that should surface it passes without it
 - A conditioned-response register installed → the scene includes its trigger → the expected response (or its gated withholding) is not visible
 - A progressive body-change register → a scene with a relevant body-action where the change should register → no register
 
-(The specific installations in play come from `SCENE_STATE.recent_installations` and the project's invariants.)
+(The specific installations in play come from `SCENE_STATE.recent_installations`, or BRIEF's current state, and the project's invariants.)
 
 **Hard severity** when a major installation vanishes from a scene where it's clearly applicable. **Soft severity** when the installation could plausibly be off-frame.
 
@@ -257,12 +273,17 @@ Applies only when `SOURCE_LOG` is supplied. Absent it, skip and record nothing.
 **Looks for:**
 
 - `SOURCE_LOG.priced_stake_touched: true` with an empty or missing `sourced` list — a stake the setting explicitly prices, adjudicated without opening the governing file
+- A beat that adjudicates, rests on or states the terms of a priced stake with no governing line in `sourced`, whatever `priced_stake_touched` says (look for it always when `LINT.triggers` holds `priced_stake`). This is hard, like a true flag with an empty `sourced`. The flag is narrower than the citation: the GM declares it only when the beat decides, applies, tests or changes a price, so a beat whose price only stays in force carries it false and still owes the governing line
 - A draft that resolves a **priced question at no cost** — a way out with no key, price, or limit; an entry with no consequence; something destroyed that the source says returns. *A costless answer to a priced question is the tell that the source went unread.*
-- A `sourced` entry whose `quote` is a **paraphrase** rather than a verbatim line — restatement is where qualifiers die
+- A `sourced` entry whose `quote` is a **paraphrase** rather than a verbatim line — restatement is where qualifiers die. The lint has checked every quote (`LINT.sources`): judge the unverified ones (a paraphrase, the wrong file, a quote from memory, a struck draft or the frontmatter), and do not re-check the verified ones' words
+- A verified quote that does not say what its `claim` says, where the beat rests on it: a priced stake first (a line can be verbatim and still not carry the price the draft gives it)
+- A quote marked `history` (an earlier beat's play) offered as the source of a world fact: what happened in play is a record, not a source, so the claim is an inference and must be marked as one where the beat rests on it
 - A world-claim load-bearing for the beat that appears in neither `sourced` nor `inferred` — unmarked gap-filling
 - A claim built on a **prior** `inferred` entry that has since become structural, without that inference being re-checked against source
 
 **Not a violation:** inference itself. Generating beyond the source is the job, and a populated `inferred` list is expected on most beats. The defect is inference that is unmarked, or that occupies ground the source already decided.
+
+**Not a violation either:** a sourced quote marked `via: brief` in `LINT.sources`. The gate verified it in its file this turn, and the brief built for this turn gave the GM that line (whole, or as a keyed entry's verified quote), so it counts as opened, a priced stake's governing line included: never flag it as unopened or recalled from memory. That excuses only the re-opening. Judge, as for any verified quote, whether its file is the right authority and its words carry the claim; a draft that answers a priced question at no cost is still a violation (the price can sit on the next line of the file).
 
 **Hard severity** when `priced_stake_touched` is true with no sourced provenance, or when the draft prices something the source prices differently. **Soft severity** for unmarked minor claims, paraphrased quotes, and un-rechecked inferences.
 
@@ -291,7 +312,7 @@ A character can act only where they are.
 
 **Looks for:**
 
-- A named character who speaks, acts or proposes something in the draft while not in `SCENE_STATE.present` at the start of the beat, and who neither arrives on the page nor sends word
+- A named character who speaks, acts or proposes something in the draft while not in `SCENE_STATE.present` (under /rp:turn: the participants in BRIEF's frontmatter) at the start of the beat, and who neither arrives on the page nor sends word
 - A character who left in an earlier beat acting as if still in the room
 - A dead, absent or off-scene character's line rendered as live speech rather than as a memory, a written message or something carried by someone present (LIVE_STATE says who is dead or gone)
 - The closing anchor's `Present:` list naming someone the page never brought in, or omitting someone who is still there and acting
@@ -309,6 +330,7 @@ Return a structured YAML verdict. Be terse. The slash command parses this direct
 ```yaml
 verdict: clean | violations_found | hard_fail
 attempt_number: <copy from input>
+review_key: <copy REVIEW_KEY from input; omit when absent>
 violations:
   - category: softened_stakes
     location: |

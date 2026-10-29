@@ -1,7 +1,7 @@
 ---
 name: rp-start
 description: "Open an interactive roleplay session — sets the rp-active marker, retrieves continuity, builds a Day Plan and scene state, and deploys the roleplay-gm orchestrator."
-argument-hint: "[character names | fiction date | 'load <session>']"
+argument-hint: "[resume | character names | fiction date | 'load <session>']"
 allowed-tools: ["Task", "Read", "Write", "Edit", "Bash", "Grep", "Glob"]
 ---
 
@@ -32,6 +32,10 @@ This command carries no campaign of its own. The consuming project supplies:
 
 ## Session Initiation Protocol
 
+### Resume: `/rp:start resume`
+
+In a fresh session that continues a session still open (a Room relaunched at a Day Plan; see the plugin README, **Fresh Room at each Day Plan**), run only this: `rp_gate.py session --project-dir .`; collect any `pending` review as `/rp:turn` Step 1b does, with no new input to hold; then tell the Keeper in one line the session file, the fiction day and the last beat (`resume.day`, `resume.last_beat`), and wait for `/rp:turn`. Nothing else: no `rotate --start`, no new Day Plan, no timeline search, no scene state. The marker and its `session_opened` stay as they are, so `/rp:end` still stitches the whole session. If the marker names no open session file (`source` is not `marker`), stop and ask the Keeper.
+
 ### Step 1: Choose the session file
 
 - `load <session>` → that file (under `Work/rp/`).
@@ -47,6 +51,8 @@ This command carries no campaign of its own. The consuming project supplies:
 - A campaign with no fiction day: today's `Work/rp/rp_session_YYYY-MM-DD.md`. A new session that continues a closed one starts today's file and names the old one in its header. If today's file already exists, never write over it: `load` it (a closed log reopens) or ask the Keeper.
 
 ### Step 2: Mark RP Mode Active and record the session file
+
+If `session` lists `pending` (a provisional beat whose background review never settled: the last Room ended before it did), collect it first, as `/rp:turn` Step 1b does, with no new input to hold: `rotate --start` refuses while it is pending.
 
 ```bash
 ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" rotate --start --project-dir . --session-file "<the file from Step 1>" --day <the opening fiction day, if the campaign counts days>
@@ -255,6 +261,7 @@ Or invoke `/rp:end` directly for full canon promotion workflow.
 
 Parse {command_args}:
 
+- `resume` → only the **Resume** section above (a fresh session continuing an open one): no marker, Day Plan, timeline search or scene state; then stop
 - Empty → Resume from the project's last session state; if none, ask the Keeper for scene and cast
 - Character names (e.g., "halloran and alder") → Set up those characters
 - Date (e.g., "<fiction-date>") → Set fiction date
@@ -265,4 +272,4 @@ ARGUMENTS: {command_args}
 
 ---
 
-**Execute**: Create marker, retrieve context via timeline-search, build scene state, deploy roleplay-gm orchestrator.
+**Execute**: For `resume`, the **Resume** section only. Otherwise: create marker, retrieve context via timeline-search, build scene state, deploy roleplay-gm orchestrator.

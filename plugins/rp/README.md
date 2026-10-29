@@ -1,6 +1,6 @@
 # RP Plugin
 
-**Version**: 0.4.0
+**Version**: 0.5.0
 
 Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification, and world/history lookup. The *verbs* of running a game live here; the *nouns* — canon, character registers, rulesets, the invariants projection — stay in the consuming project.
 
@@ -80,7 +80,7 @@ Path conventions, matching the `write` plugin's posture (plugin content addresse
 | `Work/markers/rp-active` | session marker; records `session_file:` and `session_opened:`; `/rp:start` also appends a `<!-- rp-session-opened: <date> -->` line where the session opens, which `session` reports as `session_opened_line`; also gates the session plugin's per-turn routing nudge |
 | `Work/rp/<campaign>/log/day-NNNN.md` | session record, one file per fiction day (see **Day files**); the marker, not the clock, says which is live |
 | `Work/rp/rp_session_YYYY-MM-DD.md` | legacy session record, one per session, named by the day it starts; a campaign with no fiction day keeps it |
-| `Work/rp/_validator_log.jsonl` | one line per gate step: `lint`, `skipped`, `review`, `adjudicate`, `turn`, `rotate`, `strike`, `ship` |
+| `Work/rp/_validator_log.jsonl` | one line per gate step: `lint`, `skipped`, `review`, `adjudicate`, `turn`, `rotate`, `strike`, `ship`, `settle` |
 | `.claude/modes/rp.yaml` | optional `turnGate` and `sessionLog` blocks (below) |
 | `Work/rp/{summaries,characters,pending-canon}/` | derived session artifacts; `summaries/<campaign>/day-NNNN.md` holds one summary per closed fiction day |
 | `Memory/invariants.md` | the compiled invariants projection the per-turn gate reads: static canon only |
@@ -115,7 +115,10 @@ disabled with `Work/markers/rp-priced-stakes-off` (the historical
 | `log` | appends a `review`, `adjudicate` or `turn` line |
 | `invariants` | reports live state in `Memory/invariants.md` and its age against the run's state; `--strict` exits 1 on live state (the `/rp:extract-invariants` check) |
 | `split` | read-only: plans how existing logs would cut into day files, every step-back, and (`--cite`) where each `rp_session_<date>.md:N` or `<MM-DD>:N` citation would land and whether the remap is exact |
-| `ship` | after `rotate`: appends the shipped text (the new day's Day Plan, then the beat) and applies the gated delta to the frontmatter in one write; never a closed file; a retry ships once (see **Run state**) |
+| `ship` | after `rotate`: appends the shipped text (the new day's Day Plan, then the beat) and applies the gated delta to the frontmatter in one write; never a closed file; a retry ships once (see **Run state**); `--provisional` ships a first draft before its review (see **Background review**) |
+| `settle` | applies a background review's verdict to the provisional beat it reviewed: clean or soft drops its marks (soft carries the findings to the next draft), struck replaces it with a struck callout and restores the frontmatter; a key no longer pending is `stale` |
+| `pending` | lists provisional beats whose review has not settled, with the files a synchronous rerun needs; `--wait N` gives a harness time to deliver a background result |
+| `brief` | builds the turn's GM brief from disk within `turnGate.briefBytes`: current state, the day's Day Plans, carried findings, matching keyed entries with their quotes checked, recent beats; writes `Work/rp/.gate/brief.md` and its report (see **GM brief**) |
 | `state` | reports the `run:` block's health; `--refresh` copies it into the run state file's generated block |
 | `summary` | lists the days a session closed and their summaries; `--publish` checks and writes a closed day's summary once; `--stitch` writes the session summary from them |
 
@@ -163,11 +166,50 @@ cheap review, a miss ships a beat unreviewed. It reads only the session
 frontmatter, so log size does not matter: on 204 real beats it took about 7 ms
 a beat (p95 17 ms), and a `check` call, Python start-up included, about 90 ms.
 
+The lint also checks provenance. Each SOURCE_LOG `sourced` entry names a file
+and quotes it; the check finds the quote in that file and reports the line it
+is on (`lint.sources`), so nobody re-derives line numbers by hand, and line
+numbers in the entry are ignored. Quote marks (escaped or not), emphasis,
+dashes, case and spacing do not count. ` / ` joins separate excerpts, each
+found on its own in the file or one of the files the entry names; `...`, `…`
+or `[...]` marks a cut inside an excerpt, and the pieces around it must stand
+in that order within 600 characters. A quoted value that runs over lines is
+checked whole. The file field is tried whole first (a name may hold commas or
+parentheses), then part by part; a bare name resolves beside the session file,
+else by name in the project outside dot directories; `KEEPER_INPUT` names the
+Keeper's input. A path that leads outside the project is not read (the test is
+on the path as written, so a symlink inside the project is followed). Nothing
+that is not a source verifies: a struck draft, a log's frontmatter (the state
+being written), the gate's scratch under any dot directory, and the validator
+log. A quote found in an earlier beat's prose or STATE line verifies but is
+marked `history`, since play is a record, not a source; a GM DECISION or
+RULING line is not marked. An unverified quote is a `source_unverified`
+finding (fix: review): the reviewer judges it, and a `--final` check never
+holds a beat on it. Verified means the words stand in that file; whether they
+carry the claim is still the reviewer's call. On 19 real turns (257 quotes,
+cited logs up to 2.4 MB) it verified 255, 63 of them marked history, and added
+a median 70 ms to the lint, 198 ms at most (best of three runs); the two it
+missed quoted frontmatter roles that `ship` had since rewritten.
+
 A beat is **consequential** when the check finds a priced stake (SOURCE_LOG,
+where the GM declares one only when the beat decides, applies, tests or changes
+a price, not when a price merely stays in force, or is mentioned or remembered;
 or the priced-stakes phrases in the Keeper's input), proposed canon or a PC
-change (SOURCE_LOG `canon_proposed`, `pc_changed`, or a new PC role in the
+change (SOURCE_LOG `canon_proposed`, `pc_changed`, or a new PC role label in the
 delta), an arrival or departure, a fight or capture, `[validate]`, or a
-`consequentialPatterns` match. Otherwise it is **routine**.
+`consequentialPatterns` match. Otherwise it is **routine**. On a routine beat,
+a price the draft states rests on the GM's own call and its citation, which the
+lint checks only when it is given; a project that wants its own priced words in
+the draft to send a beat to review lists them in `consequentialPatterns`. While
+the scene's PC role is a label of at most 200 characters (`PC (hooded)`), any
+new role is a PC change. A longer role narrates the scene and is rewritten every
+beat, so comparing it whole would make every beat consequential: only a stat it
+carries that moves counts (`POW 53/60` to `POW 40/60`; the stats are STR, CON,
+SIZ, DEX, APP, INT, POW, EDU, HP, MP, SAN, Luck and the session's `run.stats`
+names), and every other PC change rests on `pc_changed`. The check notes a
+`pc_role_narrative` event when either role narrates, and a `roles_narrative`
+event when the frontmatter's roles narrate and the delta leaves them, since they
+then go stale.
 
 The project's rp mode file may carry a `turnGate` block. Every key is
 optional; an absent block, or a mode file without one, uses the defaults:
@@ -185,6 +227,8 @@ turnGate:
   cast: []                  # extra names the presence lint should know (minor NPCs)
   deltaKeys: []             # extra SCENE_STATE_DELTA keys
   consequentialPatterns: [] # extra case-insensitive regexes, single-quoted
+  background: true          # ship eligible beats before their review (verified harnesses only)
+  briefBytes: 80000         # the GM brief's budget, 8000-1000000
 ```
 
 `review: consequential` reviews flagged and consequential beats; `every`
@@ -196,6 +240,147 @@ value falls back to its default with a warning in the check output. The
 Per-spawn model choice is a Claude Code Task parameter. Codex, Copilot and
 OpenCode were not checked: where a spawn ignores `model`, the routine pass and
 the adjudicator run on the same model.
+
+## Background review
+
+The review can run after a beat is shown instead of before. `check` reports
+`route.background`: eligible when the route is `review` because the beat is
+consequential, and none of these holds (each is a `reasons` entry): the beat
+is a rewrite (`rewrite`), carries `[validate]` (`validate_tag`), has a lint
+finding that sends it to review (`lint`), lands on another fiction day than its
+file's (`day_change`: a rotation cannot be undone), or meets a beat still
+pending (`pending`); `turnGate.background: false` (`policy`); or `ASHA_HARNESS`
+names no harness verified for background work (`harness`, `harness_unknown`).
+Only `claude` is verified: asha documents Claude Code's background agents
+(`docs/session-hub.md`) and nothing for Codex, Copilot or OpenCode, which
+keep the review before the beat is shown.
+
+An eligible beat ships with `ship --provisional`. Before it writes the beat,
+ship writes the pending review under `Work/rp/.gate/pending/<key>/`: a byte copy
+of the session file as it stood (the state the beat was drafted against, which
+is what the reviewer reads), the turn and the beat's text. The beat then goes
+into the log between `<!-- rp-provisional: <key> -->` marks, and its delta is
+applied. `key` is the hash in ship's own `shipped` mark. While a provisional
+beat is in a file, `ship`, `rotate` (every mode), `state --refresh` and
+`summary --stitch` refuse, and `summary --publish` refuses a day that holds one.
+
+`/rp:turn` collects the verdict before it drafts anything else, and `/rp:start`
+and `/rp:end` before they start: `settle --key <key> --verdict clean|soft|struck`.
+Clean and soft drop the marks, leaving exactly what a reviewed ship writes. Soft
+also writes the findings to the run's carried file (`Work/rp/.gate/carried/`,
+one per run), which the next brief carries and the next reviewed beat (`ship
+--reviewed`, or a settled provisional beat) clears; `--delta-file` corrects the
+state they name in the frontmatter in the same write, as the edit pass corrects
+a delta. Struck, after a confirmed hard finding, puts a struck callout of the
+beat as shipped where the beat was and restores the frontmatter from the copy.
+A frontmatter rewrite happens only while the frontmatter and the beat's text are
+exactly what the ship wrote (otherwise `refused`, nothing written). A key that is
+not pending answers `stale` and writes nothing, so a late verdict never lands on
+another beat. A beat needs `--max-rewrites` 1 or more to ship provisionally
+(`no_rewrites` otherwise: a confirmed hard finding would surrender). If its
+marks are removed by hand, the beat still blocks every ship and rotation, and
+settle refuses rather than guess. A crash between any two writes leaves a state
+the same command completes: `pending` reports a review whose beat never reached
+the file (`shipped: false`), and a settle that wrote the file records it
+(`settled.json`) before it clears the review, so its re-run answers `already`.
+
+## GM brief
+
+`/rp:turn` no longer has the main session write the GM's brief. `rp_gate.py
+brief` builds it in code from disk each turn, so it costs no model call and a
+fresh session builds the same brief from the same files. In order, within
+`turnGate.briefBytes`: the LIVE_STATE block; the current state (frontmatter,
+header, the run state's current entry, and the governing STATE line, the last
+`STATE:` line of the read); every Day Plan section of the current day; findings
+carried from a soft background review; the GM DECISION and RULING lines of
+the beats it does not carry (they bind as canon does; each is cut to its first
+400 bytes, with its line, so a long one is a read away); the keyed entries that
+match; and the beats of the continuity read, the last three always, older ones
+newest first while the budget lasts. What must go in goes in even past the
+budget (`over_budget`); otherwise the brief never passes it. It ends with what
+it left out, with ranges. Its own sections are `=== ... ===` lines, which no
+Markdown heading or frontmatter rule looks like. The report (`brief.json`)
+holds the Keeper's input's digest and the session file's `shipped` mark; while
+both still match, `check` marks each verified SOURCE_LOG quote that is not
+history `via: brief` (the brief gave the GM its line from that file: the line
+whole, or a keyed entry's verified quote of it) or `via: opened` (it did not:
+the GM opened the file, or recalled the words). A `via: brief` quote counts as
+opened for the priced-stakes rule (2026-10-28); a decision line the brief cut
+to its head, a `NOT FOUND` keyed quote and the Keeper's input never make one. A review of a provisional beat gets a brief built the same way from the
+pending copy, so every path in it names the copy.
+
+**Keyed entries** are the SillyTavern lorebook idea, owned by the project: the
+canon register's `keyed_entries` row (globs), else `keyed-entries.md` beside the
+campaign's `log_dir` (`Work/rp/<campaign>/keyed-entries.md`). One entry per
+`##` heading:
+
+```markdown
+## The north gate
+- keys: gate, the door, gatekeep*, /\bnorth (?:arch|gate)\b/
+- source: Lore/World/Places/Town.md
+- quote: "opens only at dusk"
+- quote: the toll is paid at the inner door / never at the outer
+- note: one line for the GM; a table note, never a source
+```
+
+A key is matched whole and case-insensitively against the Keeper's input
+(worth two) and the last three beats (worth one); a trailing `*` takes any
+ending, and `/.../` is a regular expression. `always: true` puts an entry in
+every brief. Each quote is checked against its source by the same quote check
+the lint uses and shown with its line, or as `NOT FOUND`. The priced-stakes
+rule rides the brief as the first entry when the input matches its phrases,
+with the `priced_stakes` register's path: an in-turn command reaches every
+harness, where the prompt hook's delivery on Copilot and OpenCode is unverified.
+
+## Fresh Room at each Day Plan
+
+A Room's context grows all day: every turn leaves the GM's hand-back, the
+check's output and the reviewer's verdict in it, and on B4303 the main session
+carried about 690k tokens a call. With the brief built from disk (**GM brief**)
+and pending reviews kept on disk (**Background review**), a turn needs nothing
+from the session's memory, so a fresh Room at each Day Plan loses nothing. The
+chair starts one on its own, through Control, whenever `resume.ready` holds
+after a rotation and the Room is idle, and tells the Keeper in one line (for
+example "Day 200 opened: fresh Room, same session; repeat any steer given only
+in chat"). When the chair is not running, the Room continues as before:
+nothing in the Room closes or relaunches itself. The procedure, for the chair:
+
+1. **When.** Between turns, after a beat that rotated the day has shipped (its
+   new day file opens with the GM's Day Plan) and the after-steps are done. In
+   the project, `rp_gate.py session --project-dir .` must say `resume.ready`:
+   true. Its `reasons` name what a closing Room would still hold: `pending` (a
+   provisional beat whose review has not settled), `queued_input` (the Keeper's
+   input held after a strike), `summaries_due` (a closed day without its
+   summary yet: one may still be running in the old Room), `rotation` (an
+   interrupted rotation), `no_marker`. `resume.beats_today` is 1 right after the
+   rotating beat; `day_plan` says the day has its plan. `resume.ready` cannot
+   see a turn in flight (between its brief and its ship a GM draft or a review
+   may be running), so the Room must also be idle in Control: `asha control
+   session show <room> --json` reports `observed: waiting` and no
+   `background_tasks`. If `ready` is false, for any reason, or the Room is not
+   idle: do nothing now, and look again after the next turn. Run `session`
+   again just before the close.
+2. **Close** the Room with a save: `asha control session close <room>`. RP
+   state lives in the vault; the save is the Room's own Memory, as at any close.
+3. **Launch** a fresh one with the same project, profile, harness, model and
+   effort: `asha control session launch --project <project> --profile room
+   --harness <harness> [--model ...] [--effort ...] --prompt "<the Room's usual
+   brief>. The RP session is open and continues: run /rp:start resume, then wait
+   for the Keeper's /rp:turn."` Never /rp:start without `resume`: it would open
+   a new session (a new opening line, marker `session_opened`, Day Plan and
+   timeline search), and `/rp:end` would stitch only that part.
+4. **Check** in the fresh Room's first turn that the marker and its
+   `session_opened` are unchanged, and that `brief` reports the same
+   `beats.carried` as the old Room would have (it is built from disk alone).
+
+What a fresh Room has, all on disk: the marker (`session_file`,
+`session_opened`); the day file (frontmatter, header, Day Plans, beats, struck
+drafts); the run state file; `Work/rp/.gate/` (pending reviews, carried
+findings, queued input, the struck stash); the validator log; the mode file,
+the invariants and the keyed table. What it does not have: anything said only
+in chat. A Keeper steer that should outlive the Room is written into the log
+(the logs' convention: the next PRE-COMMIT, or the Day Plan) before the Room
+closes. The "tell the Keeper once per session" notices repeat once.
 
 ## Day files
 

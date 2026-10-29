@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 2.12.2
+**Version**: 2.12.3
 
 Compact explicit memory publication, bounded crash recovery, reviewed learning
 lifecycle, policy guardrails, guarded loops, and workspace management.

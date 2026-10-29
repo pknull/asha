@@ -9,7 +9,11 @@ draft; it decides whether a model reviewer is worth spending on the beat.
   check       lint one GM turn, route it, append the lint (and skipped) lines
   rotate      before a beat ships: move to the next fiction day's log file, then write the turn's struck drafts
   strike      keep a draft the gate rejected, for rotate to write as a STRUCK block
-  ship        append the beat and apply its gated delta, in one write
+  ship        append the beat and apply its gated delta, in one write; --provisional ships it before
+              its review, which runs in the background on a frozen copy of what it was drafted against
+  settle      apply a background review's verdict to the provisional beat it reviewed
+  pending     the provisional beats whose review is not yet settled
+  brief       build the turn's GM brief from disk: current state, Day Plan, recent beats, keyed entries
   state       the run: block's health; --refresh copies it into the run state file
   summary     the days a session closed; --publish one day's summary; --stitch the session's
   log         append one review, adjudicate or turn line to the validator log
@@ -32,10 +36,16 @@ as written. A closed file is never edited again, so file:line citations hold.
 A draft the gate rejects is kept, never as story: strike stashes it, and rotate
 writes it into the file its beat goes to as a STRUCK callout that every reader
 here skips.
+
+A provisional beat (shipped before its review, on a harness that can run the
+review in the background) is marked in its file until settle applies the
+verdict: clean or soft drops the marks, a confirmed hard finding strikes it and
+unwinds its delta. Nothing ships, rotates or is summarised over it meanwhile.
 """
 from __future__ import annotations
 
 import argparse
+import bisect
 import copy
 import datetime
 import difflib
@@ -46,9 +56,11 @@ import itertools
 import json
 import os
 import re
+import shutil
 import stat
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 try:
@@ -78,7 +90,13 @@ DEFAULTS = {
     "cast": [],
     "deltaKeys": [],
     "consequentialPatterns": [],
+    "background": True,
+    "briefBytes": 80_000,  # one Read on Claude Code (about 20k tokens)
 }
+# Harnesses where a command can run a subagent in the background and collect its result later. Claude Code only:
+# docs/session-hub.md records Claude's background agents; nothing in asha verifies it for Codex, Copilot or OpenCode,
+# where /rp:turn keeps the review before the beat is shown.
+BACKGROUND_HARNESSES = ("claude",)
 ROTATIONS = ("day", "off")
 MAX_PREVIOUS_BEATS = 200
 LOG_DEFAULTS = {"rotation": "day", "previousBeats": 20}  # the sessionLog block of the mode file
@@ -95,7 +113,10 @@ DELTA_KEYS = {
     "scene.power_method",
 }
 ROOT_MIRRORS = {"currentTime", "currentLocation", "participants"}
-LOG_PATHS = ("review", "adjudicate", "turn")  # check writes lint and skipped
+ROLE_LABEL_MAX = 200  # a longer participant role is the scene's narrative, rewritten every beat
+# Stats a narrative PC role may carry ("POW 53/60", "Luck 23"); a session's run.stats names are added.
+STAT_NAMES = ("STR", "CON", "SIZ", "DEX", "APP", "INT", "POW", "EDU", "HP", "MP", "SAN", "Luck")
+LOG_PATHS = ("review", "adjudicate", "turn")  # check writes lint and skipped; ship, strike and settle their own
 SECTIONS = ("KEEPER_INPUT", "DRAFT", "GM_SPAWN_LOG", "SOURCE_LOG", "SCENE_STATE_DELTA")
 
 # ---------------------------------------------------------------- YAML subset
@@ -599,11 +620,12 @@ def _state_pointer(data: dict, header: list[str]):
                   "frontmatter (/rp:start writes it). Current state comes from the session alone.")
 
 
-def _inside_project(project: Path, raw: str):
-    """The file a pointer names, if it stays inside the project (lexically) and is markdown."""
+def _inside_project(project: Path, raw: str, suffixes=(".md",)):
+    """The file a pointer names, if it stays inside the project (lexically) and has one of the suffixes
+    (any, when suffixes is None)."""
     root = os.path.abspath(project)
     path = os.path.abspath(os.path.join(root, raw))
-    if not path.endswith(".md") or path == root or os.path.commonpath([root, path]) != root:
+    if (suffixes and not path.endswith(suffixes)) or path == root or os.path.commonpath([root, path]) != root:
         return None
     return Path(path)
 
@@ -916,6 +938,8 @@ def load_scene(project, session_file) -> dict:
         if isinstance(item, dict) and str(item.get("role", "")).upper().startswith("PC"):
             pc, pc_role = str(item.get("name", "")), str(item.get("role", ""))
             break
+    narrative = [str(item.get("name", "")) for item in raw
+                 if isinstance(item, dict) and len(str(item.get("role") or "")) > ROLE_LABEL_MAX]
     warning = None
     if not data:
         warning = f"{session_file} has no readable YAML frontmatter; the scene starts empty."
@@ -925,10 +949,12 @@ def load_scene(project, session_file) -> dict:
         "participants": _participant_names(raw),
         "pc": pc,
         "pc_role": pc_role,
+        "narrative_roles": narrative,
         "time": scene.get("time", data.get("currentTime")),
         "day": fiction_day(data.get("currentDate")),
         "log_day": _log_day(data),
         "run": data.get("run") if "run" in data else None,  # absent: run state is free text
+        "session_dir": str((path if path.is_absolute() else project / path).parent),
         "warning": warning,
     }
 
@@ -1346,7 +1372,7 @@ def run_notes(run, beat_day, delta=None) -> list[dict]:
     return notes
 
 
-def lint(turn: dict, scene: dict, config: dict, project) -> dict:
+def lint(turn: dict, scene: dict, config: dict, project, brief=None) -> dict:
     """Deterministic checks on one GM turn. Findings carry fix: edit or review."""
     started = time.perf_counter()
     project = Path(project)
@@ -1443,6 +1469,18 @@ def lint(turn: dict, scene: dict, config: dict, project) -> dict:
     run_findings, run_events = run_delta_findings(delta, scene.get("run"), beat_day)
     findings += run_findings
     events += run_events
+    role, before = _pc_delta_role(scene, delta), str(scene.get("pc_role") or "")
+    if role is not None and max(len(role), len(before)) > ROLE_LABEL_MAX:
+        events.append({"kind": "pc_role_narrative", "chars": len(role), "before_chars": len(before)})
+    if scene.get("narrative_roles") and "scene.participants" not in delta:  # they go stale: see roleplay-gm
+        events.append({"kind": "roles_narrative", "names": list(scene["narrative_roles"])})
+
+    # SOURCE_LOG: each sourced quote against the file it names.
+    session_dir = scene.get("session_dir")
+    sources = source_quotes(turn, project, Path(session_dir) if session_dir else None, brief=brief)
+    findings += [{"check": "source_unverified", "fix": "review", "n": q["n"], "file": q["file"],
+                  "detail": f"SOURCE_LOG sourced #{q['n']}: {q['reason']}."}
+                 for q in sources["quotes"] if not q["verified"]]
     return {
         "findings": findings,
         "events": events,
@@ -1451,9 +1489,704 @@ def lint(turn: dict, scene: dict, config: dict, project) -> dict:
         "anchored": bool(fields),
         "prior": scene["participants"],
         "delta": delta,
+        "sources": sources,
         "narration": narration,
         "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
     }
+
+
+# ---------------------------------------------------------- source quotes
+# SOURCE_LOG's sourced entries name a file and quote it. The lint finds each
+# quote in its file, so nobody re-derives line numbers: the quote is the
+# locator, and the check reports the line it is on. A quote it cannot find is
+# a lead for the reviewer (source_fidelity), never an edit: only the source can
+# say what it says. Quote marks (escaped or not), emphasis, dashes, case and
+# spacing do not count. " / " joins separate excerpts, each found on its own in
+# the file or in one of the files the entry names; "...", "…" or "[...]" marks
+# a cut inside an excerpt, whose pieces must come in order and close together.
+# What is not a source never verifies: a struck draft, a session's frontmatter
+# (the state being written), the gate's scratch and its log. A quote found in
+# an earlier beat of a log is marked history: play, not something written down.
+
+SOURCE_FILE_MAX = 16 * 1024 * 1024
+SOURCE_CUT_MAX = 600  # normalised characters a cut may leave out between two pieces
+SOURCE_SUFFIX_RE = re.compile(r"^(.*?\.(?:md|markdown|txt|ya?ml|jsonl?|csv))(?![\w.])", re.I)
+SOURCE_GROUP_RE = re.compile(r"\s+/\s+")
+SOURCE_CUT_RE = re.compile(r"\s*(?:\[\s*(?:\.\.\.|…)\s*\]|\.\.\.|…)\s*")
+QUOTE_MARKS = "\\\"'`*_\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u00ab\u00bb"  # dropped, escaped or not
+DASHES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"  # hyphens, en and em dashes, minus: read as "-"
+DASH_RE = re.compile(r" *-[- ]*")  # " - ", "--" and a dash with spaces: one "-"
+QUOTE_OPEN_RE = re.compile(r"""^(\s*(?:-\s+)?)(quote\s*:\s*)(["'])(.*)$""")
+DECISION_RE = re.compile(r"\bGM (?:DECISION|RULING)\b|\bRULING\b")
+NOT_A_SOURCE = {"struck": "only in a struck draft, which is never a source",
+                "state": "only in the session frontmatter, the current state being written, not a source"}
+
+
+def _norm_lines(text: str) -> list[str]:
+    """Each line of a text as the quote check compares it, normalised in one pass over the whole text
+    (str.replace, not str.translate, which is several times slower on a long non-ASCII log)."""
+    text = unicodedata.normalize("NFKC", text).replace("\t", " ")
+    for mark in QUOTE_MARKS:
+        text = text.replace(mark, "")
+    for dash in DASHES:
+        text = text.replace(dash, "-")
+    return [" ".join(line.split()) for line in DASH_RE.sub("-", text).casefold().splitlines()]
+
+
+def _norm_quote(text: str) -> str:
+    return " ".join(_norm_lines(text))
+
+
+def _quote_groups(quote: str) -> list[list[tuple[str, str]]]:
+    """Each excerpt of a quote, as its pieces between cuts: (as written, normalised). A piece with fewer
+    than two letters or digits ("|", "--", "a") would be found anywhere, so it is no quote."""
+    groups = []
+    for excerpt in SOURCE_GROUP_RE.split(quote):
+        pieces = ((piece.strip(), _norm_quote(piece).strip(" .,;:!?-")) for piece in SOURCE_CUT_RE.split(excerpt))
+        pieces = [(raw, norm) for raw, norm in pieces if sum(ch.isalnum() for ch in norm) >= 2]
+        if pieces:
+            groups.append(pieces)
+    return groups
+
+
+def _closes(rest: str, mark: str) -> bool:
+    """rest holds the closing mark of a quoted scalar."""
+    if mark == '"':
+        return re.search(r'(?<!\\)(?:\\\\)*"', rest) is not None
+    return "'" in rest.replace("''", "")
+
+
+def _fold_quotes(text: str) -> str:
+    """A quoted quote: value that runs over lines, as one line, so the whole quote is checked."""
+    lines, out, i = text.splitlines(), [], 0
+    while i < len(lines):
+        line, m = lines[i], QUOTE_OPEN_RE.match(lines[i])
+        if m and not _closes(m.group(4), m.group(3)):
+            col = len(m.group(1))  # a continuation is indented past its key
+            while i + 1 < len(lines) and lines[i + 1].strip() and _indent(lines[i + 1]) > col:
+                i += 1
+                line += " " + lines[i].strip()
+                if _closes(line[m.end(3):], m.group(3)):
+                    break
+        out.append(line)
+        i += 1
+    return "\n".join(out)
+
+
+def _is_file(path: Path) -> bool:
+    try:
+        return path.is_file()
+    except (OSError, ValueError):  # a name too long, a NUL byte
+        return False
+
+
+def _source_text(path: Path, cache: dict):
+    """(normalised text, line starts, zones, lines) of a source file, or None when it cannot be read.
+
+    zones marks each line body, struck or state (a log's frontmatter); lines is
+    None for a file that is not a log, so nothing in it is history.
+    """
+    if path not in cache:
+        try:
+            if not _is_file(path) or path.stat().st_size > SOURCE_FILE_MAX:
+                raise OSError
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except (OSError, ValueError):
+            cache[path] = None
+            return None
+        zones, log = ["body"] * len(lines), _is_log(path)
+        for start, end in struck_spans(lines):
+            zones[start:end] = ["struck"] * (end - start)
+        fm_end = _frontmatter_end(lines) if log else None
+        if fm_end is not None:
+            zones[:fm_end + 1] = ["state"] * (fm_end + 1)
+        parts = _norm_lines("\n".join(lines))
+        if len(parts) != len(lines):  # normalising made or lost a line break: go line by line
+            parts = [_norm_quote(line) for line in lines]
+        starts, at = [], 0
+        for part in parts:
+            starts.append(at)
+            at += len(part) + 1
+        cache[path] = (" ".join(parts), starts, zones, lines if log else None)
+    return cache[path]
+
+
+def _history(lines, i: int):
+    """The beat whose prose or record line i of a log is in, or None (a Day Plan, a header, a beat's working,
+    a GM decision or ruling, a file that is not a log)."""
+    if lines is None or DECISION_RE.search(lines[i]):
+        return None
+    for j in range(i, -1, -1):
+        if HEADING_RE.match(lines[j]):
+            info = parse_beat_heading(lines[j])
+            return info["beat"] if info else None
+    return None
+
+
+def _find_excerpt(pieces, text: str, starts: list, zones: list):
+    """(line index, None) where an excerpt's pieces are, in order and close; else (None, the zone that held it)."""
+    first, blocked = pieces[0][1], None
+    at = text.find(first)
+    while at != -1:
+        line = bisect.bisect_right(starts, at) - 1
+        if zones[line] != "body":
+            blocked = blocked or zones[line]
+        else:
+            end = at + len(first)
+            for _raw, piece in pieces[1:]:
+                nxt = text.find(piece, end)
+                if nxt == -1 or nxt - end > SOURCE_CUT_MAX or zones[bisect.bisect_right(starts, nxt) - 1] != "body":
+                    break
+                end = nxt + len(piece)
+            else:
+                return line, None
+        at = text.find(first, at + 1)
+    return None, blocked
+
+
+def _files_named(root: str, name: str, index: dict) -> list[Path]:
+    """Files under the project with this base name (dot directories skipped), built once per check."""
+    if not index:
+        for top, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for file in files:
+                index.setdefault(file.casefold(), []).append(Path(top) / file)
+        index.setdefault("", [])
+    return index.get(name.casefold(), [])
+
+
+def _source_paths(field: str, root: str, session_dir, index: dict) -> list[Path]:
+    """The files a sourced entry's file field names, inside the project: the whole field as one path
+    (a name may hold commas or parentheses), then each part between commas and semicolons. Each is
+    read up to its suffix, so a line number after it ("day-0199.md l.126", "day-0199.md:126") is dropped."""
+    parts = [field] + re.split(r"[;,]", re.sub(r"\([^()]*\)", " ", field))
+    found = []
+    for part in parts:
+        m = SOURCE_SUFFIX_RE.match(part.strip().strip("`\"' "))
+        if not m:
+            continue
+        raw = os.path.expanduser(m.group(1).strip())
+        bases = [""] if os.path.isabs(raw) else [root] + ([str(session_dir)] if session_dir else [])
+        hits = [p for p in (_inside_project(Path(root), os.path.join(base, raw), suffixes=None) for base in bases)
+                if p is not None and _is_file(p)]
+        if not hits and "/" not in raw and not os.path.isabs(raw):
+            hits = _files_named(root, raw, index)
+        found += [h for h in hits if h not in found]
+    return found
+
+
+def _not_a_source(root: str, path: Path) -> bool:
+    """The gate's own scratch (any dot directory) and its log."""
+    rel = os.path.relpath(path, root)
+    return rel == os.path.normpath(VALIDATOR_LOG) or any(part.startswith(".") for part in Path(rel).parts[:-1])
+
+
+def _brief_gave(brief: dict, root: str, path: Path, line: int, source, pieces) -> bool:
+    """Whether the brief gave the GM this excerpt from its file: it carries the line the excerpt is on whole,
+    or a keyed entry's verified quote of that file and line holds every piece. A decision line the brief cut
+    to its head, a NOT FOUND keyed quote and the Keeper's input carry nothing."""
+    text, starts = source[0], source[1]
+    end = starts[line + 1] - 1 if line + 1 < len(starts) else len(text)
+    whole = text[starts[line]:end].strip()
+    if whole and whole in brief["text"] and all(norm in brief["text"] for _raw, norm in pieces):
+        return True  # every piece too: one past a cut may sit on the next line, cut in the brief
+    quotes = brief["keyed"].get((_relative(Path(root), path), line + 1), [])
+    return any(all(norm in quote for _raw, norm in pieces) for quote in quotes)
+
+
+def source_quotes(turn: dict, project, session_dir=None, entries=None, brief=None) -> dict:
+    """{"checked", "verified", "quotes"}: each SOURCE_LOG sourced entry (or each of entries), found in its file
+    or not. brief (from _brief_for) marks each verified quote that is not history via: brief when the brief
+    gave the GM its line from that file (see _brief_gave), else opened: its words were not carried, so the GM
+    opened the file, or recalled them."""
+    root = os.path.abspath(project)
+    if entries is None:
+        data = parse_yaml(_fold_quotes(turn.get("SOURCE_LOG", "") or ""))
+        entries = data.get("sourced") if isinstance(data, dict) else None
+        entries = entries if isinstance(entries, list) else []
+    cache, index, quotes = {}, {}, []
+    keeper = _norm_quote(turn.get("KEEPER_INPUT", "") or "")
+    for n, entry in enumerate(entries, 1):
+        entry = entry if isinstance(entry, dict) else {}
+        field, quote = str(entry.get("file") or "").strip(), entry.get("quote")
+        result = {"n": n, "claim": str(entry.get("claim") or "")[:80], "file": field or None, "line": None,
+                  "verified": False, "history": None, "reason": None}
+        quotes.append(result)
+        groups = _quote_groups(quote) if isinstance(quote, str) else []
+        if not entry or not groups:
+            result["reason"] = "not a claim, file and quote" if not entry else "no quote"
+            continue
+        if re.search(r"\bKEEPER_INPUT\b", field):
+            texts = [(None, (keeper, [0], ["body"], None))]
+            result["file"] = "KEEPER_INPUT"
+        else:
+            paths = _source_paths(field, root, session_dir, index)
+            scratch = [p for p in paths if _not_a_source(root, p)]
+            paths = [p for p in paths if p not in scratch]
+            texts = [(path, _source_text(path, cache)) for path in paths]
+            texts = [(path, text) for path, text in texts if text]
+            if not texts:
+                result["reason"] = (f"{_relative(Path(root), scratch[0])} is the gate's scratch or log, not a source"
+                                    if scratch else f"cannot read {_relative(Path(root), paths[0])}" if paths
+                                    else f"no file found for {field[:120]!r}")
+                continue
+            result["file"] = _relative(Path(root), texts[0][0])
+        hits, blocked = [], set()
+        for pieces in groups:
+            hit = None
+            for path, (text, starts, zones, lines) in texts:
+                line, zone = _find_excerpt(pieces, text, starts, zones)
+                if line is not None:
+                    hit = (path, line, _history(lines, line))
+                    break
+                blocked.add(zone)
+            hits.append(hit)
+        if all(hits):
+            path, line, beat = hits[0]
+            result.update(verified=True, history=beat, line=line + 1 if path else None,
+                          file=_relative(Path(root), path) if path else result["file"])
+            if brief is not None and path is not None and beat is None:
+                sources = dict(texts)
+                result["via"] = "brief" if all(_brief_gave(brief, root, h[0], h[1], sources[h[0]], g)
+                                               for h, g in zip(hits, groups)) else "opened"
+            continue
+        pieces = groups[hits.index(None)]
+        named = result["file"] if len(texts) == 1 else "the files named (%s)" % ", ".join(
+            _relative(Path(root), p) for p, _t in texts if p)
+        zone = next((z for z in ("struck", "state") if z in blocked), None)
+        if zone:
+            result["reason"] = f'"{pieces[0][0][:120]}" is {NOT_A_SOURCE[zone]}'
+        elif len(pieces) > 1 and all(any(norm in t[0] for _p, t in texts) for _raw, norm in pieces):
+            result["reason"] = (f'the pieces of "{" ... ".join(raw for raw, _n in pieces)[:120]}" are in {named} '
+                                f"but not in order and close together")
+        else:
+            missing = next(raw for raw, norm in pieces if not any(norm in t[0] for _p, t in texts))
+            result["reason"] = f'not in {named}: "{missing[:120]}"'
+    result = {"checked": len(quotes), "verified": sum(q["verified"] for q in quotes), "quotes": quotes}
+    if brief is not None:
+        result["opened"] = sum(q.get("via") == "opened" for q in quotes)
+    return result
+
+
+# ---------------------------------------------------------------- GM brief
+# What the GM starts each beat from, built in code from the files on disk (no
+# model call), within a size budget: the current state (frontmatter, header, the
+# run state's current entry, the governing STATE line), the day's Day Plans, the
+# findings carried from a soft background review, the entries of the project's
+# keyed table whose keys match the Keeper's input or the last few beats (each
+# with its source and its quotes found in that source, so the GM cites rather
+# than searches), and the recent beats under the continuity rule, newest kept
+# first. The report says what was carried, what was dropped for the budget, and
+# the size. A keyed table is the SillyTavern lorebook idea, owned by the project:
+# the canon register's keyed_entries row, else keyed-entries.md beside the
+# campaign's log directory.
+
+BRIEF_FILE = "Work/rp/.gate/brief.md"
+BRIEF_REPORT = "Work/rp/.gate/brief.json"
+BRIEF_MIN, BRIEF_MAX = 8_000, 1_000_000
+KEYED_DEFAULT = "keyed-entries.md"
+PRICED_DEFAULT = "Lore/TTRPG/canon-sources.md"
+PRICED_FRAGMENT = PRICED_RULE.parent / "canon-priced-stakes.md"
+SCAN_BEATS = 3  # besides the Keeper's input, keys are matched in the last few beats
+ALWAYS_BEATS = 3  # the last beats every brief carries, whatever the budget
+DECISION_LINE_MAX = 400  # bytes of a GM DECISION or RULING line from a beat not carried; the rest is a read away
+STATE_LINE_RE = re.compile(r"^\s*(?:[-*>]\s*)?\**STATE\**\s*:")  # "STATE: ~07:35 D199 ...", capitals only
+KEYED_HEADING_RE = re.compile(r"^##\s+(.+?)\s*#*\s*$")
+KEYED_FIELD_RE = re.compile(r"^\s*(?:[-*]\s+)?(keys|source|quote|note|always)\s*:\s*(.*?)\s*$", re.I)
+KEY_SPLIT_RE = re.compile(r"\s*(/(?:[^/\\]|\\.)+/[a-z]*|[^,]+?)\s*(?:,|$)")
+REGEX_KEY_RE = re.compile(r"^/(.+)/([a-z]*)$", re.S)  # /regex/ or /regex/i: always case-insensitive
+
+
+def _register_paths(project: Path, name: str) -> list[str]:
+    """A source register's paths in the canon register: a table row (| `name` | `path` |), or the backticked
+    path opening a '## name' section."""
+    try:
+        text = (project / CANON_LAYOUT).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    m = re.search(r"(?m)^\|\s*`?%s`?\s*\|([^|\n]+)\|" % re.escape(name), text)
+    if m:
+        return re.findall(r"`([^`]+)`", m.group(1))
+    m = re.search(r"(?ms)^#{2,6}\s+`?%s`?\s*$(.*?)(?=^#{1,6}\s|\Z)" % re.escape(name), text)
+    first = next((part for part in re.split(r"\n\s*\n", m.group(1)) if part.strip()), "") if m else ""
+    return re.findall(r"`([^`]+)`", first)[:1]
+
+
+def keyed_tables(project, data: dict, warnings=None) -> list[str]:
+    """The project's keyed tables: the canon register's keyed_entries globs, else <campaign>/keyed-entries.md
+    beside the session's log_dir (Work/rp/<campaign>/log). A register row that finds no table is a warning."""
+    project = Path(project)
+    patterns = _register_paths(project, "keyed_entries")
+    registered = bool(patterns)
+    if not patterns:
+        log_dir, _warning = _log_dir(project, data)
+        if log_dir is None:
+            return []
+        base = Path(log_dir).parent if Path(log_dir).name == "log" else Path(log_dir)
+        patterns = [(base / KEYED_DEFAULT).as_posix()]
+    found = []
+    for pattern in patterns:
+        try:
+            matches = sorted(glob.glob(os.path.join(project, pattern), recursive=True))
+        except (ValueError, OSError):
+            continue
+        for match in matches:
+            path = _inside_project(project, os.path.relpath(match, project))
+            if path is not None and _is_file(path) and _relative(project, path) not in found:
+                found.append(_relative(project, path))
+    if registered and not found and warnings is not None:
+        warnings.append(f"The canon register's keyed_entries row ({', '.join(patterns)}) finds no file, so no keyed "
+                        "table is read (the default beside log_dir is not tried while the row stands).")
+    return found
+
+
+def _unquote(value: str) -> str:
+    value = value.strip()
+    pairs = {'"': '"', "'": "'", "“": "”", "`": "`"}
+    if len(value) >= 2 and value[0] in pairs and value[-1] == pairs[value[0]]:
+        return value[1:-1]
+    return value
+
+
+def _key_pattern(key: str):
+    """A key as a case-insensitive pattern: /regex/ (flags after it are ignored), or words matched whole, quoted or
+    not (a trailing * takes any ending). A word key with no letter or digit would match anything: refused."""
+    m = REGEX_KEY_RE.match(key)
+    if m:
+        return re.compile(m.group(1), re.I)
+    key = _unquote(key)
+    if not any(ch.isalnum() for ch in key):
+        raise re.error("it has no letter or digit, so it would match any text")
+    words = key.split()
+    if not words:
+        return None
+    body = r"\s+".join(re.escape(w.rstrip("*")) + (r"\w*" if w.endswith("*") else "") for w in words)
+    return re.compile(r"(?<!\w)%s(?!\w)" % body, re.I)
+
+
+def parse_keyed(text: str, table: str) -> tuple[list[dict], list[str]]:
+    """The entries of a keyed table: '## <id>' then '- keys:', '- source:', '- quote:' (repeatable),
+    '- note:' and '- always: true' lines. Fenced lines are skipped."""
+    lines, entries, warnings, current = text.splitlines(), [], [], None
+    fenced = _fenced(lines)
+    for i, line in enumerate(lines):
+        if i in fenced:
+            continue
+        m = KEYED_HEADING_RE.match(line)
+        if m:
+            current = {"id": m.group(1).strip(), "table": table, "line": i + 1, "keys": [], "source": None,
+                       "quotes": [], "note": None, "always": False}
+            entries.append(current)
+            continue
+        f = KEYED_FIELD_RE.match(line) if current is not None else None
+        if not f:
+            continue
+        field, value = f.group(1).lower(), f.group(2)
+        if field == "keys":
+            current["keys"] += [k for k in KEY_SPLIT_RE.findall(value) if k]
+        elif field == "source":
+            current["source"] = value.strip("`\"' ")
+        elif field == "quote":
+            current["quotes"].append(_unquote(value))
+        elif field == "note":
+            current["note"] = value
+        else:
+            current["always"] = value.strip().lower() in ("true", "yes")
+    for entry in entries:
+        entry["patterns"] = []
+        for key in entry["keys"]:
+            try:
+                pattern = _key_pattern(key)
+            except re.error as exc:
+                warnings.append(f"{table} '{entry['id']}': key {key!r} is not a valid pattern ({exc}); skipped.")
+                continue
+            if pattern is not None:
+                entry["patterns"].append((key, pattern))
+        if not entry["patterns"] and not entry["always"]:
+            warnings.append(f"{table} '{entry['id']}' has no keys and is not always: it never matches.")
+        if entry["quotes"] and not entry["source"]:
+            warnings.append(f"{table} '{entry['id']}' quotes without a source: its quotes are not checked.")
+    return entries, warnings
+
+
+def _priced_entry(project: Path, keeper: str):
+    """The priced-stakes rule as a keyed entry (the prompt hook's nudge, on every harness), when the input
+    matches it."""
+    priced = _priced_regex()
+    if not (priced and keeper and priced.search(keeper)):
+        return None
+    try:
+        note = PRICED_FRAGMENT.read_text(encoding="utf-8")
+    except OSError:
+        note = "This turn touches a priced stake: open the governing source before adjudicating it."
+    note = re.sub(r"</?system-reminder>", "", note).strip()
+    register = (_register_paths(project, "priced_stakes") or [PRICED_DEFAULT])[0]
+    return {"id": "Priced stake", "table": "asha", "keys": ["priced-stakes rule"], "source": register, "quotes": [],
+            "note": note, "always": False, "patterns": [], "priced": True}
+
+
+def _ranges_lines(entry: dict) -> list[int]:
+    return [n for a, b in entry.get("parts") or [[entry["start"], entry["end"]]] for n in range(a, b + 1)]
+
+
+def _brief_beats(project: Path, cont, skip: set, cache: dict) -> list[dict]:
+    """The beats of the continuity read, oldest first, each with its text: struck drafts and the day's Day
+    Plans (skip, by (path, line)) left out."""
+    beats = []
+    entries = list((cont or {}).get("previous") or []) + ([cont["current"]] if (cont or {}).get("current") else [])
+    for entry in entries:
+        if entry["path"] not in cache:
+            cache[entry["path"]] = _read_lines(project / entry["path"]) or []
+        lines, allowed = cache[entry["path"]], set(_ranges_lines(entry))
+        for unit in _beat_units(lines, entry["start"] - 1, entry["end"]):
+            numbers = [n for n in range(unit["start"], unit["end"] + 1)
+                       if n in allowed and (entry["path"], n) not in skip]
+            while numbers and not lines[numbers[-1] - 1].strip():
+                numbers.pop()
+            if numbers:
+                beats.append({"beat": unit["beat"], "path": entry["path"], "start": numbers[0], "end": numbers[-1],
+                              "text": "\n".join(lines[n - 1] for n in numbers).strip("\n"),
+                              "decisions": [(n, lines[n - 1].strip()) for n in numbers
+                                            if DECISION_RE.search(lines[n - 1]) and not HEADING_RE.match(lines[n - 1])]})
+    return beats
+
+
+def _governing_state(beats: list[dict]):
+    """The last STATE line in the read, newest beat first: the line that governs current state."""
+    for beat in reversed(beats):
+        for offset, line in reversed(list(enumerate(beat["text"].splitlines()))):
+            if STATE_LINE_RE.match(line):
+                return {"path": beat["path"], "beat": beat["beat"], "text": line.strip()}
+    return None
+
+
+def keeper_digest(text: str) -> str:
+    return hashlib.sha256(" ".join((text or "").split()).encode("utf-8")).hexdigest()[:16]
+
+
+def build_brief(project, session_file, keeper_input: str, *, config=None, budget=None, beat=None,
+                source_dir=None) -> tuple:
+    """(text, report): the GM brief for one turn, built from disk within budget bytes. source_dir is where a
+    keyed quote's bare file name resolves (default: beside the session file)."""
+    project = Path(project)
+    config = config or load_config(project)
+    budget = budget or config["briefBytes"]
+    rel = _relative(project, project / session_file)
+    lines = _read_lines(project / rel)
+    if lines is None:
+        raise ValueError(f"{rel} cannot be read")
+    data = read_frontmatter(project / rel)
+    state = live_state(project, rel)
+    cont = continuity(project, rel, config["log"]["previousBeats"])
+    cache, warnings = {rel: lines}, []
+    report = {"path": BRIEF_FILE, "session": rel, "budget": budget, "keeper_input": keeper_digest(keeper_input),
+              "warnings": warnings}
+    held = provisional_keys(lines)
+    if held:
+        warnings.append(f"{rel} holds a provisional beat ({held[0]}) whose review has not settled: collect it "
+                        "(Step 1b) and build the brief again.")
+    report["provisional"] = held
+
+    def text_of(entry) -> str:
+        if entry["path"] not in cache:
+            cache[entry["path"]] = _read_lines(project / entry["path"]) or []
+        body = cache[entry["path"]]
+        return "\n".join(body[n - 1] for n in _ranges_lines(entry) if 0 < n <= len(body)).strip("\n")
+
+    day = (cont or {}).get("day")
+    plans = _day_span(project, rel, day)["plans"] if day is not None else []
+    skip = {(e["path"], n) for e in plans for n in _ranges_lines(e)}
+    beats = _brief_beats(project, cont, skip, cache)
+    numbers = [n for b in beats if (n := _beat_number(b["beat"])) is not None]
+    next_beat = beat or (str(max(numbers) + 1) if numbers else None)
+    governing = _governing_state(beats)
+
+    head = ["=== GM brief ===", "",
+            f"Built by rp_gate.py brief from the files on disk (no model call), within {budget} bytes. It carries "
+            "what this beat starts from. Cite the file each fact comes from (every section names it), never this "
+            "brief. When the beat rests on something it does not carry, open the source; what it left out is listed "
+            "at the end.", "", f"SESSION_FILE: {rel}"]
+    if next_beat:
+        head.append(f"NEXT_BEAT: {next_beat}")
+    head += ["KEEPER_INPUT:", keeper_input.strip(), "", live_state_block(state, cont, rel)]
+    report["live_state"] = head[-1]
+    must = ["\n".join(head)]
+    current = ["=== Current state ==="]
+    if state.get("frontmatter"):
+        fm = state["frontmatter"]
+        current += ["", f"== Frontmatter ({rel} lines {fm['start']}-{fm['end']}) ==",
+                    text_of({"path": rel, **fm})]
+    if state.get("header"):
+        current += ["", f"== Header ({rel} lines {_ranges_text(state['header'])}) ==",
+                    text_of({"path": rel, **state["header"]})]
+    run_state = state.get("run_state")
+    if run_state and run_state.get("current") and not run_state.get("generated"):
+        cur = run_state["current"]
+        current += ["", f"== Run state, current entry ({run_state['path']} lines {cur['start']}-{cur['end']}) ==",
+                    text_of({"path": run_state["path"], **cur})]
+    if governing:
+        report["state_line"] = {k: governing[k] for k in ("path", "beat")}
+        current += ["", f"== Governing STATE line (Beat {governing['beat']}, {governing['path']}) ==", governing["text"]]
+    else:
+        report["state_line"] = None
+    must.append("\n".join(current))
+    report["plans"] = [{"path": e["path"], "lines": _ranges_text(e), "heading": e.get("heading")} for e in plans]
+    for e in plans:
+        must.append(f"=== Day Plan ({e['path']} lines {_ranges_text(e)}) ===\n{text_of(e)}")
+    if not plans:
+        warnings.append("No Day Plan was found for the current day.")
+    carried = carried_path(project, rel)
+    report["carried_findings"] = carried.is_file()
+    if report["carried_findings"]:
+        must.append("=== Carried findings ===\n" + carried.read_text(encoding="utf-8").strip())
+
+    # Keyed entries: the priced-stakes rule first, then the table's matches, best first.
+    tables = keyed_tables(project, data, warnings)
+    entries = []
+    for table in tables:
+        found, table_warnings = parse_keyed((project / table).read_text(encoding="utf-8", errors="replace"), table)
+        entries += found
+        warnings.extend(table_warnings)
+    scan = "\n".join(b["text"] for b in beats[-SCAN_BEATS:])
+    ranked = []
+    for order, entry in enumerate(entries):
+        in_input = [k for k, pattern in entry["patterns"] if pattern.search(keeper_input)]
+        in_beats = [k for k, pattern in entry["patterns"] if k not in in_input and pattern.search(scan)]
+        if entry["always"] or in_input or in_beats:
+            ranked.append(((entry["always"], 2 * len(in_input) + len(in_beats), -order), entry, in_input, in_beats))
+    ranked.sort(key=lambda r: r[0], reverse=True)
+    priced = _priced_entry(project, keeper_input)
+    report["priced_input"] = priced is not None
+    if priced:
+        ranked.insert(0, ((True, 0, 0), priced, ["priced-stakes rule"], []))
+    checks = source_quotes({}, project, Path(source_dir) if source_dir else project / Path(rel).parent, entries=[
+        {"claim": f"{entry['id']} #{i}", "file": entry["source"], "quote": quote}
+        for _score, entry, _i, _b in ranked if entry["source"] for i, quote in enumerate(entry["quotes"], 1)])
+    results = iter(checks["quotes"])
+    keyed = []
+    for _score, entry, in_input, in_beats in ranked:
+        out = [f"== {entry['id']} =="]
+        matched = ([f"{', '.join(in_input)} (the Keeper's input)"] if in_input else []) + (
+            [f"{', '.join(in_beats)} (the last beats)"] if in_beats else [])
+        out.append("matched: " + ("; ".join(matched) if matched else "always"))
+        if entry["source"]:
+            out.append(f"source: {entry['source']}")
+        quotes = []
+        for quote in entry["quotes"] if entry["source"] else []:
+            result = next(results)
+            quotes.append({"verified": result["verified"], "line": result["line"]})
+            where = (f"verified, {result['file']} line {result['line']}" if result["verified"]
+                     else f"NOT FOUND: {result['reason']}; open the source before relying on it")
+            out.append(f"quote ({where}): \"{quote}\"")
+        if entry["note"]:
+            out.append(f"note (from the table, not a source): {entry['note']}")
+        keyed.append({"id": entry["id"], "table": entry["table"], "source": entry["source"], "in_input": in_input,
+                      "in_beats": in_beats, "quotes": quotes, "text": "\n".join(out),
+                      "priced": bool(entry.get("priced"))})
+    report["keyed"] = {"tables": tables, "entries": len(entries), "matched": [], "dropped": [],
+                       "unverified": [k["id"] for k in keyed if any(not q["verified"] for q in k["quotes"])]}
+
+    # The budget: what must go in (the GM decisions and rulings of beats not carried among it), then the keyed
+    # entries, best first, then the older beats, newest first; then exact, dropping the last optional piece added
+    # until the whole brief fits.
+    always = beats[-ALWAYS_BEATS:]
+    rest = beats[:-ALWAYS_BEATS] if len(beats) > ALWAYS_BEATS else []
+    beat_text = lambda b: f"<!-- Beat {b['beat']}: {b['path']} lines {b['start']}-{b['end']} -->\n{b['text']}"  # noqa: E731
+    decisions = {id(b): b["decisions"] for b in rest}
+
+    def decision_line(b, item):
+        n, text = item
+        head = text.encode("utf-8")
+        if len(head) > DECISION_LINE_MAX:  # its head says what it decides; the line is a read away
+            text = head[:DECISION_LINE_MAX].decode("utf-8", "ignore").rstrip() + f" ... (cut: read line {n} whole)"
+        return f"- Beat {b['beat']}, {b['path']} line {n}: {text}"
+    cost = lambda t: len(t.encode("utf-8")) + 2  # noqa: E731
+    chosen = [k for k in keyed if k["priced"]]
+    carried_beats = list(always)
+
+    def assemble():
+        parts = list(must)
+        dropped = [b for b in beats if b not in carried_beats]
+        held = [decision_line(b, x) for b in dropped for x in decisions.get(id(b), [])]
+        if held:
+            parts.append("=== GM decisions and rulings in beats not carried ===\n" + "\n".join(held))
+        if keyed:
+            ids = {id(k) for k in chosen}
+            parts.append(f"=== Keyed entries ({len(chosen)} of {len(entries)} in {', '.join(tables) or 'no table'}"
+                         f"{'; the priced-stakes rule' if priced else ''}) ===\n" + "\n\n".join(
+                             k["text"] for k in keyed if id(k) in ids))
+        parts.append(f"=== Recent beats ({len(carried_beats)} of the {len(beats)} the continuity read holds, oldest "
+                     "first) ===\n" + "\n\n".join(beat_text(b) for b in carried_beats))
+        left = [f"- Beat {b['beat']}: {b['path']} lines {b['start']}-{b['end']}" for b in dropped]
+        left += [f"- keyed entry {k['id']}" for k in keyed if k not in chosen]
+        parts.append("=== Not carried ===\n" + ("\n".join(left) if left else
+                                                 "- nothing in the continuity read was left out"))
+        return "\n\n".join(parts) + "\n", dropped
+
+    used = len(assemble()[0].encode("utf-8"))  # the must content, with every optional beat listed as left out
+    added = []  # optional pieces, in the order they went in, for the exact pass
+    for k in keyed:
+        if k not in chosen and used + cost(k["text"]) <= budget:
+            chosen.append(k)
+            added.append(("keyed", k))
+            used += cost(k["text"])
+    for b in reversed(rest):
+        extra = cost(beat_text(b)) - sum(cost(decision_line(b, x)) for x in decisions[id(b)])
+        if used + extra > budget:
+            break
+        carried_beats.insert(0, b)
+        added.append(("beat", b))
+        used += extra
+    text, dropped = assemble()
+    while len(text.encode("utf-8")) > budget and added:
+        kind, piece = added.pop()
+        (chosen if kind == "keyed" else carried_beats).remove(piece)
+        text, dropped = assemble()
+    report["keyed"]["matched"] = [{key: k[key] for key in ("id", "table", "source", "in_input", "in_beats", "quotes")}
+                                  for k in keyed if k in chosen]
+    report["keyed"]["dropped"] = [k["id"] for k in keyed if k not in chosen]
+    report.update(bytes=len(text.encode("utf-8")), over_budget=len(text.encode("utf-8")) > budget,
+                  next_beat=next_beat, shipped=_shipped_of("\n".join(lines[:2001])),
+                  decisions=sum(len(decisions.get(id(b), [])) for b in dropped),
+                  beats={"carried": [b["beat"] for b in carried_beats],
+                         "dropped": [{"beat": b["beat"], "path": b["path"], "lines": f"{b['start']}-{b['end']}"}
+                                     for b in dropped]})
+    return text, report
+
+
+def write_brief(project, session_file, keeper_input: str, **kw) -> dict:
+    """Build the brief and write it, and its report, under the gate's scratch."""
+    project = Path(project)
+    text, report = build_brief(project, session_file, keeper_input, **kw)
+    path = project / BRIEF_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_atomic(path, text.encode("utf-8"))
+    _write_atomic(project / BRIEF_REPORT, json.dumps(report, ensure_ascii=False).encode("utf-8"))
+    return report
+
+
+BRIEF_KEYED_RE = re.compile(r'^quote \(verified, (.+) line (\d+)\): "(.*)"\s*$')
+
+
+def _brief_for(project: Path, turn: dict):
+    """The current brief, when it was built for this turn's input, as {"text": its text normalised,
+    "keyed": {(file, line): [each keyed quote verified there, normalised]}}; else None."""
+    try:
+        report = json.loads((project / BRIEF_REPORT).read_text(encoding="utf-8"))
+        text = (project / BRIEF_FILE).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    if not isinstance(report, dict) or report.get("keeper_input") != keeper_digest(turn.get("KEEPER_INPUT", "")):
+        return None
+    lines = _read_lines(project / str(report.get("session") or "")) or []
+    if _shipped_of("\n".join(lines[:2001])) != report.get("shipped"):
+        return None  # built before a later beat shipped: another turn's brief with the same input
+    keyed = {}
+    for raw in text.splitlines():
+        m = BRIEF_KEYED_RE.match(raw)
+        if m:
+            keyed.setdefault((m.group(1), int(m.group(2))), []).append(_norm_quote(m.group(3)))
+    return {"text": _norm_quote(text), "keyed": keyed}
 
 
 # ---------------------------------------------------------------- routing
@@ -1472,6 +2205,44 @@ def _priced_regex():
         return None
 
 
+def _pc_delta_role(scene: dict, delta: dict):
+    """The PC's role in the delta's participants, or None when the delta does not list the PC."""
+    pc, listed = scene.get("pc"), delta.get("scene.participants")
+    entry = next((p for p in (listed if isinstance(listed, list) else [])
+                  if isinstance(p, dict) and pc and same_person(str(p.get("name", "")), pc)), None)
+    role = entry.get("role") if entry else None
+    return None if role is None or role == "" else str(role)
+
+
+def _stats(role: str, names) -> dict:
+    found = {}
+    for name in names:
+        m = re.search(r"(?<![\w-])%s\s*[:=]?\s*(-?\d+(?:\s*/\s*\d+)?)(?![\w/])" % re.escape(name), role)
+        if m:
+            found[name] = re.sub(r"\s+", "", m.group(1))
+    return found
+
+
+def _pc_role_changed(role, scene: dict) -> bool:
+    """A real change in the PC's role: a new label, or a stat that moved inside a narrative.
+
+    While the scene's role is a label ("PC", "PC (hooded)", at most ROLE_LABEL_MAX
+    characters), any new role is a change. A longer role narrates the scene (the
+    time, his last move, who did what) and is rewritten every beat, so only a stat
+    it carries counts ("POW 53/60" to "POW 40/60"); anything else rests on
+    SOURCE_LOG pc_changed.
+    """
+    before = str(scene.get("pc_role") or "")
+    if role is None or role == before:
+        return False
+    if len(before) <= ROLE_LABEL_MAX:
+        return True
+    run = scene.get("run") if isinstance(scene.get("run"), dict) else {}
+    names = list(STAT_NAMES) + [str(k) for k in (run.get("stats") or {}) if isinstance(run.get("stats"), dict)]
+    old, new = _stats(before, names), _stats(role, names)
+    return any(old[name] != new[name] for name in old.keys() & new.keys())
+
+
 def beat_triggers(turn: dict, result: dict, scene: dict, config: dict) -> list[str]:
     """What makes a beat consequential, each derived without a model call."""
     keeper, source = turn.get("KEEPER_INPUT", ""), turn.get("SOURCE_LOG", "")
@@ -1484,10 +2255,7 @@ def beat_triggers(turn: dict, result: dict, scene: dict, config: dict) -> list[s
     if _declared(source, "canon_proposed"):
         triggers.append("canon_proposed")
     pc, delta = scene.get("pc"), result["delta"]
-    listed = delta.get("scene.participants")
-    pc_entry = next((p for p in (listed if isinstance(listed, list) else [])
-                     if isinstance(p, dict) and pc and same_person(str(p.get("name", "")), pc)), None)
-    if _declared(source, "pc_changed") or (pc_entry and pc_entry.get("role") and pc_entry["role"] != scene.get("pc_role")):
+    if _declared(source, "pc_changed") or _pc_role_changed(_pc_delta_role(scene, delta), scene):
         triggers.append("pc_change")
     prior = [n for n in scene["participants"] if not (pc and same_person(n, pc))]
     present = [n for n in result["present"] if not (pc and same_person(n, pc))]
@@ -1605,6 +2373,17 @@ def load_config(project, path=None) -> dict:
                 config["rewrites"][key] = value
             else:
                 warnings.append(f"turnGate.rewrites.{key} {value!r} must be 0-{MAX_REWRITES}.")
+    if "briefBytes" in block:
+        value = block["briefBytes"]
+        if isinstance(value, int) and not isinstance(value, bool) and BRIEF_MIN <= value <= BRIEF_MAX:
+            config["briefBytes"] = value
+        else:
+            warnings.append(f"turnGate.briefBytes {value!r} must be {BRIEF_MIN}-{BRIEF_MAX}.")
+    if "background" in block:
+        if isinstance(block["background"], bool):
+            config["background"] = block["background"]
+        else:
+            warnings.append(f"turnGate.background {block['background']!r} must be true or false.")
     for key in ("cast", "deltaKeys", "consequentialPatterns"):
         value = block.get(key)
         if value is None:
@@ -2037,6 +2816,45 @@ def continuity(project, session_file, beats: int = LOG_DEFAULTS["previousBeats"]
     return result
 
 
+def _ranges_text(entry: dict) -> str:
+    return ", ".join(f"{a}-{b}" for a, b in entry.get("parts") or [[entry["start"], entry["end"]]])
+
+
+def live_state_block(state: dict, cont, session: str) -> str:
+    """The LIVE_STATE block of /rp:turn Step 2, built from a session's live_state and continuity: where the
+    reader finds current state, as line ranges; struck drafts left out (a range in parts)."""
+    out = ["LIVE_STATE:"]
+    fm, header = state.get("frontmatter"), state.get("header")
+    if fm and header and not header.get("parts") and header["start"] <= fm["end"] + 1:
+        line = f"  session: {session} lines {fm['start']}-{header['end']}"
+    elif fm and header:
+        line = f"  session: {session} lines {fm['start']}-{fm['end']}, {_ranges_text(header)}"
+    elif fm or header:
+        line = f"  session: {session} lines {_ranges_text(fm or header)}"
+    else:
+        line = f"  session: {session}"
+    if header and header.get("truncated"):
+        line += "  (header cut at 250 lines)"
+    out.append(line)
+    run_state = state.get("run_state")
+    if run_state and not run_state.get("generated"):  # a generated entry copies the frontmatter's run: block
+        current = run_state.get("current")
+        section = f"lines {run_state['heading_line']}-{run_state['end_line']}"
+        out.append(f"  run_state: {run_state['path']} lines {current['start']}-{current['end']}  (the section: "
+                   f"{section})" if current else f"  run_state: {run_state['path']} {section}  (the section; "
+                   "search it, do not read it whole)")
+    for entry in [cont.get("current")] if cont and cont.get("current") else []:
+        when = "so far" if entry.get("whole_day") else f"its last {entry.get('beats')} beats"
+        span = f"; B{entry['first_beat']}-B{entry['last_beat']}" if entry.get("first_beat") is not None else ""
+        out.append(f"  day: {entry['path']} lines {_ranges_text(entry)}  (Day {cont['day']}: {when}{span})")
+    for entry in (cont or {}).get("previous") or []:
+        span = f", B{entry['first_beat']}-B{entry['last_beat']}" if entry.get("first_beat") is not None else ""
+        out.append(f"  earlier: {entry['path']} lines {_ranges_text(entry)}  ({entry.get('beats')} beats{span})")
+    for entry in (cont or {}).get("plans") or []:
+        out.append(f"  plan: {entry['path']} lines {_ranges_text(entry)}  ({entry.get('heading', '')})")
+    return "\n".join(out)
+
+
 def session_files(project, current: str, opened) -> list[str]:
     """The files one session spans, oldest first: from the file it opened in, through rotations.
 
@@ -2344,6 +3162,14 @@ def rotate(project, session_file, *, day=None, turn_text=None, heading=None, bea
               "repaired": None, "set_aside": [], "flag": None, "reason": None, "struck": [], "warnings": []}
     if hops:
         result["warnings"].append(f"{_relative(project, named)} was closed by rotation; using {rel}.")
+    blocked = _pending_block(project, rel)
+    if blocked:  # before every write: a rotation, a repair or a new session over an unreviewed beat
+        result["action"] = "refused"
+        result["warnings"].append(blocked)
+        if log:
+            append_log(project, {"session": rel, "path": "rotate", "action": "refused", "beat": beat,
+                                 "reason": "provisional beat pending"})
+        return result
     data = read_frontmatter(path)
     file_day, state_day = _days(data, None if data.get("log_day") is not None else _read_lines(path))
     interrupted = _interrupted(project, rel)
@@ -2820,7 +3646,7 @@ def _ship_text(old: str, delta: dict, append_text, mark: str, config: dict, beat
         raise ValueError("the session file has no YAML frontmatter to apply the delta to; nothing was shipped")
     data = parse_yaml("".join(lines[1:fm_end]))
     data = data if isinstance(data, dict) else {}
-    if str(data.get("shipped") or "") == mark:
+    if str(data.get("shipped") or "") in (mark, mark + SOFT_MARK):  # shipped, or shipped and corrected by settle
         return None, [], []
     if _final_footer(plain):  # re-checked on every try: a rotation may have closed it meanwhile
         raise ValueError("the session file was closed by rotation; it is never written again. Ship to the file "
@@ -2853,10 +3679,30 @@ def _ship_text(old: str, delta: dict, append_text, mark: str, config: dict, beat
     return "".join(head) + body, applied, dropped
 
 
+def _ship_inputs(turn_text: str, append_text, beat):
+    """(turn, delta, beat_day, label, digest, mark) for one beat: what ship applies, and its shipped mark.
+    The digest covers the label, the appended text and the delta, so a re-run is the same beat."""
+    turn = parse_turn(turn_text)
+    delta, parsed = parse_delta(turn.get("SCENE_STATE_DELTA", ""))
+    if not parsed:
+        raise ValueError("SCENE_STATE_DELTA is not a key: value mapping; nothing was shipped")
+    fields = _anchor(turn.get("DRAFT", ""), []) if turn.get("DRAFT", "").strip() else None
+    beat_day = _turn_day(delta, (fields or {}).get("scene"), None)
+    label = str(beat).strip() if beat else ""
+    key = "\0".join([label, append_text or "", json.dumps(delta, sort_keys=True, ensure_ascii=False, default=str)])
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+    return turn, delta, beat_day, label, digest, f"{label}@{digest}"
+
+
 def ship(project, session_file, *, turn_text: str, append_text=None, beat=None, today=None, config=None,
-         log=True) -> dict:
+         log=True, provisional=False, attempt=1, max_rewrites=None, reviewed=False) -> dict:
     """Ship a gated beat: append its text (the new day's Day Plan first, if any) and apply its delta to the
-    open file's frontmatter, in one replace. Never a closed file; a retry after success changes nothing."""
+    open file's frontmatter, in one replace. Never a closed file; a retry after success changes nothing.
+
+    provisional ships a first draft before its review (see settle): the text goes in between rp-provisional
+    marks, and the pending review keeps a byte copy of the file as it was, which the background reviewer
+    reads. Nothing ships over a provisional beat until it is settled. reviewed (a beat the reviewer passed)
+    consumes the findings a soft background review carried into its draft."""
     project = Path(project)
     config = config or load_config(project)
     path = _inside_sessions(project, str(session_file))
@@ -2866,28 +3712,492 @@ def ship(project, session_file, *, turn_text: str, append_text=None, beat=None, 
     if rotation_footer(path):
         raise ValueError(f"{rel} is closed: rotation footered it, and it is never written again. Ship to the "
                          "file rotate named")
-    turn = parse_turn(turn_text)
-    delta, parsed = parse_delta(turn.get("SCENE_STATE_DELTA", ""))
-    if not parsed:
-        raise ValueError("SCENE_STATE_DELTA is not a key: value mapping; nothing was shipped")
-    fields = _anchor(turn.get("DRAFT", ""), []) if turn.get("DRAFT", "").strip() else None
-    beat_day = _turn_day(delta, (fields or {}).get("scene"), None)
-    label = str(beat).strip() if beat else ""
-    key = "\0".join([label, append_text or "", json.dumps(delta, sort_keys=True, ensure_ascii=False, default=str)])
-    mark = f"{label}@{hashlib.sha256(key.encode('utf-8')).hexdigest()[:12]}"
+    turn, delta, beat_day, label, digest, mark = _ship_inputs(turn_text, append_text, beat)
+    blocked = _pending_block(project, rel, exclude=digest)
+    if blocked:
+        raise ValueError(blocked)
     result = {"action": "already_shipped", "path": rel, "beat": label or None, "shipped": mark, "applied": [],
               "dropped": []}
+    text, snapshot = append_text, None
+    if provisional:
+        _provisional_preflight(project, path, turn_text, append_text, attempt, max_rewrites)
+        text = f"{_provisional_open(digest)}\n{_with_newline(append_text)}{_provisional_close(digest)}\n"
+        snapshot = _write_pending(project, path, rel, turn, turn_text, append_text, digest, mark, label, attempt,
+                                  max_rewrites, today, config)
+        result["key"] = digest
+        if snapshot[0] is not None:
+            result.update(review_session=_relative(project, snapshot[0]), pending=_relative(project,
+                                                                                            snapshot[0].parent))
+            kept = snapshot[0].parent / "brief.md"
+            result["review_brief"] = _relative(project, kept) if kept.is_file() else None
 
     def make(old):
-        new, applied, dropped = _ship_text(old, delta, append_text, mark, config, beat_day)
+        if snapshot is not None and snapshot[1] is not None and old != snapshot[1]:  # moved after its copy
+            raise OSError(f"{rel} changed while the beat was being shipped; nothing was shipped. Run it again")
+        new, applied, dropped = _ship_text(old, delta, text, mark, config, beat_day)
         result.update(action="shipped" if new is not None else "already_shipped", applied=applied, dropped=dropped)
         return new
 
     _replace_text(path, make)
+    if result["action"] == "shipped" and reviewed and not provisional:
+        _clear_carried(project, rel)  # the findings carried into this beat's draft were reviewed with it
     if log and result["action"] == "shipped":
         append_log(project, {"session": rel, "path": "ship", "beat": label or None, "applied": len(result["applied"]),
-                             "dropped": [d["key"] for d in result["dropped"]] or None})
+                             "dropped": [d["key"] for d in result["dropped"]] or None,
+                             "provisional": True if provisional else None, "key": digest if provisional else None})
     return result
+
+
+# ------------------------------------------------------- provisional beats
+# On a harness that can run the review in the background, a first draft whose
+# lint is clean ships at once (ship --provisional) and is shown; its review runs
+# on a frozen copy of the file it was drafted against, and the next /rp:turn
+# settles the verdict before anything else is drafted. The provisional text sits
+# between two marks in its file. settle clean or soft drops the marks (soft also
+# carries the findings to the next draft); a confirmed hard finding replaces the
+# marked text with a STRUCK callout and restores the frontmatter the beat
+# changed, in one write, after checking neither was edited since. Nothing ships,
+# rotates, refreshes the state block or is summarised over a provisional beat.
+
+PENDING_DIR = "Work/rp/.gate/pending"
+CARRIED_DIR = "Work/rp/.gate/carried"  # one file per run: carried_path
+QUEUED_INPUT = "Work/rp/.gate/queued-input.md"  # the Keeper's input held when the beat it answered was struck
+PROVISIONAL_RE = re.compile(r"^<!-- rp-provisional: ([0-9a-f]{12}) -->\s*$")
+VERDICTS = ("clean", "soft", "struck")
+SOFT_MARK = "+soft"  # the shipped mark after a soft settle corrected the frontmatter
+MAX_WAIT = 300  # seconds pending --wait sleeps at most
+
+
+def _provisional_open(key: str) -> str:
+    return f"<!-- rp-provisional: {key} -->"
+
+
+def _provisional_close(key: str) -> str:
+    return f"<!-- /rp-provisional: {key} -->"
+
+
+def _with_newline(text: str) -> str:
+    text = text.replace("\r\n", "\n")
+    return text if text.endswith("\n") else text + "\n"
+
+
+def provisional_keys(lines) -> list[str]:
+    """The provisional beats a file holds, by key, in order."""
+    return [m.group(1) for line in lines or [] if (m := PROVISIONAL_RE.match(line))]
+
+
+def _pending_block(project: Path, rel: str, exclude=None):
+    """Why nothing may ship, rotate or be summarised over rel now, or None: a provisional beat in it, or a pending
+    review whose beat it holds although the marks are gone (removed by hand)."""
+    lines = _read_lines(project / rel)
+    keys = [k for k in provisional_keys(lines) if k != exclude]
+    if not keys and lines:
+        shipped = _shipped_of("\n".join(lines[:2001]))
+        keys = [e["key"] for e in _pending_metas(project, rel) if e["key"] != exclude
+                and shipped in (e["mark"], e["mark"] + SOFT_MARK) and not _settled(project, e["key"])]
+    if not keys:
+        return None
+    return (f"{rel} holds a provisional beat whose review is pending (key {keys[0]}): settle it first "
+            "(rp_gate.py pending, then settle with its verdict); nothing ships, rotates or is summarised over it")
+
+
+def _pending_metas(project: Path, rel=None) -> list[dict]:
+    root = project / PENDING_DIR
+    metas = [_pending_meta(folder / "meta.json") for folder in sorted(root.iterdir())] if root.is_dir() else []
+    return [m for m in metas if m is not None and (rel is None or m["session"] == rel)]
+
+
+def _settled(project: Path, key: str):
+    """The verdict a settle wrote into the file before it could clear the pending review (a crash between)."""
+    try:
+        data = json.loads((project / PENDING_DIR / key / "settled.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and data.get("verdict") in VERDICTS else None
+
+
+def _day_change(project: Path, path: Path, turn_text: str):
+    """(beat day, file day) when the turn's beat would land on another fiction day than its file's, else None."""
+    data = read_frontmatter(path)
+    file_day, state_day = _days(data, None if data.get("log_day") is not None else _read_lines(path))
+    beat_day, _source = _beat_day(None, turn_text, state_day, None)
+    if beat_day is not None and file_day is not None and beat_day != file_day:
+        return beat_day, file_day
+    return None
+
+
+def _provisional_preflight(project: Path, path: Path, turn_text: str, append_text, attempt, max_rewrites) -> None:
+    if not append_text:
+        raise ValueError("a provisional ship needs the beat's text (--append-file)")
+    if not isinstance(max_rewrites, int) or isinstance(max_rewrites, bool) or max_rewrites < 1:
+        raise ValueError("a provisional ship needs --max-rewrites (route.max_rewrites, 1 or more): a struck beat is "
+                         "redrafted within it, and with none left the review runs before the beat is shown")
+    if attempt != 1:
+        raise ValueError("only a first draft ships provisionally: a rewrite answers a confirmed violation and is "
+                         "reviewed before it is shown")
+    moved = _day_change(project, path, turn_text)
+    if moved:
+        raise ValueError(f"the beat moves the fiction day (Day {moved[1]} to Day {moved[0]}): a rotation cannot be "
+                         "undone, so it is reviewed before it ships; nothing was shipped")
+
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    with open(tmp, "wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
+
+
+def _decoded(raw: bytes) -> str:
+    """A file's text as _replace_text hands it to make: without a BOM, bytes that are not UTF-8 kept."""
+    return raw[3 if raw.startswith(b"\xef\xbb\xbf") else 0:].decode("utf-8", "surrogateescape")
+
+
+def _write_pending(project, path, rel, turn, turn_text, append_text, digest, mark, label, attempt, max_rewrites,
+                   today, config=None):
+    """The pending review, written before the beat: a byte copy of the file as it is (what the beat was drafted
+    against), the turn, the beat's text, then meta.json, which makes it whole. (snapshot path, its text)."""
+    folder = project / PENDING_DIR / digest
+    snapshot = folder / path.name
+    raw = path.read_bytes()
+    meta_path, current = folder / "meta.json", _decoded(raw)
+    if _pending_meta(meta_path) is None and _shipped_of(current) in (mark, mark + SOFT_MARK):
+        return None, None  # shipped and settled already (a retry): there is nothing left to review
+    if _pending_meta(meta_path) is not None and snapshot.is_file():
+        if _shipped_of(current) == mark:  # shipped already: keep the copy from before it
+            return snapshot, None
+        if _shipped_of(_decoded(snapshot.read_bytes())) != _shipped_of(current):
+            raise ValueError(f"{rel} moved on since this beat's pending review was written (another beat shipped); "
+                             f"nothing was shipped. Settle {digest} with its verdict (a beat never shown is dropped), "
+                             "then draft this beat again")
+    folder.mkdir(parents=True, exist_ok=True)
+    _write_atomic(snapshot, raw)
+    _write_atomic(folder / "turn.md", turn_text.encode("utf-8"))
+    _write_atomic(folder / "beat.md", append_text.encode("utf-8"))
+    try:
+        check = json.loads((project / CHECK_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        check = None
+    if isinstance(check, dict) and check.get("turn") == _turn_digest(turn_text):  # the lint this beat was routed on
+        _write_atomic(folder / "check.json", json.dumps(check, ensure_ascii=False).encode("utf-8"))
+    meta = {"key": digest, "mark": mark, "session": rel, "beat": label or None, "attempt": attempt,
+            "max_rewrites": max_rewrites, "created": time.time_ns(),
+            "date": today or datetime.date.today().isoformat(),
+            "keeper_input": (turn.get("KEEPER_INPUT") or "").strip(), "snapshot": snapshot.name}
+    _copy_brief(project, folder, snapshot, path, turn, config, label)
+    _write_atomic(meta_path, json.dumps(meta, ensure_ascii=False).encode("utf-8"))
+    return snapshot, _decoded(raw)
+
+
+def _copy_brief(project: Path, folder: Path, snapshot: Path, live: Path, turn: dict, config, label) -> None:
+    """The brief for the review: built from the copy (the bytes this beat was drafted against) and this turn's
+    input, so every path, heading and beat tag in it names the copy; never a brief file that may be stale."""
+    try:
+        text, _report = build_brief(project, _relative(project, snapshot), turn.get("KEEPER_INPUT", "") or "",
+                                    config=config or load_config(project), beat=label or None, source_dir=live.parent)
+    except (OSError, ValueError):
+        return  # the review then reads the copy's LIVE_STATE without a brief
+    _write_atomic(folder / "brief.md", text.encode("utf-8"))
+
+
+def _shipped_of(text: str) -> str:
+    """The shipped mark in a session text's frontmatter: the last beat ship wrote into it."""
+    plain = text.splitlines()
+    end = _frontmatter_end(plain)
+    data = parse_yaml("\n".join(plain[1:end])) if end else None
+    return str(data.get("shipped") or "") if isinstance(data, dict) else ""
+
+
+def _pending_meta(path: Path):
+    try:
+        meta = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    whole = (isinstance(meta, dict) and isinstance(meta.get("key"), str) and re.fullmatch(r"[0-9a-f]{12}", meta["key"])
+             and meta["key"] == path.parent.name and all(isinstance(meta.get(k), str)
+                                                         for k in ("mark", "session", "snapshot")))
+    return meta if whole else None
+
+
+def pending_reviews(project, session=None, detail=False, beats=LOG_DEFAULTS["previousBeats"]) -> list[dict]:
+    """The pending reviews, oldest first; with session, only that file's. shipped: its text is in the file.
+    detail adds live_state: the LIVE_STATE block of the copy taken before the ship, what its review reads."""
+    project = Path(project)
+    root, found = project / PENDING_DIR, []
+    for folder in sorted(root.iterdir()) if root.is_dir() else ():
+        meta = _pending_meta(folder / "meta.json")
+        if meta is None or (session is not None and meta["session"] != session):
+            continue
+        lines = _read_lines(project / meta["session"]) or []
+        marked = meta["key"] in provisional_keys(lines)
+        in_file = marked or _shipped_of("\n".join(lines[:2001])) in (meta["mark"], meta["mark"] + SOFT_MARK)
+        found.append({"key": meta["key"], "session": meta["session"], "beat": meta.get("beat"),
+                      "attempt": meta.get("attempt"), "max_rewrites": meta.get("max_rewrites"),
+                      "created": meta.get("created"), "date": meta.get("date"),
+                      "age_s": round(max(0, time.time_ns() - int(meta.get("created") or 0)) / 1e9, 1),
+                      "shipped": in_file, "marks": marked, "settled": _settled(project, meta["key"]) is not None,
+                      "keeper_input": meta.get("keeper_input") or "",
+                      "review_session": _relative(project, folder / meta["snapshot"]),
+                      "turn": _relative(project, folder / "turn.md"),
+                      "beat_text": _relative(project, folder / "beat.md"),
+                      "check": _relative(project, folder / "check.json") if (folder / "check.json").is_file() else None,
+                      "brief": _relative(project, folder / "brief.md") if (folder / "brief.md").is_file() else None})
+        if detail:
+            snapshot = found[-1]["review_session"]
+            found[-1]["live_state"] = live_state_block(live_state(project, snapshot),
+                                                       continuity(project, snapshot, beats), snapshot)
+    return sorted(found, key=lambda e: (e["created"] or 0, e["key"]))
+
+
+def carried_path(project, session_file) -> Path:
+    """The run's carried findings: one file per run (its log_dir, which every day file of it names, else its file),
+    so another campaign's brief never reads them and its ship never clears them."""
+    project = Path(project)
+    rel = _relative(project, project / session_file)
+    log_dir, _warning = _log_dir(project, read_frontmatter(project / rel))
+    run = log_dir or rel
+    return project / CARRIED_DIR / f"{hashlib.sha256(run.encode('utf-8')).hexdigest()[:12]}.md"
+
+
+def _clear_carried(project: Path, rel: str) -> None:
+    carried_path(project, rel).unlink(missing_ok=True)
+
+
+def _write_carried(project: Path, rel: str, meta: dict, findings: str, today: str) -> None:
+    beat = f"Beat {meta['beat']}" if meta.get("beat") else "the last beat"
+    text = (f"<!-- rp-carried: {meta['key']} {rel} -->\n# Carried findings: {beat} (soft, reviewed after it was "
+            f"shown, {today})\n\nThe beat stands as shown; any state they named was corrected in the frontmatter. "
+            f"Correct the rest in the next beat, going forward: they are not edits to the shown beat.\n\n"
+            f"{findings.strip()}\n")
+    path = carried_path(project, rel)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_atomic(path, text.encode("utf-8"))
+
+
+class _Refused(ValueError):
+    pass
+
+
+def _region(lines: list[str], key: str):
+    """(open index, close index) of a provisional beat's marks in lines (endings stripped), or None."""
+    opening, closing = _provisional_open(key), _provisional_close(key)
+    start = next((i for i, line in enumerate(lines) if line.rstrip("\r\n") == opening), None)
+    if start is None:
+        return None
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].rstrip("\r\n") == closing), None)
+    if end is None:
+        raise ValueError(f"the provisional beat {key} has lost its closing mark ({closing}); put it back after the "
+                         "beat by hand, then settle again")
+    return start, end
+
+
+def _expected_after_ship(folder: Path, meta: dict, config: dict):
+    """(turn_text, beat_text, snapshot_text, frontmatter lines the provisional ship wrote, delta, beat_day): what
+    the file must still hold for a settle to rewrite its frontmatter."""
+    turn_text = (folder / "turn.md").read_text(encoding="utf-8")
+    beat_text = (folder / "beat.md").read_text(encoding="utf-8")
+    snapshot_text = _decoded((folder / meta["snapshot"]).read_bytes())
+    _turn, delta, beat_day, _label, _digest, mark = _ship_inputs(turn_text, beat_text, meta.get("beat"))
+    wrapped = f"{_provisional_open(meta['key'])}\n{_with_newline(beat_text)}{_provisional_close(meta['key'])}\n"
+    expected, _applied, _dropped = _ship_text(snapshot_text, delta, wrapped, mark, config, beat_day)
+    if expected is None or mark != meta["mark"]:
+        raise ValueError(f"the pending review {meta['key']} does not match its own ship; it stays. Ask the Keeper")
+    want = [x.rstrip("\r\n") for x in _lines(expected)]
+    return turn_text, beat_text, snapshot_text, want[:_frontmatter_end(want) + 1], beat_day
+
+
+def _check_shipped(have: list[str], want_head: list[str], key: str, beat_text: str):
+    """(start, end) of the provisional beat in have, after checking the frontmatter and the beat's text are
+    exactly what its ship wrote; _Refused otherwise."""
+    plain = [x.rstrip("\r\n") for x in have]
+    fm_end = _frontmatter_end(plain)
+    if fm_end is None or plain[:fm_end + 1] != want_head:
+        raise _Refused("the frontmatter changed since the provisional ship (a hand edit?)")
+    found = _region(have, key)
+    if found is None:
+        raise _Refused("its marks are gone")
+    start, end = found
+    if plain[start + 1:end] != _with_newline(beat_text).split("\n")[:-1]:  # split as _lines does: at \n only
+        raise _Refused("the provisional beat's text changed since it shipped (a hand edit?)")
+    return start, end
+
+
+def settle(project, key, *, verdict, violations=None, reason=None, findings_text=None, delta_text=None, today=None,
+           config=None, log=True) -> dict:
+    """Apply a background review's verdict to the provisional beat it reviewed, once.
+
+    clean drops the beat's marks: it stands as shown. soft does the same and carries the findings to the next
+    draft; delta_text, a correction for the state they name, is applied to the frontmatter in the same write.
+    struck replaces the marked text with a STRUCK callout of the beat as it shipped and restores the frontmatter
+    from the copy taken before it, in one replace. A frontmatter rewrite happens only while the frontmatter and the
+    beat are exactly as the ship wrote them (refused otherwise, nothing written). A key that is not pending is
+    stale: nothing is written."""
+    project = Path(project)
+    today = today or datetime.date.today().isoformat()
+    config = config or load_config(project)
+    if verdict not in VERDICTS:
+        raise ValueError(f"--verdict must be one of {', '.join(VERDICTS)}")
+    if not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{12}", key):
+        raise ValueError("--key must be the 12-hex key ship --provisional printed")
+    violations = [v for v in (violations or []) if v]
+    correction, parsed = parse_delta(delta_text or "")
+    if delta_text and (verdict != "soft" or not parsed or not correction):
+        raise ValueError("--delta-file goes with --verdict soft and holds a SCENE_STATE_DELTA mapping")
+    folder = project / PENDING_DIR / key
+    meta = _pending_meta(folder / "meta.json")
+    result = {"action": "stale", "key": key, "verdict": verdict, "session": None, "beat": None, "attempt": None,
+              "max_rewrites": None, "keeper_input": None, "warnings": []}
+    if meta is None:
+        result["warnings"].append(f"No review is pending for {key} (settled already, or never shipped): this "
+                                  "verdict is not applied.")
+        if log:
+            append_log(project, {"path": "settle", "key": key, "verdict": verdict, "action": "stale"})
+        return result
+    path = _inside_sessions(project, meta["session"])
+    if path is None or not path.is_file():
+        raise ValueError(f"{meta['session']} is not a session file under {SESSION_DIR}/; the pending review stays")
+    rel = _relative(project, path)
+    result.update(session=rel, beat=meta.get("beat"), attempt=meta.get("attempt"),
+                  max_rewrites=meta.get("max_rewrites"), keeper_input=meta.get("keeper_input") or "")
+    attempt = meta.get("attempt") if isinstance(meta.get("attempt"), int) else 1
+    beat_text = (folder / "beat.md").read_text(encoding="utf-8")
+    struck_key = hashlib.sha256(f"{meta.get('beat') or ''}\0{attempt}\0{beat_text}".encode("utf-8")).hexdigest()[:16]
+    lines = _read_lines(path) or []
+
+    def finish(applied: str, carried: dict) -> dict:
+        """After the file holds the verdict: record it, carry the findings, clear the pending review."""
+        _write_atomic(folder / "settled.json", json.dumps({"verdict": applied, **carried}).encode("utf-8"))
+        if applied == "soft" and carried.get("findings"):
+            _write_carried(project, rel, meta, carried["findings"], today)
+        elif applied in ("clean", "soft"):
+            _clear_carried(project, rel)
+        shutil.rmtree(folder)
+        if log:
+            append_log(project, {"session": rel, "path": "settle", "beat": meta.get("beat"), "key": key,
+                                 "verdict": verdict, "action": result["action"], "violations": violations or None})
+        return result
+
+    carried = {"findings": findings_text or "\n".join(f"- {v}" for v in violations)} if verdict == "soft" else {}
+    if _region(lines, key) is None:
+        done = _settled(project, key)
+        if done is None and STRUCK_CLOSE.format(struck_key) in lines:
+            done = {"verdict": "struck"}
+        if done is not None:  # a settle wrote the file, then stopped before it cleared the review
+            result["action"] = "already"
+            if (done["verdict"] == "struck") != (verdict == "struck"):
+                result["warnings"].append(f"Beat {meta.get('beat') or key} was already settled {done['verdict']}; "
+                                          f"this {verdict} verdict is not applied.")
+            return finish(done["verdict"], {k: v for k, v in done.items() if k != "verdict"})
+        snapshot_shipped = _shipped_of(_decoded((folder / meta["snapshot"]).read_bytes()))
+        if _shipped_of("\n".join(lines[:2001])) != snapshot_shipped:
+            result["action"] = "refused"
+            result["warnings"].append(f"Beat {meta.get('beat') or key}'s rp-provisional marks are gone from {rel}, "
+                                      "but the file holds the beat or has moved on (marks removed by hand?). Nothing "
+                                      "was written and its review stays pending: put the marks back around the beat, "
+                                      "or ask the Keeper.")
+            return result
+        if verdict != "struck":  # never shipped, so never shown: ship it, then settle
+            result["action"] = "unshipped"
+            result["warnings"].append(f"Beat {meta.get('beat') or key} never reached {rel}: run ship --provisional "
+                                      f"again with the files in {_relative(project, folder)} and the same --beat and "
+                                      "--max-rewrites, then settle.")
+            return result
+        turn_text = (folder / "turn.md").read_text(encoding="utf-8")
+        strike(project, rel, turn_text=turn_text, attempt=attempt, beat=meta.get("beat"),
+               reason=_one_line(reason or ", ".join(violations) or "struck", 300), today=today, log=log)
+        result["action"] = "dropped"  # struck before it was shown: kept as any rejected draft is kept
+        shutil.rmtree(folder)
+        if log:
+            append_log(project, {"session": rel, "path": "settle", "beat": meta.get("beat"), "key": key,
+                                 "verdict": verdict, "action": "dropped", "violations": violations or None})
+        return result
+    if rotation_footer(path):
+        raise ValueError(f"{rel} is closed by rotation; it is never written again, and its provisional beat stays "
+                         "pending. Ask the Keeper")
+    if verdict == "struck" or correction:
+        _turn_text, _beat, snapshot_text, want_head, beat_day = _expected_after_ship(folder, meta, config)
+    if verdict == "struck":
+        block = struck_block(beat_text, struck_key, meta.get("beat"), attempt,
+                             _one_line("shown, then struck: " + (reason or ", ".join(violations) or "hard"), 300),
+                             today)
+
+        def make(old):
+            have = _lines(old)
+            nl = _newline(have)
+            start, end = _check_shipped(have, want_head, key, beat_text)
+            before_lines = _lines(snapshot_text)
+            snap_end = _frontmatter_end([x.rstrip("\r\n") for x in before_lines])
+            fm_end = _frontmatter_end([x.rstrip("\r\n") for x in have])
+            tail = have[end + 1:]
+            stand_in = _as_newline(_lines(block + ("\n" if tail else "")), nl)
+            return "".join(_as_newline(before_lines[:snap_end + 1], nl) + have[fm_end + 1:start] + stand_in + tail)
+    else:
+        def make(old):
+            have = _lines(old)
+            if correction:
+                start, end = _check_shipped(have, want_head, key, beat_text)
+            else:
+                found = _region(have, key)
+                if found is None:
+                    return None
+                start, end = found
+            text = "".join(have[:start] + have[start + 1:end] + have[end + 1:])
+            if correction:  # the state the findings named, corrected in the same write; the shown prose stays
+                new, applied, dropped = _ship_text(text, correction, None, meta["mark"] + SOFT_MARK, config, beat_day)
+                result.update(corrected=applied, dropped=dropped)
+                text = new if new is not None else text
+            return text
+
+    try:
+        _replace_text(path, make)
+    except _Refused as exc:
+        result["action"] = "refused"
+        what = "struck" if verdict == "struck" else "corrected"
+        result["warnings"].append(f"Beat {meta.get('beat') or key} was not {what}: {exc}. Nothing was written and its "
+                                  "review stays pending; show the Keeper the verdict.")
+        return result
+    if verdict == "struck":
+        result["action"] = "struck"
+        if log:
+            append_log(project, {"session": rel, "beat": meta.get("beat"), "attempt": attempt, "path": "strike",
+                                 "reason": _one_line(reason or ", ".join(violations) or "hard", 300), "key": struck_key,
+                                 "action": "struck", "shipped": True, "provisional_key": key})
+    else:
+        result["action"] = "settled"
+    return finish("soft" if verdict == "soft" else verdict, carried)
+
+
+def background_route(decision: dict, triggers: list[str], result: dict, config: dict, project: Path, session: str,
+                     turn_text: str, rewrite: bool, harness=None) -> dict:
+    """Whether this beat may ship before its review, which then runs in the background: only a first draft the
+    lint passed, sent to review because it is consequential, on its own fiction day, on a verified harness."""
+    if decision["next"] != "review":
+        return {"eligible": False, "reasons": ["not_reviewed"]}
+    reasons = []
+    if not config.get("background", True):
+        reasons.append("policy")
+    harness = os.environ.get("ASHA_HARNESS", "") if harness is None else harness
+    if not harness:
+        reasons.append("harness_unknown")
+    elif harness not in BACKGROUND_HARNESSES:
+        reasons.append("harness")
+    if rewrite:
+        reasons.append("rewrite")
+    if decision.get("max_rewrites", 0) < 1:  # a confirmed hard finding would surrender, before the Keeper's eyes
+        reasons.append("no_rewrites")
+    if "validate_tag" in triggers:
+        reasons.append("validate_tag")
+    if any(f["fix"] == "review" or (f["fix"] == "edit" and not f.get("run")) for f in result["findings"]):
+        reasons.append("lint")
+    path = _inside_sessions(project, session)
+    if path is not None and path.is_file():
+        if _day_change(project, path, turn_text):
+            reasons.append("day_change")
+        if _pending_block(project, _relative(project, path)):
+            reasons.append("pending")
+    return {"eligible": not reasons, "reasons": reasons}
 
 
 def _is_log(path: Path) -> bool:
@@ -2974,6 +4284,10 @@ def refresh_state(project, session_file, today=None) -> dict:
     path = path if path.is_absolute() else project / path
     data = read_frontmatter(path)
     result = {"action": "none", "path": None, "warnings": []}
+    blocked = _pending_block(project, _relative(project, path)) if path.is_file() else None
+    if blocked:  # the frontmatter holds an unreviewed beat's delta
+        result.update(action="refused", warnings=[blocked])
+        return result
     if not isinstance(data.get("run"), dict):
         result["reason"] = "the session has no run: block; its run state is free text"
         return result
@@ -3235,6 +4549,10 @@ def publish_summary(project, session_file, day: int, text_path, today=None) -> d
     if entry is None:
         raise ValueError(f"Day {day} has no file that rotation has closed in this run; a day is summarised once "
                          "it is closed")
+    held = provisional_keys(_read_lines(project / entry["source"]))
+    if held:
+        raise ValueError(f"{entry['source']} holds a provisional beat (key {held[0]}) whose review never settled; "
+                         f"settle it before Day {day} is summarised")
     body = _strip_frontmatter(Path(text_path).read_text(encoding="utf-8-sig")).strip("\n") + "\n"
     heading = next((line for line in body.splitlines() if HEADING_RE.match(line)), "")
     m = DAY_HEADING_RE.match(heading)
@@ -3309,6 +4627,9 @@ def stitch_summary(project, session_file, out, extra_path=None, today=None, open
     if target is None or (project / SUMMARY_DIR).resolve() not in target.resolve().parents:
         raise ValueError(f"{out} must be a .md file under {SUMMARY_DIR}/")
     rel = _relative(project, project / session_file)
+    blocked = _pending_block(project, rel)
+    if blocked:
+        raise ValueError(blocked)
     files = _session_files_for(project, rel, opened)
     closed = _closed_days(project, files[:-1])
     missing = [str(d["day"]) for d in closed if not d["exists"]]
@@ -3537,6 +4858,7 @@ def cmd_session(args) -> int:
     resolved["state_block"] = state_block_status(project, project / resolved["path"], data) if exists else None
     resolved["summaries_due"] = [d["day"] for d in _days_due_or_closed(project, resolved["session_files"], deep=False)
                                  if not d["exists"]] if exists else []  # summary walks the whole run
+    resolved["pending"] = pending_reviews(project, resolved["path"]) if exists else []
     for text in resolved["run"]["warnings"]:
         print(f"WARNING: {text}", file=sys.stderr)
     interrupted = _interrupted(project, resolved["path"]) if exists else None
@@ -3552,8 +4874,30 @@ def cmd_session(args) -> int:
     if lines and "<!-- rp-rotated-to: " in "\n".join(lines[:_footer_start(lines)]):
         print(f"WARNING: a rotation footer appears before the end of {resolved['path']} (quoted, or text was written "
               "after it closed); only a footer that ends a file closes it, so this file counts as open.", file=sys.stderr)
+    resolved["resume"] = resume_status(project, resolved) if exists else None
     print(json.dumps(resolved, ensure_ascii=False))
     return 0
+
+
+def resume_status(project: Path, resolved: dict) -> dict:
+    """Whether a fresh session (a Room relaunched at a Day Plan) can take over from here losing nothing: what a
+    closing session would still hold that is not yet on disk as settled state, each a reason."""
+    reasons, rel = [], resolved["path"]
+    if resolved["source"] != "marker":
+        reasons.append("no_marker")
+    if resolved.get("pending") or provisional_keys(_read_lines(project / rel)):
+        reasons.append("pending")
+    if (project / QUEUED_INPUT).is_file():
+        reasons.append("queued_input")
+    if resolved.get("summaries_due"):
+        reasons.append("summaries_due")
+    if resolved.get("rotation_warning"):
+        reasons.append("rotation")
+    day = (resolved.get("continuity") or {}).get("day")
+    span = _day_span(project, rel, day) if day is not None else {"beats": None, "plans": []}
+    return {"ready": not reasons, "reasons": reasons, "day": day,
+            "beats_today": (span["beats"] or {}).get("beats", 0), "last_beat": (span["beats"] or {}).get("last_beat"),
+            "day_plan": bool(span["plans"])}
 
 
 def _opening_line(project: Path, fields: dict):
@@ -3631,7 +4975,8 @@ def cmd_ship(args) -> int:
         text = _read_arg_file(args.turn_file)
         append = Path(args.append_file).read_text(encoding="utf-8") if args.append_file else None
         result = ship(project, session, turn_text=text, append_text=append, beat=args.beat,
-                      config=load_config(project, args.config), log=not args.no_log)
+                      config=load_config(project, args.config), log=not args.no_log, provisional=args.provisional,
+                      attempt=args.attempt, max_rewrites=args.max_rewrites, reviewed=args.reviewed)
     except (ValueError, UnicodeDecodeError) as exc:
         print(f"ERROR: {exc}.", file=sys.stderr)
         return 2
@@ -3641,6 +4986,79 @@ def cmd_ship(args) -> int:
     for item in result["dropped"]:
         print(f"WARNING: {item['key']} was not applied ({item['check']}).", file=sys.stderr)
     print(json.dumps(result, ensure_ascii=False))
+    return 0
+
+
+def cmd_brief(args) -> int:
+    project = Path(args.project_dir)
+    session, warning = _session_for(project, args.session_file)
+    if warning:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    try:
+        keeper = _read_arg_file(args.input_file)
+        report = write_brief(project, session, keeper, config=load_config(project, args.config), budget=args.budget,
+                             beat=args.beat)
+    except (ValueError, UnicodeDecodeError) as exc:
+        print(f"ERROR: {exc}.", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"ERROR: the brief was not written: {exc}. Run it again.", file=sys.stderr)
+        return 2
+    for text in report["warnings"]:
+        print(f"WARNING: {text}", file=sys.stderr)
+    print(json.dumps({k: v for k, v in report.items() if k != "live_state"}, ensure_ascii=False))
+    return 0
+
+
+def cmd_settle(args) -> int:
+    project = Path(args.project_dir)
+    try:
+        findings = Path(args.findings_file).read_text(encoding="utf-8") if args.findings_file else None
+        correction = Path(args.delta_file).read_text(encoding="utf-8") if args.delta_file else None
+        result = settle(project, args.key, verdict=args.verdict, violations=_csv(args.violations), reason=args.reason,
+                        findings_text=findings, delta_text=correction, config=load_config(project, args.config),
+                        log=not args.no_log)
+    except (ValueError, UnicodeDecodeError) as exc:
+        print(f"ERROR: {exc}.", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"ERROR: settle failed: {exc}. Run the same command again; it settles once.", file=sys.stderr)
+        return 2
+    for text in result["warnings"]:
+        print(f"WARNING: {text}", file=sys.stderr)
+    print(json.dumps(result, ensure_ascii=False))
+    return 1 if result["action"] in ("stale", "unshipped", "refused") else 0
+
+
+def cmd_pending(args) -> int:
+    project = Path(args.project_dir)
+    session, warning = _session_for(project, args.session_file) if args.session_file else (None, None)
+    if warning:
+        print(f"WARNING: {warning}", file=sys.stderr)
+    found = pending_reviews(project, session)
+    started = time.monotonic()
+    deadline, keys = started + max(0, min(args.wait or 0, MAX_WAIT)), [e["key"] for e in found]
+    while any(e["shipped"] for e in found) and time.monotonic() < deadline:
+        time.sleep(1)  # a harness delivers a background result between commands; this gives it one to land on
+        found = pending_reviews(project, session)
+        if [e["key"] for e in found] != keys:
+            break
+    waited = round(time.monotonic() - started, 1)
+    found = pending_reviews(project, session, detail=True, beats=load_config(project)["log"]["previousBeats"])
+    resolved = session or resolve_session_file(project)["path"]
+    held = provisional_keys(_read_lines(project / resolved)) if resolved else []
+    orphans = [k for k in held if k not in {e["key"] for e in found}]
+    cleared = {}
+    if args.clear_queued:  # a revised input replaces it; /rp:end reports it
+        queued = project / QUEUED_INPUT
+        cleared["queued_input"] = queued.read_text(encoding="utf-8") if queued.is_file() else None
+        queued.unlink(missing_ok=True)
+    if args.clear_carried and resolved and (project / resolved).is_file():  # /rp:end: the run's last findings
+        carried = carried_path(project, resolved)
+        cleared["carried"] = carried.read_text(encoding="utf-8") if carried.is_file() else None
+        carried.unlink(missing_ok=True)
+    print(json.dumps({"pending": found, "orphans": [{"session": resolved, "key": k} for k in orphans],
+                      "waited_s": waited if args.wait else None, "cleared": cleared or None}, ensure_ascii=False))
     return 0
 
 
@@ -3738,10 +5156,11 @@ def cmd_check(args) -> int:
     _state, invariants = _state_reports(project, session)
     invariant_kinds = [w["kind"] for w in invariants["warnings"]] if invariants else []
     turn = parse_turn(text)
-    result = lint(turn, scene, config, project)
+    result = lint(turn, scene, config, project, brief=_brief_for(project, turn))
     triggers = beat_triggers(turn, result, scene, config)
     rewrite = args.rewrite or args.attempt > 1  # a later attempt answers a confirmed violation
     decision = route(result, triggers, config, recheck=args.recheck, final=args.final, rewrite=rewrite)
+    decision["background"] = background_route(decision, triggers, result, config, project, session, text, rewrite)
     elapsed = round((time.perf_counter() - started) * 1000, 2)
     common = {"session": session, "beat": args.beat, "attempt": args.attempt}
     if not args.no_log:
@@ -3749,23 +5168,45 @@ def cmd_check(args) -> int:
                              "triggers": triggers, "class": decision["beat"], "next": decision["next"],
                              "recheck": args.recheck or None, "final": args.final or None,
                              "rewrite": rewrite or None, "scene_warning": scene["warning"],
-                             "invariants_warnings": invariant_kinds or None, "elapsed_ms": elapsed})
+                             "background": (True if decision["background"]["eligible"] else
+                                            decision["background"]["reasons"]) if decision["next"] == "review" else None,
+                             "invariants_warnings": invariant_kinds or None, "elapsed_ms": elapsed,
+                             "opened_sources": result["sources"].get("opened")})
         if decision["next"] == "ship" and not args.final:
             reason = "policy lint-only" if config["review"] == "lint-only" else "routine beat, lint clean"
             append_log(project, {**common, "path": "skipped", "reason": reason})
-    print(json.dumps({
+    output = {
         "session_file": session,
         "session_warning": warning,
         "scene_warning": scene["warning"],
-        "lint": {k: result[k] for k in ("findings", "events", "run_notes", "present", "delta", "elapsed_ms")},
+        "lint": {k: result[k] for k in ("findings", "events", "run_notes", "present", "delta", "sources",
+                                        "elapsed_ms")},
         "triggers": triggers,
         "route": decision,
         "elapsed_ms": elapsed,
         "invariants": invariants,
         "config_warnings": config["warnings"],
         "logged": not args.no_log,
-    }, ensure_ascii=False, indent=1))
+    }
+    _keep_check(project, text, output)
+    print(json.dumps(output, ensure_ascii=False, indent=1))
     return 0
+
+
+CHECK_FILE = "Work/rp/.gate/check.json"  # the last check's output, for a review rerun from a pending review
+
+
+def _turn_digest(text: str) -> str:
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _keep_check(project: Path, text: str, output: dict) -> None:
+    try:
+        path = project / CHECK_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomic(path, json.dumps({"turn": _turn_digest(text), **output}, ensure_ascii=False).encode("utf-8"))
+    except OSError:
+        pass  # scratch: a check never fails for it
 
 
 def cmd_log(args) -> int:
@@ -3851,6 +5292,38 @@ def main(argv=None) -> int:
     h.add_argument("--beat", help="the beat label; with the text and the delta it makes a retry a no-op")
     h.add_argument("--config", help=f"mode file (default: {MODE_FILE})")
     h.add_argument("--no-log", action="store_true")
+    h.add_argument("--provisional", action="store_true",
+                   help="ship a first draft before its review (route.background eligible); settle applies the verdict")
+    h.add_argument("--attempt", type=int, default=1, help="the attempt being shipped (provisional: 1 only)")
+    h.add_argument("--max-rewrites", type=int, help="route.max_rewrites (provisional: required), kept for a redraft")
+    h.add_argument("--reviewed", action="store_true",
+                   help="the reviewer passed this beat: it consumes the findings a soft background review carried")
+    e = sub.add_parser("settle", help="apply a background review's verdict to the provisional beat it reviewed")
+    e.add_argument("--project-dir", default=".")
+    e.add_argument("--key", required=True, help="the key ship --provisional printed (the verdict's review_key)")
+    e.add_argument("--verdict", required=True, choices=VERDICTS,
+                   help="clean, soft (findings carried to the next draft) or struck (a confirmed hard finding)")
+    e.add_argument("--violations", help="the verdict's categories, comma separated")
+    e.add_argument("--reason", help="one line for the struck callout")
+    e.add_argument("--findings-file", help="soft: the findings, verbatim, to carry to the next draft")
+    e.add_argument("--delta-file", help="soft: a SCENE_STATE_DELTA correcting the state the findings name, applied "
+                                        "to the frontmatter in the same write")
+    e.add_argument("--config", help=f"mode file (default: {MODE_FILE})")
+    e.add_argument("--no-log", action="store_true")
+    b = sub.add_parser("brief", help="build this turn's GM brief from disk: state, Day Plan, beats, keyed entries")
+    b.add_argument("--project-dir", default=".")
+    b.add_argument("--session-file", help="the live session file (default: from the marker)")
+    b.add_argument("--input-file", required=True, help="the Keeper's input, verbatim, or - for stdin")
+    b.add_argument("--beat", help="the label of the beat being drafted (default: the last beat's number + 1)")
+    b.add_argument("--budget", type=int, help="the brief's size in bytes (default: turnGate.briefBytes)")
+    b.add_argument("--config", help=f"mode file (default: {MODE_FILE})")
+    n = sub.add_parser("pending", help="the provisional beats whose review has not settled")
+    n.add_argument("--project-dir", default=".")
+    n.add_argument("--session-file", help="only this session file's (default: every pending review)")
+    n.add_argument("--wait", type=int, help=f"sleep up to this many seconds (at most {MAX_WAIT}) while a review is "
+                                            "pending, so the harness can deliver a background result")
+    n.add_argument("--clear-queued", action="store_true", help="remove the held Keeper input, printing it")
+    n.add_argument("--clear-carried", action="store_true", help="remove this run's carried findings, printing them")
     t = sub.add_parser("state", help="the run: block's health; --refresh copies it into the run state file")
     t.add_argument("--project-dir", default=".")
     t.add_argument("--session-file", help="the live session file (default: from the marker)")
@@ -3871,7 +5344,8 @@ def main(argv=None) -> int:
         return int(exc.code or 0) if exc.code not in (None, 0) else 0
     commands = {"session": cmd_session, "check": cmd_check, "log": cmd_log, "invariants": cmd_invariants,
                 "rotate": cmd_rotate, "strike": cmd_strike, "split": cmd_split, "ship": cmd_ship,
-                "state": cmd_state, "summary": cmd_summary}
+                "state": cmd_state, "summary": cmd_summary, "settle": cmd_settle, "pending": cmd_pending,
+                "brief": cmd_brief}
     return commands[args.command](args)
 
 
