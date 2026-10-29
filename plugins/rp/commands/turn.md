@@ -1,6 +1,6 @@
 ---
 name: rp-turn
-description: "Process a single RP turn through the continuity gate. The GM drafts; a deterministic lint checks every beat; a model reviewer runs only on flagged or consequential beats (a cheap routine pass, a stronger adjudication before any rewrite); rewrites are capped per beat."
+description: "Process a single RP turn through the continuity gate. The GM drafts; a deterministic lint checks every beat; a model reviewer runs only on flagged or consequential beats (a cheap routine pass, a stronger adjudication before any rewrite), in the background after the beat is shown where the harness supports it; rewrites are capped per beat."
 argument-hint: "<keeper turn input as natural language; everything after /rp:turn is the input>"
 allowed-tools: ["Task", "Read", "Write", "Edit", "Bash"]
 ---
@@ -12,6 +12,8 @@ Wraps a single RP turn with the continuity gate. The Keeper's input goes in; a c
 This is the per-turn invocation pattern for guarded RP. Use during active sessions instead of sending free input directly to the GM.
 
 The gate is sized to the beat. A deterministic lint (`plugins/rp/tools/rp_gate.py`, no model call, tens of milliseconds) runs on every draft. The model reviewer runs only when the lint flags something or the beat is consequential, and its routine pass uses the cheap model; the stronger model is spent only to adjudicate a violation before a rewrite. Every gate step appends one line to the validator log.
+
+Where the harness can run a subagent in the background (Claude Code; Codex, Copilot and OpenCode are unverified, so there the review always runs before the beat is shown), a first draft that the lint passed and that goes to review only because it is consequential ships at once as **provisional** and is shown; its review runs in the background on a frozen copy of what the beat was drafted against, and the next turn collects the verdict (Step 1b) before anything else is drafted. The review checks the same things; only when it runs moves. A confirmed hard finding still strikes the beat and redrafts it within the same rewrite caps.
 
 ## Project layout assumed
 
@@ -25,7 +27,12 @@ This command uses the conventional RP layout. A project adopting it supplies:
 | the run's state file | named by the session: `run_state: "<path>#<section>"` in its frontmatter, else a ``State: `<path>` § <section>`` line in its header |
 | `Work/rp/_validator_log.jsonl` | per-turn telemetry: one line per gate step |
 | `Work/rp/.gate/turn.md` | scratch: the current GM turn, overwritten on each attempt (and `beat.md`, the text `ship` appends; `day-summary.md`, a closed day's summary before it is published) |
+| `Work/rp/.gate/brief.md` | scratch: the GM brief `brief` builds each turn, and `brief.json`, its report; `input.md` holds the Keeper's input it was built for |
+| the campaign's keyed table | optional: `keyed-entries.md` beside its `log_dir` (`Work/rp/<campaign>/keyed-entries.md`), or the canon register's `keyed_entries` row; see the plugin README |
 | `Work/rp/.gate/struck/` | drafts the gate struck, kept until `rotate` writes them into the log (see **Struck drafts**) |
+| `Work/rp/.gate/pending/<key>/` | a provisional beat's pending review: a byte copy of the session file before the beat shipped (`review_session`), the turn, the beat's text; removed by `settle` |
+| `Work/rp/.gate/carried/<run>.md` | soft findings of a background review, carried into the run's next drafts; cleared by the next reviewed beat |
+| `Work/rp/.gate/queued-input.md` | the Keeper's input held when the beat it answered was struck (Step 1b) |
 | `Work/rp/summaries/<campaign>/day-NNNN.md` | one summary per fiction day, published once after rotation closes the day |
 | `.claude/modes/rp.yaml` | optional: the `turnGate` block (policy, rewrite caps, models; see the plugin README) |
 
@@ -59,20 +66,50 @@ The `session` command prints `{"path", "source", "warning", "gate", "live_state"
 
 `invariants.warnings` lists `live_state` (the invariants still carry a snapshot of state, with its lines), `stale` (`last_extraction` predates the run's state) or `no_extraction_date`. Tell the Keeper each once per session, in one line, with the fix (`/rp:extract-invariants`), and proceed: the gate reads current state from LIVE_STATE either way, and the reviewer ignores any snapshot in the invariants.
 
+`pending` lists provisional beats whose review has not settled: collect them in Step 1b before anything else.
+
 `run` reports typed run state: `schema` is true when the session frontmatter carries a `run:` block (stats, body facts, workings on or off, clocks; see the plugin README). Its `warnings` are yours, not the Keeper's: a malformed entry is fixed by hand between turns (as a `log_dir` line is added), and a hand-written current entry in the run state file goes back below the block at the next `state --refresh`. `notes` lists clocks past their day that no delta has fired or cleared (`key`, `day`): fire each in the fiction when it is due, then clear it (`<key>: null`) or move it in a delta. `check` reports the same as `lint.run_notes`. `state_block` says whether the run state file's generated copy of the block is behind the fiction day, and `summaries_due` lists closed days just behind the session with no summary yet, including one `/rp:start` closed (`summary`, run by Step 3e and `/rp:end`, walks the whole run and writes every missing one).
 
 If any precondition fails, halt and inform the Keeper. Do not proceed.
 
-### Step 2: Read current scene state
+### Step 1b: Collect a pending review (before anything is drafted)
 
-Read SESSION_FILE's YAML frontmatter, its header and its current `## Day Plan` sections (`continuity.plans`, or inside the `day` range), not the whole file: a long session runs to megabytes. Read the run state's `current` entry too. Take every range from `live_state`.
+A beat is never drafted on top of a beat whose review is still out. For each `pending` entry (`key`, `beat`, `attempt`, `max_rewrites`, `keeper_input`, `review_session`, `turn`, `check`), settle it before Step 2. The same procedure runs when a background review's result reaches you while you are idle between turns (Claude Code wakes the session with it); there is then no new input to hold.
 
-- Current scene state YAML (location, time, present, observable)
-- Standing facts, stats and what is on the PC (the header and the run state's current entry)
-- Recent register-stack installations (to pass to the gate)
-- Day Plan (needed by the `missing_day_plan` check)
+1. The verdict is the background reviewer's YAML, whose `review_key` must equal `key`; a verdict naming another key is stale: drop it. While the review you spawned is still running, wait for it: tell the Keeper once, in one line, that Beat <beat>'s review is still running, then run, as many times as it takes up to ten minutes after the beat was shown (the entry's `age_s`; a review took up to six minutes on the measured days):
+   ```bash
+   ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" pending --project-dir . --wait 60
+   ```
+   (the harness delivers a background result between commands). Run the review now, synchronously, only when it is known not to be coming: the spawn or the reviewer failed, this session never spawned it (a crash, a relaunched Room), or ten minutes have passed. Run it as 3c does, with DRAFT, KEEPER_INPUT and the logs from the entry's `turn` file, LINT from its `check` file (when there is one), SESSION_FILE `review_session`, BRIEF the entry's `brief` (when there is one) and LIVE_STATE its `live_state`, REWRITES_LEFT `max_rewrites` and REVIEW_KEY `key` (`pending` prints them: the state the beat was drafted against, never the live file, which now holds the beat). A background verdict that arrives after that is stale.
+2. Log it: `rp_gate.py log ... --path review --beat <beat> --attempt <attempt> --verdict <verdict> --violations <categories> --note "background <key>"`.
+3. Apply it with `settle` (one write; it prints `action`):
+   ```bash
+   ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" settle --project-dir . --key <key> --verdict <clean|soft|struck> --violations <categories> [--findings-file Work/rp/.gate/soft.md] [--delta-file Work/rp/.gate/soft-delta.md] [--reason "<categories>"]
+   ```
+   - **clean** → `--verdict clean`. The beat stands as shown.
+   - **soft only** → write the violations, verbatim, to `Work/rp/.gate/soft.md`, and `--verdict soft --findings-file Work/rp/.gate/soft.md`. The shown prose is not edited: the Keeper has read it and may be answering it. A soft finding that names state (`scene_state_mismatch`, a Present-list `presence`, a `run.*` entry) is corrected as the edit pass corrects a delta: write the corrected entries, as a SCENE_STATE_DELTA, to `Work/rp/.gate/soft-delta.md` and add `--delta-file Work/rp/.gate/soft-delta.md`; settle applies them to the frontmatter in the same write, so no known-wrong state stands. The findings go to the run's carried file, which the next brief carries and the next reviewed beat consumes.
+   - **any hard, or hard_fail** → adjudicate first, as 3d does (`route.adjudicator_model`, the same prompt plus ADJUDICATE). Overturned to clean or soft: settle as above. Confirmed hard: copy the entry's `turn` file to `Work/rp/.gate/turn.md` (the struck beat, for 3f), then `--verdict struck --reason "<confirmed categories>"`. `settle` replaces the beat with a struck callout of it as shipped and restores the frontmatter its delta changed, in one write. Then 3d's decision, with REWRITES 0 and MAX_REWRITES `max_rewrites`:
+     - not hard_fail, and REWRITES < MAX_REWRITES (a provisional beat always has one: `ship --provisional` refuses `max_rewrites` 0) → redraft it: read the restored state (Step 2), then run Step 3 for beat `<beat>` with KEEPER_INPUT the entry's `keeper_input`, ATTEMPT_NUMBER `attempt + 1`, REWRITES 1, ESCALATED true, PRIOR_VIOLATIONS the confirmed violations, and STRUCK_BEAT the struck text. The Keeper has read the struck beat: the redraft keeps every PRE-COMMIT and GM DECISION it revealed, unless a confirmed violation is in it (decided 2026-10-28). A rewrite never ships provisionally, so the redraft is reviewed before it is shown. Show it after one line, which names no categories or findings (they stay in the log, backstage): "Beat <beat> was struck after review and redrafted:".
+     - otherwise (hard_fail, or no rewrite left) → 3f with the struck beat as the surrendered draft (it is struck already: do not strike it again).
+     If this turn brought new input, it answered the struck beat: write it to `Work/rp/.gate/queued-input.md`, draft nothing for it, and end with: "You answered the struck beat with: <input>. Send /rp:turn with no input to play it as it stands, or send a revised input." (Decided 2026-10-28.)
+   - `settle` answers `stale` (exit 1) for a key no longer pending: drop that verdict. `unshipped` (exit 1): the beat never reached the file (a crash in ship): run `ship --provisional` again with the entry's `turn` and `beat_text` files and the same `--beat`, `--attempt 1` and `--max-rewrites`, then settle. `refused` (exit 1): the file was edited since the ship, or the beat's marks are gone, so nothing was written: show the Keeper the verdict and the warning; once he rules, put back what was edited and settle again, or `settle --verdict clean` to keep the beat as played (his word). `already`: a re-run after a crash; carry on.
+4. `rp_gate.py pending` also lists `orphans`: a provisional mark with no pending review. Tell the Keeper; draft nothing.
 
-Construct the SCENE_STATE block from these, and the LIVE_STATE block that tells the GM and the reviewer where to read current state:
+An `/rp:turn` with no input plays `Work/rp/.gate/queued-input.md` when it exists; with neither, ask the Keeper for input. Once the held input is played, or the Keeper sends a revised one, clear it: `rp_gate.py pending --project-dir . --clear-queued`.
+
+### Step 2: Build the GM brief
+
+Write the Keeper's input, verbatim, to `Work/rp/.gate/input.md`, then run (add `--beat <label>` when the session numbers its beats):
+
+```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" brief --project-dir . --session-file "<SESSION_FILE>" --input-file Work/rp/.gate/input.md
+```
+
+It writes `Work/rp/.gate/brief.md`, built in code from disk (no model call) within `turnGate.briefBytes` (default 80000 bytes, about 20k tokens, one Read): the LIVE_STATE block; the current state (the frontmatter, the header, the run state's current entry, the governing STATE line, which is the read's last `STATE:` line); every Day Plan section of the current day; any findings carried from the last beat's background review; the GM DECISION and RULING lines of the beats it does not carry; the keyed entries whose keys match the Keeper's input or the last three beats, each with its source and its quotes found there (and the priced-stakes rule, with the register's path, when the input matches its phrases, the same nudge the prompt hook gives where hooks run); and the beats of the continuity read, the last three always and older ones newest first while the budget lasts. It prints its report, also kept in `Work/rp/.gate/brief.json`: `bytes`, `over_budget`, `beats.carried` and `beats.dropped`, `keyed.matched`, `keyed.dropped` and `keyed.unverified`, `priced_input`, `state_line`, `live_state` (in the file), `provisional` and `warnings`.
+
+Do not write a brief, a scene summary or direction for the GM yourself, and do not read what the brief carries: the GM reads it. A `warnings` entry about the keyed table (a bad key, an entry that never matches) is yours to fix between turns; `provisional` non-empty means Step 1b was skipped: go back to it. The brief is built from disk alone, so the same files give the same brief in any session.
+
+The brief's LIVE_STATE block, which also goes in the reviewer's prompt, follows these rules:
 
 ```
 LIVE_STATE:
@@ -106,14 +143,23 @@ LOOP:
     prompt: |
       KEEPER_INPUT: <the {command_args} from /rp:turn>
       SESSION_FILE: <SESSION_FILE>
-      SCENE_STATE: <constructed from session file>
-      LIVE_STATE: <the block from Step 2>
+      BRIEF: Work/rp/.gate/brief.md
+      LIVE_STATE: <the brief report's live_state>
       ATTEMPT_NUMBER: <ATTEMPT_NUMBER>
       PRIOR_VIOLATIONS: <PRIOR_VIOLATIONS if attempt > 1>
 
-      Current state (who is alive and where, the day, stats, what is on
-      the PC, standing facts) comes from LIVE_STATE and SCENE_STATE, never
-      from Memory/invariants.md, which holds static canon.
+      Read BRIEF first: built for this turn from disk, it carries the
+      current state, the Day Plan, the recent beats and the keyed entries
+      that match this input, each naming its file. Cite the file a fact
+      comes from, never the brief; open a source or a beat it does not
+      carry when the beat rests on it. A quote the brief gives you from its
+      file (a keyed entry's verified quote, a GM DECISION or RULING line it
+      carries whole) counts as opened, for a priced stake too: cite it
+      with that file as it stands and do not open the file again. A line
+      it cut to its head is a lead: read it whole. Current state (who is alive and
+      where, the day, stats, what is on the PC, standing facts) comes from
+      the brief and the LIVE_STATE ranges it names, never from
+      Memory/invariants.md, which holds static canon.
 
       Draft the GM response for this turn. If PRIOR_VIOLATIONS is present,
       the previous draft failed validation. Use the suggested_fix entries
@@ -132,9 +178,17 @@ LOOP:
       Emit GM_SPAWN_LOG, SOURCE_LOG (with priced_stake_touched,
       canon_proposed and pc_changed) and SCENE_STATE_DELTA (changed
       frontmatter keys only — time, location, participants, power, and
-      run.* when the session keeps a run: block) with the draft. You
-      cannot write files; the delta is how state changes reach the
-      session file.
+      run.* when the session keeps a run: block) with the draft, each
+      block's keys at column 0 under its heading (an indented delta loses
+      its nested keys). You cannot write files; the delta is how state
+      changes reach the session file.
+
+      Each SOURCE_LOG sourced entry gives the file's path and a verbatim
+      quote, and no line numbers: the gate finds the quote and reports
+      its line. Emit scene.participants only when someone arrives or
+      leaves or a role label changes (and once, with labels, while the
+      frontmatter's roles narrate the scene); a role is a label, never a
+      restatement of state.
 
   Receive DRAFT, GM_SPAWN_LOG, SOURCE_LOG and SCENE_STATE_DELTA from roleplay-gm output.
 
@@ -146,10 +200,23 @@ LOOP:
     ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" check --project-dir . --session-file "<SESSION_FILE>" --turn-file Work/rp/.gate/turn.md --attempt <ATTEMPT_NUMBER>
   The check appends its own `lint` line (and a `skipped` line when no review
   runs) to the validator log. It reports lint.findings (each with fix: edit or
-  review), triggers (why the beat is consequential), scene_warning (the
+  review), lint.sources (each SOURCE_LOG sourced quote found in its file,
+  quote marks, emphasis, dashes, case and spacing aside, with the line it is
+  on and `history` when that line is an earlier beat's play; or not found, or
+  found only where nothing is a source: a source_unverified finding, fix
+  review), lint.events (`roles_narrative`: the frontmatter's participant roles
+  narrate the scene and this delta leaves them, so they go stale: ask the GM
+  for scene.participants with labels on the next beat), triggers (why the beat
+  is consequential), scene_warning (the
   frontmatter could not be read), invariants (Step 1's warnings again, which
   the lint line records as invariants_warnings; do not repeat them to the
   Keeper) and route. Raise MAX_REWRITES to route.max_rewrites if it is larger.
+  The check has verified the quotes: do not check the citations again
+  yourself, and do not add line numbers to them. With a brief built for
+  this input, each verified quote that is not history also says where the
+  GM found it (`via`: `brief` when the brief gave it the line from that
+  file, whole or as a keyed entry's verified quote; `opened` when it did
+  not); the lint line counts the opened ones (`opened_sources`).
 
   route.next:
     fix    → the findings are mechanical (anchor missing, duplicated or not
@@ -160,7 +227,14 @@ LOOP:
              file and run the same check with --recheck: a recheck answers
              ship or review, never fix again. No model call.
     ship   → go to 3e. (A check of attempt 2 or later never answers ship.)
-    review → go to 3c.
+    review → when route.background.eligible, go to 3e and ship it
+             provisional (the review runs after it is shown); else 3c.
+             route.background.reasons says why not: policy
+             (turnGate.background: false), harness or harness_unknown
+             (ASHA_HARNESS is not a harness verified for background work),
+             rewrite, no_rewrites (a confirmed hard finding would
+             surrender), validate_tag, lint (a finding sent it to review),
+             day_change (a rotation cannot be undone), pending.
 
   # 3c. Review: the routine pass (cheap model)
   Spawn continuity-reviewer via Task:
@@ -172,15 +246,21 @@ LOOP:
       KEEPER_INPUT: <the Keeper's input; read only to bound pc_authored>
       INVARIANTS_FILE: "Memory/invariants.md"
       SESSION_FILE: <SESSION_FILE>  (read its frontmatter, header and current Day Plan, and the LIVE_STATE day and earlier ranges, never the whole day)
-      SCENE_STATE: <constructed scene state>
-      LIVE_STATE: <the block from Step 2>  # current state; never from the invariants
+      BRIEF: Work/rp/.gate/brief.md  # the brief the GM drafted from: its current state, Day Plan and beats
+      LIVE_STATE: <the brief report's live_state>  # current state; never from the invariants
       ATTEMPT_NUMBER: <ATTEMPT_NUMBER>
       REWRITES_LEFT: <MAX_REWRITES - REWRITES>
       PRIOR_VIOLATIONS: <PRIOR_VIOLATIONS if attempt > 1>
       GM_SPAWN_LOG: <GM_SPAWN_LOG from roleplay-gm>
       SOURCE_LOG: <SOURCE_LOG from roleplay-gm>
       SCENE_STATE_DELTA: <SCENE_STATE_DELTA from roleplay-gm>
-      LINT: <lint.findings and triggers from the check>
+      LINT: <lint.findings, lint.sources and triggers from the check>
+      # lint.sources: the check found each verified quote in its file; the
+      # reviewer judges the unverified ones, the history ones, and what a
+      # verified quote supports where the beat rests on it (priced stakes first).
+      # A quote marked via: brief counts as opened: the brief gave the GM its
+      # line and the check found it there. Never flag it as unopened; a
+      # costless answer to a priced question is still a finding.
       # The delta rides THROUGH the gate, not around it: the reviewer checks
       # every delta entry against the prose (scene_state_mismatch) because a
       # clean verdict commits this delta to the frontmatter.
@@ -256,21 +336,40 @@ LOOP:
   is safe to run again as is.
   SHIP: write Work/rp/.gate/beat.md with the text the log gets (the new
   day's Day Plan first when rotate said rotated, then the beat heading, then
-  DRAFT), and run (add --beat <label> when the session numbers its beats):
+  DRAFT), and run (add --beat <label> when the session numbers its beats;
+  add --provisional --attempt 1 --max-rewrites <MAX_REWRITES> when 3b sent
+  the beat here on route.background; add --reviewed when a review ran on
+  this beat, so it consumes the findings carried into its draft):
     ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" ship --project-dir . --session-file "<SESSION_FILE>" --turn-file Work/rp/.gate/turn.md --append-file Work/rp/.gate/beat.md
   ship appends the text and applies SCENE_STATE_DELTA to the frontmatter in
   one write, so neither lands without the other, and it refuses a closed
   file. State rides the same gate as prose: a delta is applied only once
   its draft clears the gate, so rejected drafts leave no phantom state;
-  their text is kept only as struck drafts.
+  their text is kept only as struck drafts. A provisional beat's delta is
+  applied when it is shown; its review then settles it: a strike undoes it
+  exactly, and a soft verdict corrects the state it names.
   Merge semantics: scene.* is the canonical namespace, and ship syncs the
   root mirrors from it (currentTime := scene.time, currentLocation :=
   scene.location, participants := scene.participants names); run.* changes
   the run: block. A run.* entry, an unknown key or a root mirror the lint
   would still flag is not applied: ship lists it under `dropped`; name it in
   the turn line. A ship re-run after a crash ships once. On this path never
-  append the beat or edit the frontmatter by hand.
+  append the beat or edit the frontmatter by hand. ship refuses while the
+  file holds a provisional beat: collect it (Step 1b) first.
+  A provisional ship refuses a rewrite and a beat that moves the fiction
+  day; it prints `key`, `review_session` and `pending`. The beat goes into
+  the log between rp-provisional marks and its delta is applied, so play
+  goes on from it; the pending review keeps a byte copy of the file from
+  before the ship, which is what the reviewer reads.
   Log the turn (Step 4) and OUTPUT DRAFT to Keeper.
+  After a provisional ship, once the draft is shown, spawn the 3c review in
+  the background (Claude Code: the Task tool's run_in_background), with
+  SESSION_FILE <review_session>, BRIEF <review_brief> (the brief, its
+  LIVE_STATE naming the copy), LIVE_STATE that block (the brief report's
+  live_state with <review_session> in place of SESSION_FILE), and
+  REVIEW_KEY: <key>. The Keeper waits on none of it; Step 1b collects the
+  verdict. If the spawn fails, run the review now, as 3c (the beat is shown
+  already: apply the verdict with settle, as Step 1b does).
   Only when rotate said rotated, after the output (the Keeper waits on
   neither):
     1. Refresh the state block (no model call):
@@ -282,8 +381,8 @@ LOOP:
     2. Summarise the closed day (one model call per fiction day). Run
        `rp_gate.py summary --project-dir .`; take each `days` entry that does
        not `exist` (rotate's `previous`, and any earlier day still due). Spawn
-       timeline-search (model haiku, in the background where the harness
-       allows) with QUERY "DAY SUMMARY: Day <day>" and the entry's `beats`
+       timeline-search (model haiku; in the background on Claude Code, the
+       one harness asha documents background agents for) with QUERY "DAY SUMMARY: Day <day>" and the entry's `beats`
        and `plans` ranges, each as its `parts` when it has them (the lines
        between are struck drafts). Write the text it returns to
        Work/rp/.gate/day-summary.md, then run
@@ -327,15 +426,17 @@ LOOP:
 END LOOP
 ```
 
-`[validate]` anywhere in the Keeper's input makes the beat consequential, so it is always reviewed, even under `turnGate.review: lint-only`.
+`[validate]` anywhere in the Keeper's input makes the beat consequential, so it is always reviewed, even under `turnGate.review: lint-only`, and before it is shown.
 
 ### Step 4: Log the turn
 
 Every gate step appends one line to `Work/rp/_validator_log.jsonl`: `check` writes `lint` (and `skipped` when no review runs); the command writes `review`, `adjudicate` and, once per turn, `turn`:
 
 ```bash
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" log --project-dir . --session-file "<SESSION_FILE>" --path turn --attempts <ATTEMPT_NUMBER> --verdict <clean|soft_fixed|surrendered|unreviewed> --violations <categories left, if any>
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" log --project-dir . --session-file "<SESSION_FILE>" --path turn --attempts <ATTEMPT_NUMBER> --verdict <clean|soft_fixed|surrendered|unreviewed|provisional> --violations <categories left, if any>
 ```
+
+A provisional beat's turn line says `provisional`; `settle` writes its own `settle` line (and a `strike` line for a struck beat) when the verdict lands, so the beat's lines show both when it was shown and what its review found.
 
 Pass the same `--beat <label>` on every line of a turn when the session numbers its beats, so the lines group by beat. A beat that reached the Keeper without a `turn` line did not pass through this gate. When a gate step itself fails (the check errors, a reviewer spawn fails) and the Keeper ships the draft anyway, log the turn with `--verdict unreviewed --note "<what failed>"`.
 
@@ -373,6 +474,11 @@ Do not narrate the validation process to the Keeper unless they ask. The gate ru
 | `rp_gate.py ship` fails | Surface the error and run the same command again: a retry ships once. An `ERROR` (a closed file, a malformed delta) wrote nothing: fix what it names. Never append the beat by hand |
 | `state --refresh` answers `refused` | The block was edited by hand, or the run state pointer names a log or the invariants: tell the Keeper once; play goes on (the frontmatter governs) |
 | The day summary fails | Play goes on; `summaries_due` keeps the day, and `/rp:end` writes it |
+| `rp_gate.py brief` fails | Surface the error and run it again; if it still fails, pass the GM LIVE_STATE (Step 2's rules) without BRIEF, and log the turn with `--note "no brief"` |
+| `brief` reports `over_budget` | What must go in did not fit (a long header or Day Plan): the brief is still whole. Tell the Keeper once per session, so the header or `turnGate.briefBytes` can change |
+| The background review never returns, or the Room was relaunched | Step 1b runs it synchronously from the pending files; a late verdict is `stale` |
+| `settle` answers `refused` | The file was edited after the provisional ship; nothing was struck. Show the Keeper the verdict; the review stays pending until he rules |
+| `rotate`, `ship`, `state --refresh` or `summary` refuse a pending beat | Collect it (Step 1b), then run the step again |
 
 ## Arguments
 
@@ -385,7 +491,7 @@ ARGUMENTS: {command_args}
 - This command does NOT replace `/rp:start`. `/rp:start` initializes a session; `/rp:turn` runs each turn within an active session.
 - The Keeper can mix `/rp:turn` and ungated input: anything sent without `/rp:turn` goes straight to the GM unvalidated and leaves no gate line, and never rotates the log.
 - One log file per fiction day. A beat belongs to the day it ends on, so a night beat that wakes on the next morning opens the next day's file, after that day's Day Plan. The beat's day is the delta's `currentDate` (the lint holds it to the anchor's `Scene: Day N`), else the frontmatter's; a campaign whose frontmatter carries no `Day N`, or names no `log_dir`, keeps one file as before. `sessionLog.rotation: off` in the mode file turns rotation off.
-- A beat is **consequential** when the check reports a trigger: `priced_stake` (SOURCE_LOG, or the priced-stakes phrases in the Keeper's input), `canon_proposed`, `pc_change` (SOURCE_LOG `pc_changed`, or a new PC role in the delta), `arrival_departure` (the Present list changed, or someone arrives on the page), `fight_or_capture`, `validate_tag`, or a project `consequentialPatterns` match. Anything else is **routine**.
+- A beat is **consequential** when the check reports a trigger: `priced_stake` (SOURCE_LOG, where the GM declares it only when the beat decides, applies, tests or changes a price, not when one merely stays in force, or is mentioned or remembered; or the priced-stakes phrases in the Keeper's input), `canon_proposed`, `pc_change` (SOURCE_LOG `pc_changed`, or a new PC role in the delta while the scene's PC role is a label of at most 200 characters; a longer role narrates the scene and is rewritten every beat, so only a stat it carries that moves counts, and the check notes a `pc_role_narrative` event), `arrival_departure` (the Present list changed, or someone arrives on the page), `fight_or_capture`, `validate_tag`, or a project `consequentialPatterns` match. Anything else is **routine**. On a routine beat, a price the draft states rests on the GM's own call and its citation, which the lint checks only when it is given: a project that wants its own priced words in the draft to send a beat to review lists them in `consequentialPatterns`.
 - Model calls per beat, excluding the character agents the GM spawns:
 
   | Beat | Before (0.3.x: review every beat) | Now (defaults) |
@@ -398,6 +504,7 @@ ARGUMENTS: {command_args}
 
 - Run state with a `run:` block adds no model call per beat: its entries are linted (a known field, the right type, a working only on or off, a clock's day from the beat's day to a year ahead), a finding the edit pass leaves never sends a beat to the reviewer, and the reviewer sees `run.*` entries only in the deltas of beats already routed to it. Once per fiction day, after the beat that closed the day is shown, one haiku call writes that day's summary.
 - The table assumes the harness honours a per-spawn `model`, as Claude Code's Task tool does. Codex, Copilot and OpenCode were not checked here: where a spawn ignores it, the routine pass and the adjudicator run on the same model and adjudication buys a second opinion rather than a cheaper first one.
+- Background review is a matter of when, not of how much: the same reviewer runs on the same beats. A provisional beat costs no extra model call unless its verdict arrives too late (Step 1b reruns it synchronously) or a confirmed hard finding strikes it after it was shown (the redraft is the same rewrite the synchronous path spends). `rp_gate.py` allows it only where `ASHA_HARNESS` names a harness verified for background work (`claude`); `turnGate.background: false` turns it off.
 - `turnGate.review: every` restores review on every beat; `lint-only` spends a model call on review only for `[validate]`.
 
 ## Struck drafts
@@ -412,4 +519,6 @@ A draft the gate rejects is kept as a record, never as story: each draft a rewri
 > <!-- rp-struck: 3f9c0a1b2c3d4e5f -->
 ```
 
-No model call and nothing extra in any read: the continuity ranges leave it out (`parts`), it is no beat, header or Day Plan, and ratification, the summary and canon exclude it. The edit pass and the mechanical fixes amend a draft rather than reject it, so they strike nothing. A beat the Keeper strikes in chat after it shipped has no path here: it stays in the log as played.
+No model call and nothing extra in any read: the continuity ranges leave it out (`parts`), it is no beat, header or Day Plan, and ratification, the summary and canon exclude it. The edit pass and the mechanical fixes amend a draft rather than reject it, so they strike nothing.
+
+A provisional beat struck by its background review (Step 1b) is the one shipped beat that becomes a struck draft: `settle --verdict struck` puts the callout where the beat was (the beat as it shipped, its working too; its reason says "shown, then struck") and restores the frontmatter its delta changed. A beat the Keeper strikes in chat after it shipped has no path here: it stays in the log as played.

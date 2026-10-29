@@ -45,7 +45,9 @@ file and the run's state file instead, and warns when the projection carries it
    canon, curated session material, raw session records, and finally derived
    memory or feedback. Within a tier, current files on disk outrank summaries
    or recollections. In a session record, skip every `> [!struck]` callout: a
-   draft the turn gate struck, kept as a record, never canon.
+   draft the turn gate struck, kept as a record, never canon. Skip too every
+   line between `<!-- rp-provisional: KEY -->` and its closing
+   `<!-- /rp-provisional: KEY -->`: a beat whose review has not settled.
 3. Record every path and glob searched. An empty glob is evidence of a search,
    not evidence that the corresponding canon does not exist.
 4. If the project's Claude auto-memory directory is available, read relevant

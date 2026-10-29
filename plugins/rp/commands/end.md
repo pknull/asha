@@ -23,6 +23,8 @@ Ends an active roleplay session with canon synthesis and state management.
 
 ### Step 1: Resolve the session file, then remove the RP marker
 
+First collect any pending review, exactly as `/rp:turn` Step 1b does (with no new input to hold): a beat shown before its review is provisional, and the END block, the stitched summary and ratification read only settled beats. `rp_gate.py pending --project-dir .` lists them; when the background verdict is not in hand, run the review now. A struck beat is redrafted through the `/rp:turn` loop before the session closes, unless the Keeper says to close on the struck record. `rotate --repair`, `summary --stitch` and `state --refresh` refuse while a provisional beat is pending. Then `rp_gate.py pending --project-dir . --clear-queued --clear-carried`: it prints, and removes, an input still held after a strike and the run's carried soft findings; name each in the END block (held input: not played; carried findings: never applied), so neither leaks into the next session.
+
 The marker names the session file, so resolve it first. `rotate --repair` moves no beat and opens no file: it closes a file an interrupted rotation left without its footer, hides (renames to `.day-NNNN.md.orphan-<date>`, never deletes) a day file such a crash left unused, and writes any struck drafts still waiting into the current file, before the END block:
 
 ```bash

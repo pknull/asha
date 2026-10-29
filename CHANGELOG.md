@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased — rp 0.5.0, write 1.12.1, session 2.12.3: faster RP turns
+
+- `pc_change` fires on a real change in the PC (a GM `pc_changed` declaration,
+  a label-role change, or a stat moving inside a narrative role), not on every
+  rewritten role string. Participant roles are short labels; the STATE line
+  carries the ledger. SOURCE_LOG quotes are checked in code against their files
+  (`source_quotes`) and carry no line numbers.
+- `priced_stake` is declared only when a beat decides, applies, tests or
+  changes a price. A beat that rests on a price still cites it, and the
+  reviewer treats an uncited price as hard whatever the flag says.
+- Background review: a lint-clean consequential first draft ships at once as a
+  provisional beat, its review runs on a frozen copy, and the next turn settles
+  the verdict before drafting (`ship --provisional`, `settle`, `pending`,
+  turn.md Step 1b). A struck beat is replaced by a struck record and its state
+  restored under compare-and-swap; state findings are corrected at settle,
+  prose findings carry into the next draft. `ship`, `rotate`, `state --refresh`
+  and the summaries refuse over a provisional beat. Claude Code only
+  (`ASHA_HARNESS=claude`); other harnesses keep synchronous review;
+  `turnGate.background: false` turns it off.
+- `rp_gate.py brief` builds the GM brief from disk within `turnGate.briefBytes`
+  (80000): LIVE_STATE, the header, the Day Plan, the governing STATE line, the
+  GM DECISION and RULING lines of beats it drops, recent beats, carried
+  findings, and project keyed entries (`keyed-entries.md` beside `log_dir`, or
+  the canon register's `keyed_entries` row) whose quotes are verified. A quote
+  the brief carried whole counts as opened (`via: brief`). The session plugin's
+  RP routing reminder no longer asks for a hand-written scene state, and the
+  continuity reviewer reads BRIEF and echoes `review_key`.
+- `rp_gate.py session` reports `resume` readiness; `/rp:start resume`
+  continues an open session in a fresh Room, which the chair starts at a Day
+  Plan boundary (rp README, "Fresh Room at each Day Plan").
+- Tests: `test_rp_turn_records.py`, `test_rp_background.py`,
+  `test_rp_brief.py`, `test_rp_fresh_room.py` (2260 to 2345 Python tests).
+
 ## Unreleased — image 2.2.0: Blender 5.2 tool layer and 3D craft layer
 
 - New `image-blender` skill (`plugins/image/skills/blender/`): the tool layer
