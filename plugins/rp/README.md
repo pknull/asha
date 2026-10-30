@@ -1,6 +1,6 @@
 # RP Plugin
 
-**Version**: 0.5.1
+**Version**: 0.5.2
 
 Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification, and world/history lookup. The *verbs* of running a game live here; the *nouns* — canon, character registers, rulesets, the invariants projection — stay in the consuming project.
 
@@ -182,8 +182,12 @@ on the path as written, so a symlink inside the project is followed). Nothing
 that is not a source verifies: a struck draft, a log's frontmatter (the state
 being written), the gate's scratch under any dot directory, and the validator
 log. A quote found in an earlier beat's prose or STATE line verifies but is
-marked `history`, since play is a record, not a source; a GM DECISION or
-RULING line is not marked. An unverified quote is a `source_unverified`
+marked `history`, since play is a record, not a source. A line naming a GM
+DECISION or RULING in the singular is not marked, a STATE line or source
+record too (so a quote of the governing STATE line can be `via: brief`); one
+naming it only in the plural (`GM DECISIONS / RULINGS`, the live logs' own
+form) is not marked when the brief would list it as a decision, never a STATE
+line or a source record. An unverified quote is a `source_unverified`
 finding (fix: review): the reviewer judges it, and a `--final` check never
 holds a beat on it. Verified means the words stand in that file; whether they
 carry the claim is still the reviewer's call. On 19 real turns (257 quotes,
@@ -309,7 +313,8 @@ out, with ranges. Its own sections are `=== ... ===` lines, which no Markdown
 heading or frontmatter rule looks like. The report (`brief.json`) holds the
 Keeper's input's digest, the session file's `shipped` mark, and `reads`: the
 brief cut into line ranges of at most 40,000 bytes, which `/rp:turn` passes to
-the GM as `BRIEF_READS` so it reads them in one message (one Read is refused
+the GM and the continuity reviewer as `BRIEF_READS` so each reads them in one
+message (one Read is refused
 past 25,000 tokens, and one with no limit returns only a first part; the live
 log runs about 2.4 bytes a token, so a brief at the 80,000 budget is about 33k
 tokens). While both still match, `check` marks each verified SOURCE_LOG quote
@@ -322,7 +327,8 @@ the words). A `via: brief` quote counts as opened for the priced-stakes rule
 (2026-10-28); a decision line the brief cut to its head, a `NOT FOUND` keyed
 quote and the Keeper's input never make one. A review of a provisional beat gets
 a brief built the same way from the pending copy, so every path in it names the
-copy.
+copy; its report is kept beside it, and `ship` and `pending` print its `reads`
+(`review_brief_reads`, `brief_reads`).
 
 **Keyed entries** are the SillyTavern lorebook idea, owned by the project: the
 canon register's `keyed_entries` row (globs), else `keyed-entries.md` beside the

@@ -747,6 +747,169 @@ class GmStepsTests(unittest.TestCase):
         self.assertIn('quote (verified, Lore/World/Notes.md line 3): "opens only at dusk"', text)
 
 
+class FollowUpTests(unittest.TestCase):
+    """The follow-ups of the GM brief fix (master 38dcc3ed): the reviewer reads the brief as the GM does, a plural
+    decision line is a source as a singular one is, and the Keeper's input gives no quote."""
+
+    TURN = (f"KEEPER_INPUT:\nI wait.\n\nDRAFT:\nLiss hangs the kettle on its hook.\n\n"
+            f"Scene: Day 196, ~19:05, calm | Location: the kitchen | Present: Liss\n\nGM_SPAWN_LOG:\n- liss: no\n\n"
+            f"SOURCE_LOG:\npriced_stake_touched: true\n\nSCENE_STATE_DELTA:\nscene.time: \"19:05\"\n")
+    OTHER = "Lore/World/Other.md"
+
+    @staticmethod
+    def in_beat(p, n, text):
+        """text as a line of beat n's body, after its heading (where play is history)."""
+        body = p.read(LEGACY)
+        at = body.index("Liss sets down the axe.\n\n", body.index(f"### Beat {n}: ")) + len("Liss sets down the axe.\n\n")
+        (p.root / LEGACY).write_text(body[:at] + text + "\n\n" + body[at:], encoding="utf-8")
+
+    def sources(self, p, keeper, file, quote, **kw):
+        rp_gate.write_brief(p.root, LEGACY, keeper, **kw)
+        return ViaTests.check(self, p, keeper, ViaCountsAsOpenedTests.entry(file, quote))["quotes"][0]
+
+    def test_the_pending_review_keeps_the_review_briefs_reads(self):
+        # review 1 F5: the reviewer read the brief without BRIEF_READS, and _copy_brief dropped the report's reads
+        p = project(self)
+        body = p.read(LEGACY)
+        start = body.index("## Day Plan: Day 195")
+        body = body[:start] + "## Day Plan: Day 196 (Monday)\n\n### Clocks\n\n- ~05:50 first light\n\n" + "".join(
+            heavy_beat(n) for n in range(4111, 4131))
+        (p.root / LEGACY).write_text(body, encoding="utf-8")
+        # review 1 F3: no live brief, so reads can only come from the review's own report
+        self.assertFalse((p.root / rp_gate.BRIEF_REPORT).exists())
+        result = rp_gate.ship(p.root, LEGACY, turn_text=self.TURN, append_text=beat(4131, 196), beat="4131",
+                              provisional=True, max_rewrites=3)
+        [entry] = rp_gate.pending_reviews(p.root)
+        kept = (p.root / entry["brief"]).read_bytes().decode("utf-8")
+        self.assertGreater(len(entry["brief_reads"]), 1)  # a live-shaped brief takes more than one Read
+        self.assertEqual(entry["brief_reads"], rp_gate.brief_reads(kept))  # the report's reads, of the kept brief
+        self.assertEqual(sum(part["limit"] for part in entry["brief_reads"]), kept.count("\n"))
+        self.assertEqual(result["review_brief_reads"], entry["brief_reads"])
+        code, out, err = run("pending", "--project-dir", str(p.root))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["pending"][0]["brief_reads"], entry["brief_reads"])
+
+    def test_a_review_without_a_kept_brief_has_no_reads(self):
+        p = project(self)
+        with mock.patch.object(rp_gate, "build_brief", side_effect=ValueError("unreadable")):
+            result = rp_gate.ship(p.root, LEGACY, turn_text=self.TURN, append_text=beat(4131, 196), beat="4131",
+                                  provisional=True, max_rewrites=3)
+        [entry] = rp_gate.pending_reviews(p.root)
+        self.assertEqual((entry["brief"], entry["brief_reads"]), (None, None))
+        self.assertEqual((result["review_brief"], result["review_brief_reads"]), (None, None))
+
+    def test_a_kept_brief_never_sits_beside_another_builds_report(self):
+        p = project(self)
+        rp_gate.ship(p.root, LEGACY, turn_text=self.TURN, append_text=beat(4131, 196), beat="4131",
+                     provisional=True, max_rewrites=3)
+        [entry] = rp_gate.pending_reviews(p.root)
+        folder = (p.root / entry["brief"]).parent
+        for bad in ("{not json", '["reads"]', '{"reads": "1-400"}'):
+            with self.subTest(report=bad):
+                (folder / "brief.json").write_text(bad, encoding="utf-8")
+                self.assertIsNone(rp_gate.pending_reviews(p.root)[0]["brief_reads"])  # bad: bounded reads instead
+                self.assertIsNotNone(rp_gate.pending_reviews(p.root)[0]["brief"])
+        real = rp_gate._write_atomic
+        for name in ("brief.json", "brief.md"):  # review 1 F3: a failed write of either leaves no mixed pair
+            with self.subTest(fails=name):
+                rp_gate._copy_brief(p.root, folder, p.root / entry["review_session"], p.root / LEGACY,
+                                    {"KEEPER_INPUT": "I wait."}, None, "4131")
+                stale = [{"offset": 1, "limit": 1}]  # an older build's report, told apart from any real one
+                (folder / "brief.json").write_text(json.dumps({"reads": stale}), encoding="utf-8")
+
+                def failing(path, data):
+                    if path.name == name:
+                        raise OSError("disk full")
+                    real(path, data)
+                with mock.patch.object(rp_gate, "_write_atomic", side_effect=failing), self.assertRaises(OSError):
+                    rp_gate._copy_brief(p.root, folder, p.root / entry["review_session"], p.root / LEGACY,
+                                        {"KEEPER_INPUT": "I open the door."}, None, "4131")
+                self.assertFalse((folder / "brief.md").exists())  # the old brief went before the new report came
+                self.assertIsNone(rp_gate.pending_reviews(p.root)[0]["brief_reads"])
+
+    def test_a_plural_decision_line_in_a_beat_is_a_source_not_history(self):
+        # DECISION_RE took only the singular, so "GM DECISIONS / RULINGS (...)", the live log's own form, was play
+        p = project(self)
+        self.in_beat(p, 4111, "GM DECISIONS / RULINGS (FLAG FOR RATIFICATION): the shed stays locked till dusk.")
+        got = self.sources(p, "I wait.", LEGACY, "the shed stays locked till dusk", budget=100)
+        self.assertTrue(got["verified"])
+        self.assertIsNone(got["history"])
+        self.assertEqual(got["via"], "brief")  # the decision list carries it whole
+
+    def test_history_takes_a_decision_line_as_the_brief_lists_it(self):
+        lines = ["### Beat 4112: Day 195, ~08:52 (Monday). (Tier 1, roleplay-gm)"]
+        for label in ("GM DECISION", "GM DECISIONS", "GM RULING", "GM RULINGS", "GM DECISIONS / RULINGS", "RULING",
+                      "RULINGS (applied)"):
+            with self.subTest(label=label):
+                line = f"{label} (FLAG): the shed stays locked."
+                self.assertTrue(rp_gate._brief_decision(line))
+                self.assertIsNone(rp_gate._history(lines + [line], 1))
+        for line in ("Liss sets down the axe.", "Marr reads the rulings of the moot aloud.",
+                     "The RULINGSTONE stands in the yard."):
+            with self.subTest(line=line):  # play stays history, whatever its words
+                self.assertEqual(rp_gate._history(lines + [line], 1), "4112")
+        # review 1 F1: the brief's list takes no source record or STATE line, so the plural makes neither a source
+        # (live: 8 SOURCED lines of the 10-07 to 10-17 logs quote PC moves and dialogue beside "GM RULINGS")
+        for line in ('SOURCED: B2867 (PC move: "I grab her"; GM RULINGS: "no act is rendered")',
+                     "SOURCED (priced stake: the gate): B4100 GM DECISIONS (\"the gate is barred\")",
+                     "STATE: ~08:12 the shed locked (GM RULINGS B4100, FLAG)"):
+            with self.subTest(line=line):
+                self.assertFalse(rp_gate._brief_decision(line))
+                self.assertEqual(rp_gate._history(lines + [line], 1), "4112")
+        # review 2 F4: the singular keeps master's rule, a STATE line or source record too (the governing STATE line
+        # names the rulings in force, and a quote of it is via: brief)
+        for line in ("STATE: ~08:12 the shed locked (RULING B4100, FLAG)",
+                     "STATE: ~08:12 the shed locked; GM DECISION (B4100, FLAG): it stays locked",
+                     'SOURCED: B4100 GM DECISION ("the gate is barred")',
+                     "SOURCED: Notes.md l.3 (GM RULING: the shed bell carries to the yard.)"):
+            with self.subTest(line=line):
+                self.assertIsNone(rp_gate._history(lines + [line], 1))
+
+    def test_a_line_only_the_keepers_input_repeats_whole_gives_no_quote(self):
+        # the first check took the found line whole anywhere in the brief, the Keeper's input included
+        p = project(self)
+        (p.root / self.OTHER).write_text("# Other\n\nThe well rope frays in frost.\n", encoding="utf-8")
+        got = self.sources(p, "I say it aloud: The well rope frays in frost.", self.OTHER, "the well rope frays in frost")
+        self.assertTrue(got["verified"])
+        self.assertEqual(got["via"], "opened")
+
+    def test_a_keyed_quote_line_in_the_keepers_input_gives_no_quote(self):
+        p = project(self)
+        (p.root / self.OTHER).write_text("The well rope frays in frost.\n", encoding="utf-8")
+        keeper = f'I wait.\nquote (verified, {self.OTHER} line 1): "The well rope frays"'
+        got = self.sources(p, keeper, self.OTHER, "the well rope frays")
+        self.assertTrue(got["verified"])
+        self.assertEqual(got["via"], "opened")
+
+    def test_a_line_the_brief_carries_still_gives_its_quote_when_the_keeper_repeats_it(self):
+        p = project(self)
+        got = self.sources(p, "Register: plain sentences", LEGACY, "Register: plain sentences")
+        self.assertEqual((got["verified"], got["via"]), (True, "brief"))
+        got = self.sources(p, "I open the door: opens only at dusk", NOTES, "opens only at dusk")
+        self.assertEqual(got["via"], "brief")  # the Gate keyed entry's verified quote
+
+    def test_the_reviewer_reads_the_brief_in_one_message(self):
+        turn = self.read("plugins/rp/commands/turn.md")
+        prompt = turn.split("# 3c.", 1)[1].split("Receive VERDICT", 1)[0]
+        self.assertIn("BRIEF_READS: <the brief report's reads>", prompt)
+        self.assertIn("one message", prompt)
+        background = turn.split("After a provisional ship", 1)[1].split("Only when rotate said rotated", 1)[0]
+        self.assertIn("BRIEF_READS <review_brief_reads>", background)
+        collect = turn.split("### Step 1b", 1)[1].split("\n2. ", 1)[0]
+        self.assertIn("BRIEF_READS its `brief_reads`", collect)
+        reviewer = self.read("plugins/write/agents/continuity-reviewer.md")
+        inputs = reviewer.split("```yaml", 1)[1].split("```", 1)[0]
+        self.assertRegex(inputs, r"(?m)^BRIEF_READS:")
+        rule = next(line for line in reviewer.splitlines() if line.startswith("**BRIEF** is the file"))
+        for needle in ("`BRIEF_READS`", "one message", "`limit`"):
+            with self.subTest(needle=needle):
+                self.assertIn(needle, rule)
+
+    @staticmethod
+    def read(rel):
+        return (REPO / rel).read_text(encoding="utf-8")
+
+
 class ContractTests(unittest.TestCase):
     def read(self, rel):
         return (REPO / rel).read_text(encoding="utf-8")

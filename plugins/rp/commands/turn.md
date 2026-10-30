@@ -74,13 +74,13 @@ If any precondition fails, halt and inform the Keeper. Do not proceed.
 
 ### Step 1b: Collect a pending review (before anything is drafted)
 
-A beat is never drafted on top of a beat whose review is still out. For each `pending` entry (`key`, `beat`, `attempt`, `max_rewrites`, `keeper_input`, `review_session`, `turn`, `check`), settle it before Step 2. The same procedure runs when a background review's result reaches you while you are idle between turns (Claude Code wakes the session with it); there is then no new input to hold.
+A beat is never drafted on top of a beat whose review is still out. For each `pending` entry (`key`, `beat`, `attempt`, `max_rewrites`, `keeper_input`, `review_session`, `turn`, `check`, `brief`, `brief_reads`), settle it before Step 2. The same procedure runs when a background review's result reaches you while you are idle between turns (Claude Code wakes the session with it); there is then no new input to hold.
 
 1. The verdict is the background reviewer's YAML, whose `review_key` must equal `key`; a verdict naming another key is stale: drop it. While the review you spawned is still running, wait for it: tell the Keeper once, in one line, that Beat <beat>'s review is still running, then run, as many times as it takes up to ten minutes after the beat was shown (the entry's `age_s`; a review took up to six minutes on the measured days):
    ```bash
    ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" pending --project-dir . --wait 60
    ```
-   (the harness delivers a background result between commands). Run the review now, synchronously, only when it is known not to be coming: the spawn or the reviewer failed, this session never spawned it (a crash, a relaunched Room), or ten minutes have passed. Run it as 3c does, with DRAFT, KEEPER_INPUT and the logs from the entry's `turn` file, LINT from its `check` file (when there is one), SESSION_FILE `review_session`, BRIEF the entry's `brief` (when there is one) and LIVE_STATE its `live_state`, REWRITES_LEFT `max_rewrites` and REVIEW_KEY `key` (`pending` prints them: the state the beat was drafted against, never the live file, which now holds the beat). A background verdict that arrives after that is stale.
+   (the harness delivers a background result between commands). Run the review now, synchronously, only when it is known not to be coming: the spawn or the reviewer failed, this session never spawned it (a crash, a relaunched Room), or ten minutes have passed. Run it as 3c does, with DRAFT, KEEPER_INPUT and the logs from the entry's `turn` file, LINT from its `check` file (when there is one), SESSION_FILE `review_session`, BRIEF the entry's `brief` (when there is one), BRIEF_READS its `brief_reads` and LIVE_STATE its `live_state`, REWRITES_LEFT `max_rewrites` and REVIEW_KEY `key` (`pending` prints them: the state the beat was drafted against, never the live file, which now holds the beat). A background verdict that arrives after that is stale.
 2. Log it: `rp_gate.py log ... --path review --beat <beat> --attempt <attempt> --verdict <verdict> --violations <categories> --note "background <key>"`.
 3. Apply it with `settle` (one write; it prints `action`):
    ```bash
@@ -105,7 +105,7 @@ Write the Keeper's input, verbatim, to `Work/rp/.gate/input.md`, then run (add `
 ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" brief --project-dir . --session-file "<SESSION_FILE>" --input-file Work/rp/.gate/input.md
 ```
 
-It writes `Work/rp/.gate/brief.md`, built in code from disk (no model call) within `turnGate.briefBytes` (default 80000 bytes; about 33k tokens on the live Garret log, so it is read in the parts its report's `reads` names): the LIVE_STATE block; the current state (the frontmatter, the header, the run state's current entry, the governing STATE line, which is the read's last `STATE:` line); every Day Plan section of the current day; any findings carried from the last beat's background review; the GM DECISION and RULING lines of the beats it does not carry, plural forms too (never a STATE line, which is superseded, or a source record, `SOURCED` or `SOURCE_LOG`, which cites rulings); the keyed entries whose keys match the Keeper's input or the last three beats, each with its source and its quotes found there (and the priced-stakes rule, with the register's path, when the input matches its phrases, the same nudge the prompt hook gives where hooks run); and the beats of the continuity read, the last one always, then, after the keyed entries, the two before it and older ones newest first while the budget lasts, each without its STATE lines (the governing one is under the current state and supersedes the rest); a header section below the title whose heading marks it history (`(history:`, `(history;`, `(history,` or `(superseded`) is a pointer to its lines. It prints its report, also kept in `Work/rp/.gate/brief.json`: `bytes`, `over_budget`, `beats.carried` and `beats.dropped`, `keyed.matched`, `keyed.dropped` and `keyed.unverified`, `priced_input`, `state_line`, `header_history`, `reads` (the brief as Reads of at most 40,000 bytes, `{offset, limit}`, which 3a passes to the GM as `BRIEF_READS`), `live_state` (in the file), `provisional` and `warnings`.
+It writes `Work/rp/.gate/brief.md`, built in code from disk (no model call) within `turnGate.briefBytes` (default 80000 bytes; about 33k tokens on the live Garret log, so it is read in the parts its report's `reads` names): the LIVE_STATE block; the current state (the frontmatter, the header, the run state's current entry, the governing STATE line, which is the read's last `STATE:` line); every Day Plan section of the current day; any findings carried from the last beat's background review; the GM DECISION and RULING lines of the beats it does not carry, plural forms too (never a STATE line, which is superseded, or a source record, `SOURCED` or `SOURCE_LOG`, which cites rulings); the keyed entries whose keys match the Keeper's input or the last three beats, each with its source and its quotes found there (and the priced-stakes rule, with the register's path, when the input matches its phrases, the same nudge the prompt hook gives where hooks run); and the beats of the continuity read, the last one always, then, after the keyed entries, the two before it and older ones newest first while the budget lasts, each without its STATE lines (the governing one is under the current state and supersedes the rest); a header section below the title whose heading marks it history (`(history:`, `(history;`, `(history,` or `(superseded`) is a pointer to its lines. It prints its report, also kept in `Work/rp/.gate/brief.json`: `bytes`, `over_budget`, `beats.carried` and `beats.dropped`, `keyed.matched`, `keyed.dropped` and `keyed.unverified`, `priced_input`, `state_line`, `header_history`, `reads` (the brief as Reads of at most 40,000 bytes, `{offset, limit}`, which 3a passes to the GM and 3c to the reviewer as `BRIEF_READS`), `live_state` (in the file), `provisional` and `warnings`.
 
 Do not write a brief, a scene summary or direction for the GM yourself, and do not read what the brief carries: the GM reads it. A `warnings` entry about the keyed table (a bad key, an entry that never matches) is yours to fix between turns; `provisional` non-empty means Step 1b was skipped: go back to it. The brief is built from disk alone, so the same files give the same brief in any session.
 
@@ -261,6 +261,7 @@ LOOP:
       INVARIANTS_FILE: "Memory/invariants.md"
       SESSION_FILE: <SESSION_FILE>  (read its frontmatter, header and current Day Plan, and the LIVE_STATE day and earlier ranges, never the whole day)
       BRIEF: Work/rp/.gate/brief.md  # the brief the GM drafted from: its current state, Day Plan and beats
+      BRIEF_READS: <the brief report's reads>  # read BRIEF in one message: one Read per part (offset, limit)
       LIVE_STATE: <the brief report's live_state>  # current state; never from the invariants
       ATTEMPT_NUMBER: <ATTEMPT_NUMBER>
       REWRITES_LEFT: <MAX_REWRITES - REWRITES>
@@ -371,7 +372,8 @@ LOOP:
   append the beat or edit the frontmatter by hand. ship refuses while the
   file holds a provisional beat: collect it (Step 1b) first.
   A provisional ship refuses a rewrite and a beat that moves the fiction
-  day; it prints `key`, `review_session` and `pending`. The beat goes into
+  day; it prints `key`, `review_session`, `review_brief`, `review_brief_reads`
+  and `pending`. The beat goes into
   the log between rp-provisional marks and its delta is applied, so play
   goes on from it; the pending review keeps a byte copy of the file from
   before the ship, which is what the reviewer reads.
@@ -379,7 +381,8 @@ LOOP:
   After a provisional ship, once the draft is shown, spawn the 3c review in
   the background (Claude Code: the Task tool's run_in_background), with
   SESSION_FILE <review_session>, BRIEF <review_brief> (the brief, its
-  LIVE_STATE naming the copy), LIVE_STATE that block (the brief report's
+  LIVE_STATE naming the copy), BRIEF_READS <review_brief_reads> (its reads,
+  read as 3c says), LIVE_STATE that block (the brief report's
   live_state with <review_session> in place of SESSION_FILE), and
   REVIEW_KEY: <key>. The Keeper waits on none of it; Step 1b collects the
   verdict. If the spawn fails, run the review now, as 3c (the beat is shown

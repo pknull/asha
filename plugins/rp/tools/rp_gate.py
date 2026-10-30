@@ -1517,7 +1517,13 @@ QUOTE_MARKS = "\\\"'`*_\u2018\u2019\u201a\u201b\u201c\u201d\u201e\u00ab\u00bb"  
 DASHES = "\u2010\u2011\u2012\u2013\u2014\u2015\u2212"  # hyphens, en and em dashes, minus: read as "-"
 DASH_RE = re.compile(r" *-[- ]*")  # " - ", "--" and a dash with spaces: one "-"
 QUOTE_OPEN_RE = re.compile(r"""^(\s*(?:-\s+)?)(quote\s*:\s*)(["'])(.*)$""")
-DECISION_RE = re.compile(r"\bGM (?:DECISION|RULING)\b|\bRULING\b")
+# A GM decision or ruling, written down: a source, never play. The plural is the live logs' own form ("GM DECISIONS /
+# RULINGS (FLAG ...): ..."). The brief lists such lines (_brief_decision), never a STATE line or a source record.
+DECISION_RE = re.compile(r"\bGM (?:DECISIONS?|RULINGS?)\b|\bRULINGS?\b")
+# _history's rule from before the plural, kept as it was: any line naming one in the singular is no play, a STATE
+# line or source record too, so a quote of the governing STATE line (which names the rulings in force) is via:
+# brief. A STATE line naming them only in the plural stays play; the live logs hold none.
+SINGULAR_DECISION_RE = re.compile(r"\bGM (?:DECISION|RULING)\b|\bRULING\b")
 NOT_A_SOURCE = {"struck": "only in a struck draft, which is never a source",
                 "state": "only in the session frontmatter, the current state being written, not a source"}
 
@@ -1613,8 +1619,9 @@ def _source_text(path: Path, cache: dict):
 
 def _history(lines, i: int):
     """The beat whose prose or record line i of a log is in, or None (a Day Plan, a header, a beat's working,
-    a GM decision or ruling, a file that is not a log)."""
-    if lines is None or DECISION_RE.search(lines[i]):
+    a GM decision or ruling, a file that is not a log). A line naming one only in the plural is a decision as the
+    brief lists it: never a STATE line or a source record, which stay play."""
+    if lines is None or SINGULAR_DECISION_RE.search(lines[i]) or _brief_decision(lines[i]):
         return None
     for j in range(i, -1, -1):
         if HEADING_RE.match(lines[j]):
@@ -1807,9 +1814,6 @@ DECISION_LINE_MAX = 400  # bytes of a GM DECISION or RULING line from a beat not
 # into parts this size or less (even at 1.6 bytes a token), which the GM issues in one message.
 BRIEF_READ_BYTES = 40_000
 STATE_LINE_RE = re.compile(r"^\s*(?:[-*>]\s*)?\**STATE\**\s*:")  # "STATE: ~07:35 D199 ...", capitals only
-# The brief's decision lines also take the plural the logs write ("GM DECISIONS / RULINGS (FLAG ...): ..."); what
-# makes a line a source (DECISION_RE, for _history) is unchanged.
-BRIEF_DECISION_RE = re.compile(r"\bGM (?:DECISIONS?|RULINGS?)\b|\bRULINGS?\b")
 # A source record ("SOURCED: ...", "SOURCED (priced stake: ...):", "SOURCE_LOG ...") cites the rulings it names, even
 # with their labels ("l.436 GM RULING: the collar answers ..."), so it is no decision line; nor is a STATE line, which
 # the governing one supersedes.
@@ -1984,7 +1988,7 @@ def _brief_decision(line: str) -> bool:
     """A GM DECISION or RULING line, as the brief lists them for a beat it does not carry. Never a STATE line (the
     governing one supersedes it, and the logs carry a ruling in force forward in each) or a source record (it cites
     rulings whose own lines are the decisions)."""
-    return bool(BRIEF_DECISION_RE.search(line) and not HEADING_RE.match(line) and not STATE_LINE_RE.match(line)
+    return bool(DECISION_RE.search(line) and not HEADING_RE.match(line) and not STATE_LINE_RE.match(line)
                 and not SOURCE_RECORD_RE.match(line))
 
 
@@ -2263,10 +2267,10 @@ BRIEF_KEYED_RE = re.compile(r'^quote \(verified, (.+) line (\d+)\): "(.*)"\s*$')
 
 
 def _brief_for(project: Path, turn: dict):
-    """The current brief, when it was built for this turn's input, as {"text": its text normalised,
+    """The current brief, when it was built for this turn's input, as {"text": its own text normalised,
     "keyed": {(file, line): [each keyed quote verified there, normalised]}, "lines": {each of its own lines,
-    normalised: a decision list item without its "- Beat N, file line M: " head, the Keeper's input left out}};
-    else None."""
+    normalised: a decision list item without its "- Beat N, file line M: " head}}, the Keeper's input left out of
+    all three (it carries nothing); else None."""
     try:
         report = json.loads((project / BRIEF_REPORT).read_text(encoding="utf-8"))
         text = (project / BRIEF_FILE).read_text(encoding="utf-8")
@@ -2277,19 +2281,20 @@ def _brief_for(project: Path, turn: dict):
     lines = _read_lines(project / str(report.get("session") or "")) or []
     if _shipped_of("\n".join(lines[:2001])) != report.get("shipped"):
         return None  # built before a later beat shipped: another turn's brief with the same input
-    keyed, carried, keeper = {}, set(), None
+    keyed, carried, own, keeper = {}, set(), [], None
     for raw in text.splitlines():
-        m = BRIEF_KEYED_RE.match(raw)
-        if m:
-            keyed.setdefault((m.group(1), int(m.group(2))), []).append(_norm_quote(m.group(3)))
         if keeper is None and raw == "KEEPER_INPUT:":
             keeper = True  # the Keeper's input carries nothing: its lines are not the brief's
         elif keeper and raw.startswith("LIVE_STATE:"):
             keeper = False
         if not keeper:
+            own.append(raw)
+            m = BRIEF_KEYED_RE.match(raw)
+            if m:
+                keyed.setdefault((m.group(1), int(m.group(2))), []).append(_norm_quote(m.group(3)))
             item = BRIEF_DECISION_ITEM_RE.match(raw)
             carried.add(_norm_quote(item.group(1) if item else raw).strip())
-    return {"text": _norm_quote(text), "keyed": keyed, "lines": carried}
+    return {"text": _norm_quote("\n".join(own)), "keyed": keyed, "lines": carried}
 
 
 # ---------------------------------------------------------------- routing
@@ -3833,6 +3838,7 @@ def ship(project, session_file, *, turn_text: str, append_text=None, beat=None, 
                                                                                             snapshot[0].parent))
             kept = snapshot[0].parent / "brief.md"
             result["review_brief"] = _relative(project, kept) if kept.is_file() else None
+            result["review_brief_reads"] = _kept_reads(kept.parent)
 
     def make(old):
         if snapshot is not None and snapshot[1] is not None and old != snapshot[1]:  # moved after its copy
@@ -3996,13 +4002,27 @@ def _write_pending(project, path, rel, turn, turn_text, append_text, digest, mar
 
 def _copy_brief(project: Path, folder: Path, snapshot: Path, live: Path, turn: dict, config, label) -> None:
     """The brief for the review: built from the copy (the bytes this beat was drafted against) and this turn's
-    input, so every path, heading and beat tag in it names the copy; never a brief file that may be stale."""
+    input, so every path, heading and beat tag in it names the copy; never a brief file that may be stale. Its
+    report goes beside it, so the reviewer reads it in the parts the GM did (its reads)."""
     try:
-        text, _report = build_brief(project, _relative(project, snapshot), turn.get("KEEPER_INPUT", "") or "",
-                                    config=config or load_config(project), beat=label or None, source_dir=live.parent)
+        text, report = build_brief(project, _relative(project, snapshot), turn.get("KEEPER_INPUT", "") or "",
+                                   config=config or load_config(project), beat=label or None, source_dir=live.parent)
     except (OSError, ValueError):
         return  # the review then reads the copy's LIVE_STATE without a brief
+    (folder / "brief.md").unlink(missing_ok=True)  # never a brief beside another build's report
+    _write_atomic(folder / "brief.json", json.dumps(report, ensure_ascii=False).encode("utf-8"))
     _write_atomic(folder / "brief.md", text.encode("utf-8"))
+
+
+def _kept_reads(folder: Path):
+    """The reads of a pending review's brief, from its report; None without a brief or a report that names them."""
+    if not (folder / "brief.md").is_file():
+        return None
+    try:
+        reads = json.loads((folder / "brief.json").read_text(encoding="utf-8")).get("reads")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return reads if isinstance(reads, list) else None
 
 
 def _shipped_of(text: str) -> str:
@@ -4046,7 +4066,8 @@ def pending_reviews(project, session=None, detail=False, beats=LOG_DEFAULTS["pre
                       "turn": _relative(project, folder / "turn.md"),
                       "beat_text": _relative(project, folder / "beat.md"),
                       "check": _relative(project, folder / "check.json") if (folder / "check.json").is_file() else None,
-                      "brief": _relative(project, folder / "brief.md") if (folder / "brief.md").is_file() else None})
+                      "brief": _relative(project, folder / "brief.md") if (folder / "brief.md").is_file() else None,
+                      "brief_reads": _kept_reads(folder)})
         if detail:
             snapshot = found[-1]["review_session"]
             found[-1]["live_state"] = live_state_block(live_state(project, snapshot),
