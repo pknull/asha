@@ -1,6 +1,6 @@
 # RP Plugin
 
-**Version**: 0.5.0
+**Version**: 0.5.1
 
 Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification, and world/history lookup. The *verbs* of running a game live here; the *nouns* — canon, character registers, rulesets, the invariants projection — stay in the consuming project.
 
@@ -292,22 +292,37 @@ fresh session builds the same brief from the same files. In order, within
 `turnGate.briefBytes`: the LIVE_STATE block; the current state (frontmatter,
 header, the run state's current entry, and the governing STATE line, the last
 `STATE:` line of the read); every Day Plan section of the current day; findings
-carried from a soft background review; the GM DECISION and RULING lines of
-the beats it does not carry (they bind as canon does; each is cut to its first
-400 bytes, with its line, so a long one is a read away); the keyed entries that
-match; and the beats of the continuity read, the last three always, older ones
-newest first while the budget lasts. What must go in goes in even past the
-budget (`over_budget`); otherwise the brief never passes it. It ends with what
-it left out, with ranges. Its own sections are `=== ... ===` lines, which no
-Markdown heading or frontmatter rule looks like. The report (`brief.json`)
-holds the Keeper's input's digest and the session file's `shipped` mark; while
-both still match, `check` marks each verified SOURCE_LOG quote that is not
-history `via: brief` (the brief gave the GM its line from that file: the line
-whole, or a keyed entry's verified quote of it) or `via: opened` (it did not:
-the GM opened the file, or recalled the words). A `via: brief` quote counts as
-opened for the priced-stakes rule (2026-10-28); a decision line the brief cut
-to its head, a `NOT FOUND` keyed quote and the Keeper's input never make one. A review of a provisional beat gets a brief built the same way from the
-pending copy, so every path in it names the copy.
+carried from a soft background review; the GM DECISION and RULING lines of the
+beats it does not carry (they bind as canon does; each is cut to its first 400
+bytes, with its line, so a long one is a read away; plural forms, `GM DECISIONS
+/ RULINGS`, count; a STATE line does not, being superseded, nor a source record,
+`SOURCED` or `SOURCE_LOG`, which cites rulings); the keyed entries that match;
+and the beats of the continuity read, the last one always, then the two before
+it and older ones newest first while the budget lasts. A carried beat leaves its
+STATE lines out (the governing STATE line, under the current state, supersedes
+them: the logs carry a ruling in force forward in each), and a header section
+below the title whose heading marks it history (`(history:`, `(history;`,
+`(history,` or `(superseded`) is cut to its heading and a pointer to its lines
+(`header_history` in the report). What must go in goes in even past the budget
+(`over_budget`); otherwise the brief never passes it. It ends with what it left
+out, with ranges. Its own sections are `=== ... ===` lines, which no Markdown
+heading or frontmatter rule looks like. The report (`brief.json`) holds the
+Keeper's input's digest, the session file's `shipped` mark, and `reads`: the
+brief cut into line ranges of at most 40,000 bytes, which `/rp:turn` passes to
+the GM as `BRIEF_READS` so it reads them in one message (one Read is refused
+past 25,000 tokens, and one with no limit returns only a first part; the live
+log runs about 2.4 bytes a token, so a brief at the 80,000 budget is about 33k
+tokens). While both still match, `check` marks each verified SOURCE_LOG quote
+that is not history `via: brief` (the brief gave the GM its line from that file:
+the line whole, or another body line of that file, not play, that the brief
+carries as one of its own lines with the quote in order, such as the governing
+STATE line when an earlier one has the same words, or a keyed entry's verified
+quote of it) or `via: opened` (it did not: the GM opened the file, or recalled
+the words). A `via: brief` quote counts as opened for the priced-stakes rule
+(2026-10-28); a decision line the brief cut to its head, a `NOT FOUND` keyed
+quote and the Keeper's input never make one. A review of a provisional beat gets
+a brief built the same way from the pending copy, so every path in it names the
+copy.
 
 **Keyed entries** are the SillyTavern lorebook idea, owned by the project: the
 canon register's `keyed_entries` row (globs), else `keyed-entries.md` beside the

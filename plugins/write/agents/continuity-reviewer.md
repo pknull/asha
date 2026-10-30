@@ -252,7 +252,7 @@ Read the session file if needed to verify spawn directives.
 
 **Looks for:**
 
-- Recent register-installations (from SCENE_STATE.recent_installations, or, under /rp:turn, from BRIEF's current state and recent beats, where the session's header and STATE lines carry what is installed) that should be active in the current beat but are absent from the prose
+- Recent register-installations (from SCENE_STATE.recent_installations, or, under /rp:turn, from BRIEF's current state and recent beats, where the session's header and the governing STATE line, under the current state, carry what is installed; the brief leaves earlier STATE lines out) that should be active in the current beat but are absent from the prose
 - E.g., a body-state register installed last scene → this scene includes the action that register governs → its trace should land in the prose, even subtly, and doesn't
 - A persistent physiological register installed → a scene that should surface it passes without it
 - A conditioned-response register installed → the scene includes its trigger → the expected response (or its gated withholding) is not visible

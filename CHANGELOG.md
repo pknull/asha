@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — rp 0.5.1, write 1.12.2: the GM brief fits its budget
+
+- The GM brief fits its budget with its keyed entries (B4355: 107,696 bytes of
+  80,000 and none of 13 keyed entries; now 79,098 and 13). A carried beat leaves
+  out STATE lines the governing one supersedes; the decision list of beats not
+  carried takes `GM DECISIONS / RULINGS` and drops STATE lines and source
+  records (`SOURCED`, `SOURCE_LOG`), which cite rulings; a header section below
+  the title marked `(history:`, `;`, `,` or `(superseded` is a pointer; only the
+  last beat is always carried, the keyed entries go in before the two before it.
+  The report's `reads` cuts the brief into parts of at most 40,000 bytes (one
+  Read is refused past 25,000 tokens; a brief at the budget is about 33k), which
+  `/rp:turn` passes as `BRIEF_READS`; the GM reads them in one message, batches
+  independent Reads and Greps, and spawns character agents together when neither
+  answers the other. A quote the governing STATE line carries is `via: brief`
+  even where it first appears in an earlier STATE line, and only when the line
+  that gives it is carried whole, in order, and is not play.
+- Tests: 17 new in `test_rp_brief.py` (539 to 556 in the rp suites).
+
 ## Unreleased — rp 0.5.0, write 1.12.1, session 2.12.3: faster RP turns
 
 - `pc_change` fires on a real change in the PC (a GM `pc_changed` declaration,
