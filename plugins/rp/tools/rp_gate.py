@@ -91,7 +91,7 @@ DEFAULTS = {
     "deltaKeys": [],
     "consequentialPatterns": [],
     "background": True,
-    "briefBytes": 80_000,  # one Read on Claude Code (about 20k tokens)
+    "briefBytes": 80_000,  # about 33k tokens of a live log (B4355): read in the parts the report's reads name
 }
 # Harnesses where a command can run a subagent in the background and collect its result later. Claude Code only:
 # docs/session-hub.md records Claude's background agents; nothing in asha verifies it for Codex, Copilot or OpenCode,
@@ -1684,12 +1684,24 @@ def _not_a_source(root: str, path: Path) -> bool:
 def _brief_gave(brief: dict, root: str, path: Path, line: int, source, pieces) -> bool:
     """Whether the brief gave the GM this excerpt from its file: it carries the line the excerpt is on whole,
     or a keyed entry's verified quote of that file and line holds every piece. A decision line the brief cut
-    to its head, a NOT FOUND keyed quote and the Keeper's input carry nothing."""
-    text, starts = source[0], source[1]
-    end = starts[line + 1] - 1 if line + 1 < len(starts) else len(text)
-    whole = text[starts[line]:end].strip()
-    if whole and whole in brief["text"] and all(norm in brief["text"] for _raw, norm in pieces):
-        return True  # every piece too: one past a cut may sit on the next line, cut in the brief
+    to its head, a NOT FOUND keyed quote and the Keeper's input carry nothing. The line found first may be one the
+    brief leaves out (an earlier STATE line) while it carries, as one of its own lines, another body line of that
+    file, not play, that holds the excerpt in order (the governing STATE line): that line gave it."""
+    text, starts, zones, lines = source
+
+    def whole(k):
+        end = starts[k + 1] - 1 if k + 1 < len(starts) else len(text)
+        return text[starts[k]:end].strip()
+    if all(norm in brief["text"] for _raw, norm in pieces):  # every piece too: one past a cut may sit on the next line
+        if whole(line) and whole(line) in brief["text"]:
+            return True
+        for k in range(len(starts)):
+            if k == line or zones[k] != "body":
+                continue
+            other = whole(k)
+            if (other and other in brief.get("lines", ()) and _find_excerpt(pieces, other, [0], ["body"])[0] == 0
+                    and _history(lines, k) is None):
+                return True
     quotes = brief["keyed"].get((_relative(Path(root), path), line + 1), [])
     return any(all(norm in quote for _raw, norm in pieces) for quote in quotes)
 
@@ -1788,9 +1800,23 @@ KEYED_DEFAULT = "keyed-entries.md"
 PRICED_DEFAULT = "Lore/TTRPG/canon-sources.md"
 PRICED_FRAGMENT = PRICED_RULE.parent / "canon-priced-stakes.md"
 SCAN_BEATS = 3  # besides the Keeper's input, keys are matched in the last few beats
-ALWAYS_BEATS = 3  # the last beats every brief carries, whatever the budget
+WHOLE_BEATS = 1  # the last beats every brief carries, whatever the budget; the two before them go in after the keyed
 DECISION_LINE_MAX = 400  # bytes of a GM DECISION or RULING line from a beat not carried; the rest is a read away
+# One Read of the brief on Claude Code is refused past 25,000 tokens, and one with no limit returns only a first
+# part: a 79,098-byte live brief (B4355) was 33,091 tokens (2.4 bytes a token). The report's reads cut it
+# into parts this size or less (even at 1.6 bytes a token), which the GM issues in one message.
+BRIEF_READ_BYTES = 40_000
 STATE_LINE_RE = re.compile(r"^\s*(?:[-*>]\s*)?\**STATE\**\s*:")  # "STATE: ~07:35 D199 ...", capitals only
+# The brief's decision lines also take the plural the logs write ("GM DECISIONS / RULINGS (FLAG ...): ..."); what
+# makes a line a source (DECISION_RE, for _history) is unchanged.
+BRIEF_DECISION_RE = re.compile(r"\bGM (?:DECISIONS?|RULINGS?)\b|\bRULINGS?\b")
+# A source record ("SOURCED: ...", "SOURCED (priced stake: ...):", "SOURCE_LOG ...") cites the rulings it names, even
+# with their labels ("l.436 GM RULING: the collar answers ..."), so it is no decision line; nor is a STATE line, which
+# the governing one supersedes.
+SOURCE_RECORD_RE = re.compile(r"^\s*(?:[-*>]\s*)?\**SOURCE(?:D|_LOG)\b")
+BRIEF_DECISION_ITEM_RE = re.compile(r"^- Beat \S+, .+? line \d+: (.*)$")  # a line of the brief's decision list
+# "## Resume point (history: B4099 ...)", "(history; superseded ...)", "(superseded by ...)"; never the level-1 title
+HISTORY_HEADING_RE = re.compile(r"\(\s*(?:history\s*[:;,]|superseded\b)", re.I)
 KEYED_HEADING_RE = re.compile(r"^##\s+(.+?)\s*#*\s*$")
 KEYED_FIELD_RE = re.compile(r"^\s*(?:[-*]\s+)?(keys|source|quote|note|always)\s*:\s*(.*?)\s*$", re.I)
 KEY_SPLIT_RE = re.compile(r"\s*(/(?:[^/\\]|\\.)+/[a-z]*|[^,]+?)\s*(?:,|$)")
@@ -1930,8 +1956,9 @@ def _ranges_lines(entry: dict) -> list[int]:
 
 
 def _brief_beats(project: Path, cont, skip: set, cache: dict) -> list[dict]:
-    """The beats of the continuity read, oldest first, each with its text: struck drafts and the day's Day
-    Plans (skip, by (path, line)) left out."""
+    """The beats of the continuity read, oldest first, each with its text, its lines ((number, line)), its STATE
+    lines ((number, line)) and its decision lines: struck drafts and the day's Day Plans (skip, by (path, line))
+    left out."""
     beats = []
     entries = list((cont or {}).get("previous") or []) + ([cont["current"]] if (cont or {}).get("current") else [])
     for entry in entries:
@@ -1944,20 +1971,74 @@ def _brief_beats(project: Path, cont, skip: set, cache: dict) -> list[dict]:
             while numbers and not lines[numbers[-1] - 1].strip():
                 numbers.pop()
             if numbers:
+                states = [(n, lines[n - 1].strip()) for n in numbers if STATE_LINE_RE.match(lines[n - 1])]
                 beats.append({"beat": unit["beat"], "path": entry["path"], "start": numbers[0], "end": numbers[-1],
                               "text": "\n".join(lines[n - 1] for n in numbers).strip("\n"),
+                              "lines": [(n, lines[n - 1]) for n in numbers], "states": states,
                               "decisions": [(n, lines[n - 1].strip()) for n in numbers
-                                            if DECISION_RE.search(lines[n - 1]) and not HEADING_RE.match(lines[n - 1])]})
+                                            if _brief_decision(lines[n - 1])]})
     return beats
+
+
+def _brief_decision(line: str) -> bool:
+    """A GM DECISION or RULING line, as the brief lists them for a beat it does not carry. Never a STATE line (the
+    governing one supersedes it, and the logs carry a ruling in force forward in each) or a source record (it cites
+    rulings whose own lines are the decisions)."""
+    return bool(BRIEF_DECISION_RE.search(line) and not HEADING_RE.match(line) and not STATE_LINE_RE.match(line)
+                and not SOURCE_RECORD_RE.match(line))
 
 
 def _governing_state(beats: list[dict]):
     """The last STATE line in the read, newest beat first: the line that governs current state."""
     for beat in reversed(beats):
-        for offset, line in reversed(list(enumerate(beat["text"].splitlines()))):
-            if STATE_LINE_RE.match(line):
-                return {"path": beat["path"], "beat": beat["beat"], "text": line.strip()}
+        if beat["states"]:
+            line, text = beat["states"][-1]
+            return {"path": beat["path"], "beat": beat["beat"], "line": line, "text": text}
     return None
+
+
+def _header_text(body: list[str], numbers: list[int]) -> tuple:
+    """(text, sections): the header's lines, each section its own heading marks history ("(history ..." or
+    "(superseded ...") cut to its heading and a pointer to its lines, and those sections as {heading, lines}.
+    A section runs to the next heading of its level or above."""
+    fenced = _fenced([body[n - 1] for n in numbers])
+    out, sections, i = [], [], 0
+    while i < len(numbers):
+        line = body[numbers[i] - 1]
+        m = HEADING_RE.match(line) if i not in fenced else None
+        if not (m and len(m.group(1)) > 1 and HISTORY_HEADING_RE.search(m.group(2))):
+            out.append(line)
+            i += 1
+            continue
+        j = i + 1
+        while j < len(numbers):
+            h = HEADING_RE.match(body[numbers[j] - 1]) if j not in fenced else None
+            if h and len(h.group(1)) <= len(m.group(1)):
+                break
+            j += 1
+        inner = [n for n in numbers[i + 1:j] if body[n - 1].strip()]
+        out.append(line)
+        if inner:
+            span = f"{inner[0]}-{inner[-1]}"
+            sections.append({"heading": line.strip(), "lines": span})
+            out += ["", f"(History by its own heading: lines {span} are a read away, not carried.)", ""]
+        i = j
+    return "\n".join(out).strip("\n"), sections
+
+
+def brief_reads(text: str, limit: int = BRIEF_READ_BYTES) -> list[dict]:
+    """The brief as Read calls ({offset, limit}, by line), each part at most limit bytes (a longer line alone).
+    Lines are counted by newline, as a Read counts them: a form feed or a line separator ends no line."""
+    reads, offset, count, size = [], 1, 0, 0
+    for line in text.split("\n")[:-1] if text.endswith("\n") else text.split("\n"):
+        cost = len(line.encode("utf-8")) + 1
+        if count and size + cost > limit:
+            reads.append({"offset": offset, "limit": count})
+            offset, count, size = offset + count, 0, 0
+        count, size = count + 1, size + cost
+    if count:
+        reads.append({"offset": offset, "limit": count})
+    return reads
 
 
 def keeper_digest(text: str) -> str:
@@ -2005,7 +2086,8 @@ def build_brief(project, session_file, keeper_input: str, *, config=None, budget
             f"Built by rp_gate.py brief from the files on disk (no model call), within {budget} bytes. It carries "
             "what this beat starts from. Cite the file each fact comes from (every section names it), never this "
             "brief. When the beat rests on something it does not carry, open the source; what it left out is listed "
-            "at the end.", "", f"SESSION_FILE: {rel}"]
+            "at the end. Earlier STATE lines are left out (the governing STATE line supersedes them), and a header "
+            "section its own heading marks history is a pointer to its lines.", "", f"SESSION_FILE: {rel}"]
     if next_beat:
         head.append(f"NEXT_BEAT: {next_beat}")
     head += ["KEEPER_INPUT:", keeper_input.strip(), "", live_state_block(state, cont, rel)]
@@ -2016,9 +2098,11 @@ def build_brief(project, session_file, keeper_input: str, *, config=None, budget
         fm = state["frontmatter"]
         current += ["", f"== Frontmatter ({rel} lines {fm['start']}-{fm['end']}) ==",
                     text_of({"path": rel, **fm})]
+    report["header_history"] = []
     if state.get("header"):
-        current += ["", f"== Header ({rel} lines {_ranges_text(state['header'])}) ==",
-                    text_of({"path": rel, **state["header"]})]
+        numbers = [n for n in _ranges_lines(state["header"]) if 0 < n <= len(lines)]
+        header, report["header_history"] = _header_text(lines, numbers)
+        current += ["", f"== Header ({rel} lines {_ranges_text(state['header'])}) ==", header]
     run_state = state.get("run_state")
     if run_state and run_state.get("current") and not run_state.get("generated"):
         cur = run_state["current"]
@@ -2086,12 +2170,22 @@ def build_brief(project, session_file, keeper_input: str, *, config=None, budget
     report["keyed"] = {"tables": tables, "entries": len(entries), "matched": [], "dropped": [],
                        "unverified": [k["id"] for k in keyed if any(not q["verified"] for q in k["quotes"])]}
 
-    # The budget: what must go in (the GM decisions and rulings of beats not carried among it), then the keyed
-    # entries, best first, then the older beats, newest first; then exact, dropping the last optional piece added
-    # until the whole brief fits.
-    always = beats[-ALWAYS_BEATS:]
-    rest = beats[:-ALWAYS_BEATS] if len(beats) > ALWAYS_BEATS else []
-    beat_text = lambda b: f"<!-- Beat {b['beat']}: {b['path']} lines {b['start']}-{b['end']} -->\n{b['text']}"  # noqa: E731
+    # The budget: what must go in (the last beat, and the GM decisions and rulings of beats not carried), then the
+    # keyed entries, best first, then the beats before the last, newest first; then exact, dropping the last
+    # optional piece added until the whole brief fits. A carried beat leaves its STATE lines out: the governing
+    # one is under Current state, and it supersedes the rest.
+    always = beats[-WHOLE_BEATS:]
+    rest = beats[:-WHOLE_BEATS] if len(beats) > WHOLE_BEATS else []
+
+    def beat_text(b):
+        left = {n for n, _line in b["states"]}
+        notes = [f"STATE line {n} " + ("is the governing STATE line, under Current state"
+                                       if governing and (b["path"], n) == (governing["path"], governing["line"])
+                                       else "left out: superseded by the governing STATE line")
+                 for n, _line in b["states"]]
+        body = "\n".join(line for n, line in b["lines"] if n not in left).strip("\n")
+        tail = f"; {'; '.join(notes)}" if notes else ""
+        return f"<!-- Beat {b['beat']}: {b['path']} lines {b['start']}-{b['end']}{tail} -->\n{body}"
     decisions = {id(b): b["decisions"] for b in rest}
 
     def decision_line(b, item):
@@ -2146,7 +2240,7 @@ def build_brief(project, session_file, keeper_input: str, *, config=None, budget
                                   for k in keyed if k in chosen]
     report["keyed"]["dropped"] = [k["id"] for k in keyed if k not in chosen]
     report.update(bytes=len(text.encode("utf-8")), over_budget=len(text.encode("utf-8")) > budget,
-                  next_beat=next_beat, shipped=_shipped_of("\n".join(lines[:2001])),
+                  reads=brief_reads(text), next_beat=next_beat, shipped=_shipped_of("\n".join(lines[:2001])),
                   decisions=sum(len(decisions.get(id(b), [])) for b in dropped),
                   beats={"carried": [b["beat"] for b in carried_beats],
                          "dropped": [{"beat": b["beat"], "path": b["path"], "lines": f"{b['start']}-{b['end']}"}
@@ -2170,7 +2264,9 @@ BRIEF_KEYED_RE = re.compile(r'^quote \(verified, (.+) line (\d+)\): "(.*)"\s*$')
 
 def _brief_for(project: Path, turn: dict):
     """The current brief, when it was built for this turn's input, as {"text": its text normalised,
-    "keyed": {(file, line): [each keyed quote verified there, normalised]}}; else None."""
+    "keyed": {(file, line): [each keyed quote verified there, normalised]}, "lines": {each of its own lines,
+    normalised: a decision list item without its "- Beat N, file line M: " head, the Keeper's input left out}};
+    else None."""
     try:
         report = json.loads((project / BRIEF_REPORT).read_text(encoding="utf-8"))
         text = (project / BRIEF_FILE).read_text(encoding="utf-8")
@@ -2181,12 +2277,19 @@ def _brief_for(project: Path, turn: dict):
     lines = _read_lines(project / str(report.get("session") or "")) or []
     if _shipped_of("\n".join(lines[:2001])) != report.get("shipped"):
         return None  # built before a later beat shipped: another turn's brief with the same input
-    keyed = {}
+    keyed, carried, keeper = {}, set(), None
     for raw in text.splitlines():
         m = BRIEF_KEYED_RE.match(raw)
         if m:
             keyed.setdefault((m.group(1), int(m.group(2))), []).append(_norm_quote(m.group(3)))
-    return {"text": _norm_quote(text), "keyed": keyed}
+        if keeper is None and raw == "KEEPER_INPUT:":
+            keeper = True  # the Keeper's input carries nothing: its lines are not the brief's
+        elif keeper and raw.startswith("LIVE_STATE:"):
+            keeper = False
+        if not keeper:
+            item = BRIEF_DECISION_ITEM_RE.match(raw)
+            carried.add(_norm_quote(item.group(1) if item else raw).strip())
+    return {"text": _norm_quote(text), "keyed": keyed, "lines": carried}
 
 
 # ---------------------------------------------------------------- routing

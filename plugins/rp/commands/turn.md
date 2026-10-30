@@ -105,7 +105,7 @@ Write the Keeper's input, verbatim, to `Work/rp/.gate/input.md`, then run (add `
 ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" brief --project-dir . --session-file "<SESSION_FILE>" --input-file Work/rp/.gate/input.md
 ```
 
-It writes `Work/rp/.gate/brief.md`, built in code from disk (no model call) within `turnGate.briefBytes` (default 80000 bytes, about 20k tokens, one Read): the LIVE_STATE block; the current state (the frontmatter, the header, the run state's current entry, the governing STATE line, which is the read's last `STATE:` line); every Day Plan section of the current day; any findings carried from the last beat's background review; the GM DECISION and RULING lines of the beats it does not carry; the keyed entries whose keys match the Keeper's input or the last three beats, each with its source and its quotes found there (and the priced-stakes rule, with the register's path, when the input matches its phrases, the same nudge the prompt hook gives where hooks run); and the beats of the continuity read, the last three always and older ones newest first while the budget lasts. It prints its report, also kept in `Work/rp/.gate/brief.json`: `bytes`, `over_budget`, `beats.carried` and `beats.dropped`, `keyed.matched`, `keyed.dropped` and `keyed.unverified`, `priced_input`, `state_line`, `live_state` (in the file), `provisional` and `warnings`.
+It writes `Work/rp/.gate/brief.md`, built in code from disk (no model call) within `turnGate.briefBytes` (default 80000 bytes; about 33k tokens on the live Garret log, so it is read in the parts its report's `reads` names): the LIVE_STATE block; the current state (the frontmatter, the header, the run state's current entry, the governing STATE line, which is the read's last `STATE:` line); every Day Plan section of the current day; any findings carried from the last beat's background review; the GM DECISION and RULING lines of the beats it does not carry, plural forms too (never a STATE line, which is superseded, or a source record, `SOURCED` or `SOURCE_LOG`, which cites rulings); the keyed entries whose keys match the Keeper's input or the last three beats, each with its source and its quotes found there (and the priced-stakes rule, with the register's path, when the input matches its phrases, the same nudge the prompt hook gives where hooks run); and the beats of the continuity read, the last one always, then, after the keyed entries, the two before it and older ones newest first while the budget lasts, each without its STATE lines (the governing one is under the current state and supersedes the rest); a header section below the title whose heading marks it history (`(history:`, `(history;`, `(history,` or `(superseded`) is a pointer to its lines. It prints its report, also kept in `Work/rp/.gate/brief.json`: `bytes`, `over_budget`, `beats.carried` and `beats.dropped`, `keyed.matched`, `keyed.dropped` and `keyed.unverified`, `priced_input`, `state_line`, `header_history`, `reads` (the brief as Reads of at most 40,000 bytes, `{offset, limit}`, which 3a passes to the GM as `BRIEF_READS`), `live_state` (in the file), `provisional` and `warnings`.
 
 Do not write a brief, a scene summary or direction for the GM yourself, and do not read what the brief carries: the GM reads it. A `warnings` entry about the keyed table (a bad key, an entry that never matches) is yours to fix between turns; `provisional` non-empty means Step 1b was skipped: go back to it. The brief is built from disk alone, so the same files give the same brief in any session.
 
@@ -145,10 +145,14 @@ LOOP:
       SESSION_FILE: <SESSION_FILE>
       BRIEF: Work/rp/.gate/brief.md
       LIVE_STATE: <the brief report's live_state>
+      BRIEF_READS: <the brief report's reads>
       ATTEMPT_NUMBER: <ATTEMPT_NUMBER>
       PRIOR_VIOLATIONS: <PRIOR_VIOLATIONS if attempt > 1>
 
-      Read BRIEF first: built for this turn from disk, it carries the
+      Read BRIEF first, in one message: one Read per BRIEF_READS part
+      (its offset and limit), all together. A Read with no limit of a
+      large file returns only its first part; one past 25,000 tokens is
+      refused. Built for this turn from disk, it carries the
       current state, the Day Plan, the recent beats and the keyed entries
       that match this input, each naming its file. Cite the file a fact
       comes from, never the brief; open a source or a beat it does not
@@ -160,6 +164,16 @@ LOOP:
       where, the day, stats, what is on the PC, standing facts) comes from
       the brief and the LIVE_STATE ranges it names, never from
       Memory/invariants.md, which holds static canon.
+
+      Batch tool calls: after BRIEF, issue in one message every Read and
+      Grep that does not wait on another's result, and check the
+      SOURCE_LOG quotes the brief does not give you in one more message
+      (one Grep per file, quotes as alternatives, their ( ) [ ] . * + ?
+      | escaped). A quote the brief
+      verified, or a line it carries whole, needs no search. Spawn the
+      character agents of one trigger in one message when
+      neither answers the other; in turn only when one's answer is
+      the other's trigger.
 
       Draft the GM response for this turn. If PRIOR_VIOLATIONS is present,
       the previous draft failed validation. Use the suggested_fix entries
