@@ -6,6 +6,7 @@ draft; it decides whether a model reviewer is worth spending on the beat.
 
   session     print the live session file (marker first, never the clock), where
               its live state is, the day's continuity read, and any warnings
+  turn        write the gate's turn file from the GM's final message: its five blocks, in order, each once
   check       lint one GM turn, route it, append the lint (and skipped) lines
   rotate      before a beat ships: move to the next fiction day's log file, then write the turn's struck drafts
   strike      keep a draft the gate rejected, for rotate to write as a STRUCK block
@@ -867,7 +868,13 @@ TITLES = {"The", "A", "An", "Dr", "Mr", "Mrs", "Ms", "Mx", "Miss", "Lady", "Lord
           "Mme", "Mlle",
           # pronouns and determiners are never names, even capitalised
           "He", "She", "It", "They", "We", "You", "I", "Him", "Her", "Them", "Us", "Me", "His", "Hers", "Its",
-          "Their", "Theirs", "Our", "Ours", "Your", "Yours", "My", "Mine", "This", "That", "These", "Those"}
+          "Their", "Theirs", "Our", "Ours", "Your", "Yours", "My", "Mine", "This", "That", "These", "Those",
+          # role labels are not names: "PC move (B4378)", a file stem "New PC - Listener Recruit"
+          "PC", "NPC", "GM", "DM"}
+# An epithet is one name, not a list of people: "Shah of Fire Serpents", "Hypnos, the Dreamweaver",
+# "New PC - Listener Recruit". Its words match only together; turnGate.cast takes a short form.
+EPITHET_RE = re.compile(r"\s(?:of|the|and|in|at|to|on|for|from|with|by|de|du|von|van|der|den|del|della|di|da"
+                        r"|la|le|el|al|bin|ibn)\s|,|\s[-\u2013\u2014]\s")
 TOKEN_RE = re.compile(r"[^\W\d_][\w'’-]*")
 NOBODY = {"", "none", "nobody", "no one", "noone", "alone", "empty", "-", "etc", "others"}
 ABBREVIATIONS = ("Mr|Mrs|Ms|Mx|Dr|St|Mt|Jr|Sr|Capt|Cpt|Col|Gen|Lt|Sgt|Cpl|Maj|Adm|Fr|Rev|Prof|Hon|Gov|Sen"
@@ -1091,6 +1098,7 @@ def _tokens_regex(cast: list[str]):
     variants = set()
     for name in cast:
         full = " ".join(re.sub(r"\([^()]*\)", " ", name).replace("_", " ").split())
+        epithet = bool(EPITHET_RE.search(" ".join(re.split(r"[-\s]+", full)) if full == full.lower() else full))
         if full and full == full.lower():  # a file stem like "ildric-marr"
             full = " ".join(w[:1].upper() + w[1:] for w in re.split(r"[-\s]+", full) if w)
         if len(name_tokens(full)) > 1 and " " in full:
@@ -1098,6 +1106,8 @@ def _tokens_regex(cast: list[str]):
         titled = re.match(r"(?i)(the|a|an)\s+(.*)", full)
         if titled:  # "The Frost Keeper" is a title: its words are not names
             variants.update({full, full.upper(), f"the {titled.group(2)}", titled.group(2)})
+            continue
+        if epithet:  # "Shah of Fire Serpents": "Fire" is not a person
             continue
         if not name_tokens(full) and re.fullmatch(r"[A-Z][a-z]+", full):
             variants.update({full, full.upper()})  # a title-only name: "Captain", "Mother"
@@ -1110,6 +1120,23 @@ def _tokens_regex(cast: list[str]):
     if not variants:
         return None
     return re.compile(r"\b(?:%s)\b" % "|".join(sorted(map(re.escape, variants), key=len, reverse=True)))
+
+
+def _page(lines: list[str], keeper: str) -> str:
+    """The prose the presence check reads.
+
+    The GM's working before the beat's heading (a PRE-COMMIT block: its notes, its
+    STATE, "LISS (offstage): ...") is not the page, and nor is a heading; without a
+    beat heading the whole draft is. The Keeper's input echoed as the PC's move
+    ("**PC move (B4377):** ...") is the Keeper's, read like a quotation.
+    """
+    last = max((i for i, line in enumerate(lines) if parse_beat_heading(line)), default=-1)
+    text = "\n".join(line for line in lines[last + 1:] if not HEADING_RE.match(line))
+    words = keeper.split()
+    if words:
+        echo = re.compile(r"(?m)^[ \t]*(?:[*_]*[^\n:*_]{1,40}:[*_]*[ \t]*)?(%s)[ \t]*$" % r"\s+".join(map(re.escape, words)))
+        text = echo.sub(lambda m: m.group(0)[:m.start(1) - m.start(0)] + " «Q». ", text)
+    return text
 
 
 def _anchor(draft: str, findings: list) -> dict | None:
@@ -1390,16 +1417,18 @@ def lint(turn: dict, scene: dict, config: dict, project, brief=None) -> dict:
     # has arrived; anyone else must arrive on the page or send word.
     from_start = list(scene["participants"]) + ([pc] if pc else [])
     newcomers = [n for n in present if not any(same_person(n, p) for p in from_start)]
-    body = "\n".join(line[:ANCHOR_START_RE.search(line).start()] if ANCHOR_LINE_RE.search(line) else line
-                     for line in draft.splitlines())
+    body_lines = [line[:ANCHOR_START_RE.search(line).start()] if ANCHOR_LINE_RE.search(line) else line
+                  for line in draft.splitlines()]
+    body = "\n".join(body_lines)
     narration = QUOTE_RE.sub(_quote, body.replace("*", "").replace("_", ""))
+    page = QUOTE_RE.sub(_quote, _page(body_lines, turn.get("KEEPER_INPUT", "")).replace("*", "").replace("_", ""))
     tokens_re = _tokens_regex(_cast(project, config, from_start + present))
     hard = set()  # names a common word cannot excuse: the scene's people and turnGate.cast
     for name in from_start + present + list(config["cast"]):
         hard |= name_tokens(name) | {_plain(name)}
     done = set()
     lowercase = set(re.findall(r"\b[a-z][\w'’-]*", narration))
-    sentences = [s for s in SENTENCE_RE.split(narration) if s.strip()] if tokens_re else []
+    sentences = [s for s in SENTENCE_RE.split(page) if s.strip()] if tokens_re else []
     for index, sentence in enumerate(sentences):
         after_quote = index > 0 and sentences[index - 1].rstrip().endswith("«Q».")
         for m in tokens_re.finditer(sentence):
@@ -1409,6 +1438,8 @@ def lint(turn: dict, scene: dict, config: dict, project, brief=None) -> dict:
             if (not sentence[:m.start()].strip() and not after_quote and not name.isupper()
                     and name.lower() in lowercase and name.lower() not in hard):
                 continue  # "Frost runs along the wall" where the draft also says "frost"
+            if name.isupper() and name.lower() in lowercase and name.lower() not in hard:
+                continue  # "BY THE FIRE" in the GM's capitals, where the draft also says "fire"
             if _excused(sentence, m.start(), m.end(), tokens_re):
                 continue
             canonical = name[:1] + name[1:].lower() if name.isupper() else name
@@ -5320,6 +5351,141 @@ def cmd_check(args) -> int:
 CHECK_FILE = "Work/rp/.gate/check.json"  # the last check's output, for a review rerun from a pending review
 
 
+# ------------------------------------------------------------ the turn file
+# /rp:turn writes the gate's turn file from the GM's final message by command,
+# never by hand: the five headed blocks, in order, each once. The message may
+# open with KEEPER_INPUT, with DRAFT, or with the draft itself before
+# GM_SPAWN_LOG; a sentence to the Room before a KEEPER_INPUT or DRAFT header is
+# dropped. The Keeper's input comes from the file Step 2 wrote, else from the
+# message. A message with no GM block, a block twice or blocks out of order is
+# refused and nothing is written: the GM's output is at fault, not the file.
+
+TURN_FILE = "Work/rp/.gate/turn.md"
+INPUT_FILE = "Work/rp/.gate/input.md"
+GM_BLOCKS = ("GM_SPAWN_LOG", "SOURCE_LOG", "SCENE_STATE_DELTA")
+
+
+class _NoBlock(ValueError):
+    pass
+
+
+def gm_message_blocks(text: str) -> dict:
+    """The GM message's sections and the lines dropped before them, or _NoBlock."""
+    lines = YAML_BREAK_RE.split(text)
+    heads = [(i, m.group(1), m.group(2).strip()) for i, m in ((i, SECTION_RE.match(line)) for i, line in enumerate(lines))
+             if m]
+    names = [name for _i, name, _rest in heads]
+    for name in SECTIONS:
+        if names.count(name) > 1:
+            raise _NoBlock(f"the message carries {names.count(name)} {name} blocks; one is expected")
+    missing = [name for name in GM_BLOCKS if name not in names]
+    if missing:
+        raise _NoBlock(f"no GM block: the message has no {', '.join(missing)} header")
+    if names != [name for name in SECTIONS if name in names]:
+        raise _NoBlock(f"the GM blocks are out of order: {', '.join(names)}")
+    sections = {}
+    for n, (i, name, rest) in enumerate(heads):
+        stop = heads[n + 1][0] if n + 1 < len(heads) else len(lines)
+        body = ([rest] if rest not in ("", "|", ">") else []) + lines[i + 1:stop]
+        sections[name] = "\n".join(body).strip("\n").rstrip()
+    first = heads[0][0]
+    if heads[0][1] in ("KEEPER_INPUT", "DRAFT"):
+        dropped = sum(1 for line in lines[:first] if line.strip())
+    else:  # the draft itself opens the message
+        sections["DRAFT"], dropped = "\n".join(lines[:first]).strip("\n").rstrip(), 0
+    if not sections.get("DRAFT", "").strip():
+        raise _NoBlock("the draft is empty")
+    return {"sections": sections, "dropped": dropped}
+
+
+def claude_messages(text: str) -> list[str]:
+    """Claude Code only: the texts a task's JSONL hands back, in order: each assistant message's text blocks, the
+    string `message` of any tool call it makes (the GM's handback), and a stream's type: result line. The GM's message
+    is the last of them that carries its blocks: a late alert can wake it after the handback ("Nothing left to do")."""
+    found = []
+    for raw in text.splitlines():
+        if not raw.strip():
+            continue
+        try:
+            entry = json.loads(raw)
+        except ValueError:
+            raise _NoBlock("not JSONL: a line is not JSON") from None
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("type") == "result" and isinstance(entry.get("result"), str):
+            found.append(entry["result"])
+        message = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+        if entry.get("type") == "assistant" or message.get("role") == "assistant":
+            content = message.get("content")
+            blocks = [{"type": "text", "text": content}] if isinstance(content, str) else (
+                content if isinstance(content, list) else [])
+            texts = [b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"]
+            joined = "\n".join(part for part in texts if part).strip()
+            if joined:
+                found.append(joined)
+            for b in blocks:
+                if isinstance(b, dict) and b.get("type") == "tool_use" and isinstance(b.get("input"), dict):
+                    handed = b["input"].get("message")
+                    if isinstance(handed, str) and handed.strip():
+                        found.append(handed)
+    if not found:
+        raise _NoBlock("no assistant text in the JSONL")
+    return found
+
+
+def cmd_turn(args) -> int:
+    project = Path(args.project_dir)  # the files are read and written relative to it
+    try:
+        text = sys.stdin.read() if args.from_file == "-" else (project / args.from_file).read_text(encoding="utf-8",
+                                                                                                     errors="replace")
+        keeper = (project / args.input_file).read_text(encoding="utf-8", errors="replace") if args.input_file else None
+    except OSError as exc:
+        print(f"ERROR: cannot read: {exc}", file=sys.stderr)
+        return 2
+    try:
+        if args.format == "claude-jsonl":
+            errors = []
+            for candidate in reversed(claude_messages(text)):
+                try:
+                    found = gm_message_blocks(candidate)
+                    break
+                except _NoBlock as exc:
+                    errors.append(exc)
+            else:
+                raise _NoBlock(f"no GM block in the JSONL's messages (the last one: {errors[0]})")
+        else:
+            found = gm_message_blocks(text)
+    except _NoBlock as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    sections, warnings = found["sections"], []
+    if keeper is not None and not keeper.strip():
+        print(f"ERROR: the input file {args.input_file} is empty", file=sys.stderr)
+        return 2
+    if keeper is not None:
+        given = sections.get("KEEPER_INPUT", "")
+        if given.strip() and " ".join(given.split()) != " ".join(keeper.split()):
+            warnings.append("the message's KEEPER_INPUT differs from --input-file; the file is written")
+        sections["KEEPER_INPUT"], source = keeper.strip("\n").rstrip(), "file"
+    elif sections.get("KEEPER_INPUT", "").strip():
+        source = "message"
+    else:
+        print("ERROR: no KEEPER_INPUT: the message has none; pass --input-file", file=sys.stderr)
+        return 2
+    out = project / (args.out or TURN_FILE)
+    body = "\n\n".join(f"{name}:\n{sections.get(name, '')}" for name in SECTIONS) + "\n"
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        _write_atomic(out, body.encode("utf-8"))
+    except OSError as exc:
+        print(f"ERROR: cannot write {out}: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps({"path": str(out), "format": args.format, "keeper_input": source,
+                      "sections": {name: len(sections.get(name, "").splitlines()) for name in SECTIONS},
+                      "dropped_before": found["dropped"], "warnings": warnings}, ensure_ascii=False, indent=1))
+    return 0
+
+
 def _turn_digest(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
 
@@ -5354,6 +5520,13 @@ def main(argv=None) -> int:
     s = sub.add_parser("session", help="print the live session file and the gate settings")
     s.add_argument("--project-dir", default=".")
     s.add_argument("--config", help=f"mode file (default: {MODE_FILE})")
+    u = sub.add_parser("turn", help="write the gate's turn file from the GM's final message: its five blocks, in order")
+    u.add_argument("--project-dir", default=".")
+    u.add_argument("--from", dest="from_file", required=True, help="the GM's final message as text, or - for stdin")
+    u.add_argument("--format", choices=("text", "claude-jsonl"), default="text",
+                   help="claude-jsonl (Claude Code only): a task's JSONL; its final assistant text is the message")
+    u.add_argument("--input-file", help=f"the Keeper's input as Step 2 wrote it ({INPUT_FILE}), written as KEEPER_INPUT")
+    u.add_argument("--out", help=f"the turn file to write (default {TURN_FILE})")
     c = sub.add_parser("check", help="lint and route one GM turn")
     c.add_argument("--project-dir", default=".")
     c.add_argument("--session-file")
@@ -5466,7 +5639,7 @@ def main(argv=None) -> int:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return int(exc.code or 0) if exc.code not in (None, 0) else 0
-    commands = {"session": cmd_session, "check": cmd_check, "log": cmd_log, "invariants": cmd_invariants,
+    commands = {"session": cmd_session, "turn": cmd_turn, "check": cmd_check, "log": cmd_log, "invariants": cmd_invariants,
                 "rotate": cmd_rotate, "strike": cmd_strike, "split": cmd_split, "ship": cmd_ship,
                 "state": cmd_state, "summary": cmd_summary, "settle": cmd_settle, "pending": cmd_pending,
                 "brief": cmd_brief}

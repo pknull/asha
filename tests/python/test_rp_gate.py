@@ -466,6 +466,69 @@ class LintTests(unittest.TestCase):
                            project=p)
         self.assertEqual(self.checks(result), ["presence"])
 
+    # --- presence false positives (Garret B4377/B4378, 2026-10-30) ---
+
+    def test_epithet_file_names_match_only_in_full(self):
+        # "Shah of Fire Serpents.md" made "Fire" a person: "BY THE FIRE" was flagged.
+        p = Project(self)
+        for stem in ("Shah of Fire Serpents", "New PC - Listener Recruit", "Hypnos, the Dreamweaver"):
+            (p.root / "Lore/World/Characters" / f"{stem}.md").write_text("x\n")
+        for draft in ("She drags the chair to the hearth by the fire. SHE EATS BY THE FIRE.",
+                      "Fire runs along the thatch; nobody moves.", "A new recruit waits. The Listener is late.",
+                      "The dreamweaver's loom stands empty."):
+            with self.subTest(draft=draft):
+                result = self.lint(turn(f"{draft}\n\n{ANCHOR}"), project=p)
+                self.assertEqual(result["findings"], [])
+        for draft in ("Shah of Fire Serpents lifts a hand.", "Hypnos, the Dreamweaver stirs.",
+                      'NEW PC - LISTENER RECRUIT: "Here."'):
+            with self.subTest(draft=draft):
+                result = self.lint(turn(f"{draft}\n\n{ANCHOR}"), project=p)
+                self.assertEqual(self.checks(result), ["presence"])
+
+    def test_role_labels_are_never_names(self):
+        for word in ("PC", "NPC", "GM", "DM"):
+            self.assertEqual(rp_gate.name_tokens(word), set())
+        self.assertEqual(rp_gate.name_tokens("New PC"), {"new"})
+        p = Project(self)
+        (p.root / "Lore/World/Characters/PC.md").write_text("x\n")
+        result = self.lint(turn(f"**PC move (B4378):** I keep working.\n\nLiss nods.\n\n{ANCHOR}"), project=p)
+        self.assertEqual(result["findings"], [])
+
+    def test_capitals_of_a_common_word_name_the_draft_also_writes_lowercase(self):
+        p = Project(self)
+        (p.root / "Lore/World/Characters/Gore Snake.md").write_text("x\n")
+        draft = "A snake of smoke climbs the wall. THE SNAKE OF SMOKE REACHES THE BEAM."
+        self.assertEqual(self.lint(turn(f"{draft}\n\n{ANCHOR}"), project=p)["findings"], [])
+        result = self.lint(turn(f'SNAKE: "Hang it."\n\n{ANCHOR}'), project=p)  # no lowercase "snake": a person
+        self.assertEqual(self.checks(result), ["presence"])
+        p.mode("turnGate:\n  cast: [Snake]\n")  # a configured name is never a common word
+        result = self.lint(turn(f"{draft}\n\n{ANCHOR}"), project=p)
+        self.assertEqual(self.checks(result), ["presence"])
+
+    def test_gm_working_before_the_beat_heading_is_not_the_page(self):
+        # The Garret logs put the GM's PRE-COMMIT block (its notes, its STATE) in the draft before the beat
+        # heading; "LISS (offstage): ..." and "INFERRED Liss at the sledge" there are not Liss on the page.
+        notes = ("### Beat 10 PRE-COMMIT (GM, binding; VEY STILL IN THE YARD, HER LOOK HELD OPEN)\n"
+                 "VEY (offstage): iron rings twice in the yard (texture, INFERRED Vey at the sledge).\n"
+                 "STATE: ~08:05 D4. VEY (28): in the yard at the sledge with the chain. Vey has seen none of it.\n\n")
+        heading = "### Beat 10: Day 4, ~15:00 to ~15:05. (/rp:turn gate: routine; lint: presence (Vey, offstage))\n\n"
+        prose = "Liss sets down the drawknife. Mira watches from the step.\n\n"
+        result = self.lint(turn(f"{notes}{heading}{prose}{ANCHOR}"))
+        self.assertEqual(result["findings"], [])
+        result = self.lint(turn(f"{notes}{heading}Vey takes the hammer from the bench.\n\n{ANCHOR}"))
+        self.assertEqual(self.checks(result), ["presence"])  # on the page itself: still a miss
+        result = self.lint(turn(f"{notes}Vey takes the hammer from the bench.\n\n{ANCHOR}"))
+        self.assertEqual(self.checks(result), ["presence"])  # no beat heading: the whole draft is the page
+
+    def test_keeper_input_echoed_as_the_pc_move_is_not_narration(self):
+        keeper = "It's not like Vey hasn't been over familiar with my anatomy, this is just more pony and circus."
+        draft = f"**PC move (B4377):** {keeper}\n\nLiss nods.\n\n{ANCHOR}"
+        self.assertEqual(self.lint(turn(draft, keeper=keeper))["findings"], [])
+        result = self.lint(turn(f"**PC move (B4377):** {keeper}\n\nVey nods.\n\n{ANCHOR}", keeper=keeper))
+        self.assertEqual(self.checks(result), ["presence"])
+        result = self.lint(turn(f"Liss nods. {keeper}\n\n{ANCHOR}", keeper=keeper))  # not the move line: narration
+        self.assertEqual(self.checks(result), ["presence"])
+
     def test_pronouns_are_never_names(self):
         for word in ("His", "Her", "Their", "She", "They", "This"):
             self.assertEqual(rp_gate.name_tokens(word), set())
@@ -794,6 +857,158 @@ class RouteTests(unittest.TestCase):
         p.mode("turnGate:\n  cast: [Pell]\n")
         got = self.check(p, turn(f'Pell: "Coin."\n\n{ANCHOR}'))
         self.assertIn("lint:presence", got["route"]["reasons"])
+
+
+GM_TAIL = ("GM_SPAWN_LOG:\n- liss: NOT spawned (routine)\n\nSOURCE_LOG:\nsourced: []\npriced_stake_touched: false\n\n"
+           "SCENE_STATE_DELTA:\nscene.time: \"15:00\"\n")
+
+
+class TurnFileTests(unittest.TestCase):
+    """`turn` writes the gate's turn file from the GM's final message, by command."""
+
+    def message(self, p, text, name="gm.md"):
+        path = p.root / "Work/rp/.gate" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_the_five_blocks_are_written_in_order_and_a_preamble_dropped(self):
+        p = Project(self)
+        text = (f"Here is the beat.\n\nKEEPER_INPUT:\nI keep working.\n\n**DRAFT:**\nLiss nods.\n\n{ANCHOR}\n\n"
+                "```yaml\n" + GM_TAIL + "```\n")
+        code, out, err = run("turn", "--project-dir", str(p.root), "--from", str(self.message(p, text)))
+        self.assertEqual((code, err), (0, ""))
+        report = json.loads(out)
+        written = (p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8")
+        self.assertTrue(written.startswith("KEEPER_INPUT:\nI keep working.\n\nDRAFT:\nLiss nods."))
+        parsed = rp_gate.parse_turn(written)
+        self.assertEqual(parsed["KEEPER_INPUT"], "I keep working.")
+        self.assertEqual(parsed["DRAFT"], f"Liss nods.\n\n{ANCHOR}")
+        self.assertEqual(parsed["GM_SPAWN_LOG"], "- liss: NOT spawned (routine)")
+        self.assertEqual(rp_gate.parse_delta(parsed["SCENE_STATE_DELTA"])[0], {"scene.time": "15:00"})
+        self.assertEqual(report["keeper_input"], "message")
+        self.assertEqual(report["dropped_before"], 1)
+        self.assertNotIn("Here is the beat", written)
+
+    def test_the_keeper_input_comes_from_the_file_the_command_wrote(self):
+        p = Project(self)
+        self.message(p, "I keep working.\n", name="input.md")
+        text = f"DRAFT:\nLiss nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+        code, out, _err = run("turn", "--project-dir", str(p.root), "--from", str(self.message(p, text)),
+                              "--input-file", "Work/rp/.gate/input.md")
+        self.assertEqual(code, 0)
+        parsed = rp_gate.parse_turn((p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8"))
+        self.assertEqual(parsed["KEEPER_INPUT"], "I keep working.")
+        self.assertEqual(json.loads(out)["keeper_input"], "file")
+        # the file wins over a message block that differs, with a warning
+        text = f"KEEPER_INPUT:\nSomething else.\n\nDRAFT:\nLiss nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+        code, out, _err = run("turn", "--project-dir", str(p.root), "--from", str(self.message(p, text)),
+                              "--input-file", "Work/rp/.gate/input.md")
+        self.assertEqual(code, 0)
+        self.assertEqual(rp_gate.parse_turn((p.root / "Work/rp/.gate/turn.md").read_text())["KEEPER_INPUT"],
+                         "I keep working.")
+        self.assertTrue(json.loads(out)["warnings"])
+
+    def test_a_message_opening_with_the_draft_itself(self):
+        p = Project(self)
+        self.message(p, "I keep working.\n", name="input.md")
+        text = f"Liss nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+        code, _out, _err = run("turn", "--project-dir", str(p.root), "--from", str(self.message(p, text)),
+                               "--input-file", "Work/rp/.gate/input.md")
+        self.assertEqual(code, 0)
+        parsed = rp_gate.parse_turn((p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8"))
+        self.assertEqual(parsed["DRAFT"], f"Liss nods.\n\n{ANCHOR}")
+
+    def test_no_block_several_or_out_of_order_refuses_and_writes_nothing(self):
+        p = Project(self)
+        self.message(p, "I keep working.\n", name="input.md")
+        cases = {
+            "no GM block": f"Liss nods.\n\n{ANCHOR}\n",
+            "no GM block (SOURCE_LOG missing)": f"Liss nods.\n\n{ANCHOR}\n\nGM_SPAWN_LOG:\n- x\n\nSCENE_STATE_DELTA:\nnone\n",
+            "several": f"DRAFT:\nLiss nods.\n\n{ANCHOR}\n\n{GM_TAIL}\nDRAFT:\nLiss nods again.\n\n{ANCHOR}\n\n{GM_TAIL}",
+            "out of order": f"DRAFT:\nLiss nods.\n\n{ANCHOR}\n\nSOURCE_LOG:\nsourced: []\n\nGM_SPAWN_LOG:\n- x\n\n"
+                            "SCENE_STATE_DELTA:\nnone\n",
+            "no keeper input": None,
+            "empty input file": "",
+        }
+        for label, text in cases.items():
+            with self.subTest(label=label):
+                argv = ["turn", "--project-dir", str(p.root)]
+                if text is None:
+                    argv += ["--from", str(self.message(p, f"Liss nods.\n\n{ANCHOR}\n\n{GM_TAIL}"))]
+                elif text == "":
+                    self.message(p, "", name="empty.md")
+                    argv += ["--from", str(self.message(p, f"Liss nods.\n\n{ANCHOR}\n\n{GM_TAIL}")),
+                             "--input-file", "Work/rp/.gate/empty.md"]
+                else:
+                    argv += ["--from", str(self.message(p, text)), "--input-file", "Work/rp/.gate/input.md"]
+                code, out, err = run(*argv)
+                self.assertEqual(code, 2)
+                self.assertIn("ERROR", err)
+                self.assertEqual(out, "")
+                self.assertFalse((p.root / "Work/rp/.gate/turn.md").exists())
+
+    def test_claude_task_output_jsonl_gives_the_final_assistant_text(self):
+        p = Project(self)
+        self.message(p, "I keep working.\n", name="input.md")
+        final = f"DRAFT:\nLiss nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+        lines = [
+            {"type": "user", "message": {"role": "user", "content": "KEEPER_INPUT: I keep working."}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Reading."}]}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t", "name": "Read"}]}},
+            {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "..."}]}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": final}]}},
+        ]
+        path = self.message(p, "".join(json.dumps(line) + "\n" for line in lines), name="task.jsonl")
+        code, out, _err = run("turn", "--project-dir", str(p.root), "--from", str(path), "--format", "claude-jsonl",
+                              "--input-file", "Work/rp/.gate/input.md")
+        self.assertEqual(code, 0)
+        parsed = rp_gate.parse_turn((p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8"))
+        self.assertEqual(parsed["DRAFT"], f"Liss nods.\n\n{ANCHOR}")
+        self.assertEqual(json.loads(out)["format"], "claude-jsonl")
+        code, _out, err = run("turn", "--project-dir", str(p.root), "--from", str(path),
+                              "--input-file", "Work/rp/.gate/input.md")  # read as text: no block in it
+        self.assertEqual(code, 2)
+        self.assertIn("ERROR", err)
+
+    def test_claude_task_output_takes_the_handback_over_a_later_note(self):
+        # B4380: the GM handed the beat back by a tool call, then a late character-agent alert woke it and its
+        # final text was "Nothing left to do on this one"; the handback is the message.
+        p = Project(self)
+        self.message(p, "I keep working.\n", name="input.md")
+        handback = f"KEEPER_INPUT:\nI keep working.\n\nDRAFT:\nLiss nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+        lines = [
+            {"type": "user", "message": {"role": "user", "content": "KEEPER_INPUT: I keep working."}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "Waiting for Liss's agent to return before drafting."}]}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "h", "name": "SubagentHandback", "input": {"message": handback}}]}},
+            {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "ok"}]}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "text", "text": "Nothing left to do on this one. The draft is already with you."}]}},
+        ]
+        path = self.message(p, "".join(json.dumps(line) + "\n" for line in lines), name="task.jsonl")
+        code, out, err = run("turn", "--project-dir", str(p.root), "--from", str(path), "--format", "claude-jsonl",
+                             "--input-file", "Work/rp/.gate/input.md")
+        self.assertEqual((code, err), (0, ""))
+        parsed = rp_gate.parse_turn((p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8"))
+        self.assertEqual(parsed["DRAFT"], f"Liss nods.\n\n{ANCHOR}")
+        self.assertEqual(json.loads(out)["warnings"], [])
+
+    def test_the_written_file_checks_like_a_hand_written_one(self):
+        p = Project(self)
+        session = p.session()
+        self.message(p, "I keep working.\n", name="input.md")
+        text = f"A word first.\n\nDRAFT:\nLiss nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+        code, _out, _err = run("turn", "--project-dir", str(p.root), "--from", str(self.message(p, text)),
+                               "--input-file", "Work/rp/.gate/input.md")
+        self.assertEqual(code, 0)
+        code, out, _err = run("check", "--project-dir", str(p.root), "--session-file", str(session),
+                              "--turn-file", str(p.root / "Work/rp/.gate/turn.md"), "--no-log")
+        self.assertEqual(code, 0)
+        got = json.loads(out)
+        self.assertEqual(got["lint"]["findings"], [])
+        self.assertEqual(got["lint"]["delta"], {"scene.time": "15:00"})
 
 
 class LogTests(unittest.TestCase):

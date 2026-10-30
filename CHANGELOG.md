@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — rp 0.5.3: two gate fixes that cut turn time
+
+- The presence lint reads the page: the prose after the beat's heading, not
+  the GM's working before it (a PRE-COMMIT block's notes and STATE lines put
+  "LISS (offstage)" on a beat Liss is not in), not a heading, and not the
+  Keeper's input echoed as the PC's move. An epithet among the character files
+  ("Shah of Fire Serpents", "New PC - Listener Recruit") matches only whole, so
+  "by the fire" and "PC move" are no longer people; role labels (PC, NPC, GM,
+  DM) are never names; a common-word name in capitals is skipped where the
+  draft also writes it lowercase. Garret B4377 and B4378 now lint clean of
+  presence (they had 2 and 3 flags; a flagged beat loses its background review,
+  about 2.3 min of the Keeper's wait each).
+- `rp_gate.py turn` writes the gate's turn file from the GM's final message
+  (`/rp:turn` 3b): the five headed blocks in order, each once, KEEPER_INPUT
+  from Step 2's input file; a message may open with the draft itself, and a
+  sentence before the first header is dropped. It refuses a message with no GM
+  block, a block twice or blocks out of order, and writes nothing. `--format
+  claude-jsonl` (Claude Code only) reads a task's JSONL output for the GM's
+  handback, the last message carrying its blocks (B4380: a late alert woke the
+  GM after its handback, so its final text was not the beat); on Claude Code, 3b passes the GM task's output file this way,
+  so the Room never re-emits the message. The Room no longer extracts the
+  blocks by hand (B4378: its own prompt grabbed, then the whole file in a
+  heredoc, 1.2 min).
+
 ## Unreleased — rp 0.5.2, write 1.12.3: follow-ups to the GM brief
 
 - The continuity reviewer reads the brief as the GM does: `/rp:turn` 3c

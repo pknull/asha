@@ -1,6 +1,6 @@
 # RP Plugin
 
-**Version**: 0.5.2
+**Version**: 0.5.3
 
 Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification, and world/history lookup. The *verbs* of running a game live here; the *nouns* — canon, character registers, rulesets, the invariants projection — stay in the consuming project.
 
@@ -109,6 +109,7 @@ disabled with `Work/markers/rp-priced-stakes-off` (the historical
 | Subcommand | Use |
 |---|---|
 | `session` | prints the live session file (the marker's `session_file:`, else with a warning the newest open session: the head of a day-file chain, or the newest legacy `Work/rp/rp_session_*.md` unless `/rp:end` closed it or it moved to day files; an older legacy log is never offered, so another campaign opens with `/rp:start load <session>`; when nothing is open but `/rp:end` closed a legacy log that can still rotate, the warning names it to `load` with the opening day), the gate settings, where current state is (`live_state`), the continuity read (`continuity`: the last `previousBeats` beats, and the day's `plans`), the files this session wrote (`session_files`) and any warnings |
+| `turn` | writes the gate's turn file from the GM's final message (`/rp:turn` 3b): the five headed blocks, in order, each once, KEEPER_INPUT from the input file Step 2 wrote; a message may open with the draft itself, and a sentence before the first header is dropped; it refuses a message with no GM block, a block twice or blocks out of order and writes nothing; `--format claude-jsonl` (Claude Code only) reads a task's JSONL output for the GM's handback, the last message (text or a tool call's `message`) carrying its blocks |
 | `check` | lints one GM turn and routes it (ship, fix or review; a rewrite is always reviewed); appends `lint` (and `skipped`) lines |
 | `rotate` | before a beat ships: names the file it goes to, rotating to the next fiction day's file when the day moved (see **Day files**), then writes the turn's struck drafts into it (see **Struck drafts**); `--start` records the session's opening in the marker; `--repair` only closes a file an interrupted rotation left open and writes struck drafts still waiting |
 | `strike` | keeps a draft the gate rejected: stashes the turn file's DRAFT for `rotate` to write |
@@ -151,18 +152,28 @@ caught. Reading the invariants and the run state adds 1–3 ms to a `check`.
 
 The lint checks what is mechanical: exactly one closing anchor; SCENE_STATE_DELTA
 keys are schema keys (no root mirrors), and its participants, time and day
-(`currentDate` against the anchor's `Scene: Day N`) agree with the anchor; and every mention of a known cast member in narration (outside
+(`currentDate` against the anchor's `Scene: Day N`) agree with the anchor; and every mention of a known cast member on the page (outside
 dialogue) is someone in the scene, in the anchor's `Present:` list, arriving on
-the page or sending word. A mention is let off only when it is plainly not that
-person on the page: a possession ("Velathra's plans"), "the Vey brothers",
-"thinks of" or "word from", reported belief or speech ("Liss knows Vey...",
-"Liss says Vey..."), or a stated absence ("is away", "will be back", "used to").
-Names come from the session frontmatter, the anchor, the `character` row of
-`Memory/canon-layout.md` (default `Lore/World/Characters/*.md`) and
-`turnGate.cast`; a character-file name that is also a common word ("Frost") is
-skipped at the start of a sentence unless it is in the scene or in
-`turnGate.cast`. The default leans toward flagging: a false flag costs one
-cheap review, a miss ships a beat unreviewed. It reads only the session
+the page or sending word. The page is the prose after the beat's heading: the
+GM's working before it (a PRE-COMMIT block, its notes and STATE lines, "LISS
+(offstage): ...") is not the page, a heading is not, and the Keeper's input
+echoed as the PC's move ("**PC move (B4377):** ...") is read like a quotation;
+a draft with no beat heading is the page whole. A mention is let off only when
+it is plainly not that person on the page: a possession ("Velathra's plans"),
+"the Vey brothers", "thinks of" or "word from", reported belief or speech
+("Liss knows Vey...", "Liss says Vey..."), or a stated absence ("is away",
+"will be back", "used to"). Names come from the session frontmatter, the
+anchor, the `character` row of `Memory/canon-layout.md` (default
+`Lore/World/Characters/*.md`) and `turnGate.cast`; a character-file name that
+is also a common word ("Frost") is skipped at the start of a sentence, and in
+capitals ("BY THE FIRE") wherever the draft also writes it lowercase, unless it
+is in the scene or in `turnGate.cast`; an epithet ("Shah of Fire Serpents",
+"Hypnos, the Dreamweaver", "New PC - Listener Recruit": a name with a lowercase
+connective, a comma or a spaced dash) matches only whole, its words not being
+people, so a short form it goes by belongs in `turnGate.cast`; role labels
+(PC, NPC, GM, DM) are never names. The default leans toward flagging: a false
+flag costs one cheap review and, since a flagged beat is not shipped before it,
+the Keeper's wait for it; a miss ships a beat unreviewed. It reads only the session
 frontmatter, so log size does not matter: on 204 real beats it took about 7 ms
 a beat (p95 17 ms), and a `check` call, Python start-up included, about 90 ms.
 
