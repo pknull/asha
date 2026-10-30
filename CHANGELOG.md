@@ -2,6 +2,11 @@
 
 ## Unreleased — rp 0.5.3: two gate fixes that cut turn time
 
+- `/rp:turn` takes the GM's model from `gate.models.gm` on every turn and from
+  nowhere else: a header, ruling or memory naming a model, or "the default
+  model", no longer overrides it. The Garret Room drafted 49 of Day 201's 50
+  beats on opus from R-246's "weighted beats keep the default model" while the
+  gate said sonnet; sonnet drafts run about 1 min against opus's 8.5.
 - The presence lint reads the page: the prose after the beat's heading, not
   the GM's working before it (a PRE-COMMIT block's notes and STATE lines put
   "LISS (offstage)" on a beat Liss is not in), not a heading, and not the
