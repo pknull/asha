@@ -26,6 +26,7 @@ This command uses the conventional RP layout. A project adopting it supplies:
 | `Work/rp/<campaign>/log/day-NNNN.md` | the live session record, one file per fiction day (resolved through the marker, never the date); its frontmatter and header carry current state. A legacy `Work/rp/rp_session_*.md` log works too, and rotates into day files once its frontmatter names a `log_dir` |
 | the run's state file | named by the session: `run_state: "<path>#<section>"` in its frontmatter, else a ``State: `<path>` § <section>`` line in its header |
 | `Work/rp/_validator_log.jsonl` | per-turn telemetry: one line per gate step |
+| `Work/rp/.gate/gm.md` | scratch: the GM's final message, written whole where the harness leaves no task output file (on Claude Code `turn` reads the task's JSONL instead); `turn` writes the turn file from it |
 | `Work/rp/.gate/turn.md` | scratch: the current GM turn, overwritten on each attempt (and `beat.md`, the text `ship` appends; `day-summary.md`, a closed day's summary before it is published) |
 | `Work/rp/.gate/brief.md` | scratch: the GM brief `brief` builds each turn, and `brief.json`, its report; `input.md` holds the Keeper's input it was built for |
 | the campaign's keyed table | optional: `keyed-entries.md` beside its `log_dir` (`Work/rp/<campaign>/keyed-entries.md`), or the canon register's `keyed_entries` row; see the plugin README |
@@ -207,8 +208,28 @@ LOOP:
   Receive DRAFT, GM_SPAWN_LOG, SOURCE_LOG and SCENE_STATE_DELTA from roleplay-gm output.
 
   # 3b. Lint the draft (every beat; no model call)
-  Write Work/rp/.gate/turn.md with five headed blocks, each verbatim:
-    KEEPER_INPUT:, DRAFT:, GM_SPAWN_LOG:, SOURCE_LOG:, SCENE_STATE_DELTA:
+  Write the turn file by command from the GM's final message; extract
+  nothing by hand and never re-emit the message yourself. On Claude Code the
+  GM runs as a background task whose notification names a JSONL output file
+  (Claude-specific): pass that file, and the command reads the GM's
+  handback from it (the last message carrying the blocks):
+    ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" turn --project-dir . --format claude-jsonl --from <the task's output file> --input-file Work/rp/.gate/input.md
+  On a harness that leaves no such file, write the GM's final message, whole
+  and verbatim, to Work/rp/.gate/gm.md in one write, then:
+    ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" turn --project-dir . --from Work/rp/.gate/gm.md --input-file Work/rp/.gate/input.md
+  It finds the headed blocks (DRAFT:, GM_SPAWN_LOG:, SOURCE_LOG:,
+  SCENE_STATE_DELTA:; a message may open with the draft itself) and writes
+  Work/rp/.gate/turn.md with the five, in order, each verbatim, KEEPER_INPUT
+  from Step 2's input file; a sentence to you before the first header is
+  dropped (`dropped_before`). It refuses, exit 2 and nothing written, a
+  message with no GM block, a block twice or blocks out of order: the GM's
+  output is at fault, not the file. Spawn roleplay-gm once more (3a, the same
+  prompt and ATTEMPT_NUMBER, a malformed message being no rewrite, with the
+  error appended as its last line: "Your last output: <error>. Emit DRAFT,
+  GM_SPAWN_LOG, SOURCE_LOG and SCENE_STATE_DELTA once, in that order."); a
+  second refusal ends the turn: tell the Keeper, and if the Keeper has you
+  ship the draft anyway, log it (Step 4, --verdict unreviewed --note "<the
+  error>").
   Run (add --beat <label> when the session numbers its beats; any
   --attempt above 1 is treated as a rewrite and always reviewed):
     ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" check --project-dir . --session-file "<SESSION_FILE>" --turn-file Work/rp/.gate/turn.md --attempt <ATTEMPT_NUMBER>
