@@ -55,7 +55,7 @@ ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}
 
 Every gate command in this file resolves `ASHA_ROOT` on its own line, because shell variables do not survive between tool calls; if it is unresolved the command fails with a missing `/plugins/rp/tools/rp_gate.py`: run `./install.sh` or launch through the `asha` wrapper.
 
-The `session` command prints `{"path", "source", "warning", "gate", "live_state", "invariants"}`. Write `path` literally wherever this file says `<SESSION_FILE>`, and take GM_MODEL from `gate.models.gm`. A session can run for days, so the date never names it:
+The `session` command prints `{"path", "source", "warning", "gate", "live_state", "invariants"}`. Write `path` literally wherever this file says `<SESSION_FILE>`, and take GM_MODEL from `gate.models.gm`, this turn's output, every turn: it is the only source of the GM's model. A session header, a ruling, a memory or your own earlier choice that names another model, or says "the default model", never overrides it; to change the model, change `turnGate.models.gm` in the mode file. A session can run for days, so the date never names it:
 
 - `source: marker`: the marker names it. Proceed.
 - `source: latest`: the marker names no (existing) session file, so the newest open session is used: the head of a campaign's day files (the one with no rotation footer), or the newest legacy `Work/rp/rp_session_*.md` not marked `status: closed`. Tell the Keeper the warning once, in one line, and proceed. `/rp:start` records the file in the marker.
@@ -132,7 +132,7 @@ ATTEMPT_NUMBER = 1
 REWRITES = 0
 PRIOR_VIOLATIONS = null
 ESCALATED = false      # once the adjudicator confirms a violation, it reviews the rewrites
-GM_MODEL = gate.models.gm from Step 1
+GM_MODEL = gate.models.gm from this turn's Step 1 (never a header or ruling)
 MAX_REWRITES = 0       # raised to the largest route.max_rewrites seen this turn
 
 LOOP:
