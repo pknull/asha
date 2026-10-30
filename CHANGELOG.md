@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — rp 0.5.2, write 1.12.3: follow-ups to the GM brief
+
+- The continuity reviewer reads the brief as the GM does: `/rp:turn` 3c
+  passes `BRIEF_READS`, and a provisional ship keeps the review brief's report
+  beside it, so `ship` prints `review_brief_reads` and `pending` each entry's
+  `brief_reads` for the background review and its synchronous rerun.
+- The quote check takes a plural decision line (`GM DECISIONS / RULINGS`, the
+  live logs' own form) as a source, as the brief's decision list does, so a
+  quote found on one in a beat is no longer marked `history`; a STATE line or
+  source record naming rulings only in the plural stays `history`.
+- The Keeper's input gives no quote: a line it repeats whole, or a
+  `quote (verified, ...)` line written in it, no longer makes `via: brief`.
+
 ## Unreleased — rp 0.5.1, write 1.12.2: the GM brief fits its budget
 
 - The GM brief fits its budget with its keyed entries (B4355: 107,696 bytes of

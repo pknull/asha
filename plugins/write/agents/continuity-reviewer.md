@@ -76,6 +76,7 @@ SCENE_STATE:  # Optional; /rp:turn passes BRIEF instead
   recent_installations: ["<register-stack items recently installed that should still be active>"]
 
 BRIEF: "Work/rp/.gate/brief.md"  # Optional — the GM brief the draft was written from (rp_gate.py brief)
+BRIEF_READS: [{offset: 1, limit: 412}, {offset: 413, limit: 397}]  # Optional — BRIEF as Reads of at most 40,000 bytes
 
 LIVE_STATE: |  # where current state is (rp_gate.py session); read these line ranges
   session: Work/rp/<campaign>/log/day-NNNN.md lines 1-80   # frontmatter and header
@@ -129,7 +130,7 @@ ADJUDICATE: |  # Optional — present only on the adjudication pass
 REVIEW_KEY: "<12 hex>"  # Optional — present when the beat was shown before this review (a background review)
 ```
 
-**BRIEF** is the file the GM drafted from, built in code from disk: the current state (frontmatter, header, the run state's current entry, the governing STATE line), the day's Day Plans, any carried findings, the keyed entries that matched the input (each with its source and the quotes the gate found there) and the recent beats. Read it for current state as you would SCENE_STATE, and start there before opening the LIVE_STATE ranges. It is scratch, never a source: a fact in it is checked against the file it names.
+**BRIEF** is the file the GM drafted from, built in code from disk: the current state (frontmatter, header, the run state's current entry, the governing STATE line), the day's Day Plans, any carried findings, the keyed entries that matched the input (each with its source and the quotes the gate found there) and the recent beats. Read it for current state as you would SCENE_STATE, and start there before opening the LIVE_STATE ranges. Read it in one message: one Read for each part `BRIEF_READS` names (its `offset` and `limit`), all in the same message; without `BRIEF_READS`, bounded Reads (`offset` and `limit`) of 100 lines, several in one message, halving any part the harness refuses for its size. A Read with no limit of a file past the harness's token cap returns only its first part, and one past 25,000 tokens is refused. It is scratch, never a source: a fact in it is checked against the file it names.
 
 **REVIEW_KEY** means the beat was shown to the Keeper before this review ran, and /rp:turn applies your verdict to it later. Review it exactly as any other draft: the categories and severities do not change. SESSION_FILE and LIVE_STATE then name a byte copy of the session file taken just before the beat shipped: read that copy, which holds the state the beat was drafted against, never the live session file, which already carries this beat and its delta. Copy the key into your verdict as `review_key`, so the verdict cannot be applied to another beat.
 
