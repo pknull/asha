@@ -104,6 +104,23 @@ compare-and-swap and no Git seam; see `docs/session-hub.md`.
    save evidence, not a security boundary. Candidates are not SessionStart
    instructions. A learning proposal failure is non-fatal after publication:
    report it and continue to diff, commit, and push.
+
+   Once the store carries the OKF marker, run the strict bundle gate after the
+   learning writes and report its verdict beside the Memory result. Exit 1 is
+   "Memory saved; learnings bundle failed strict validation" with the printed
+   lints; exit 2 is "Memory saved; learnings validator unavailable" (PyYAML
+   missing or a bad path). Neither is a pass, neither undoes the Memory
+   publication, and neither is omitted from the summary:
+
+   ```bash
+   LEARNINGS="${ASHA_HOME:-$HOME/.asha}/learnings"
+   if [[ -f "$LEARNINGS/.okf-0.2.json" ]]; then
+     python3 "$ASHA_ROOT/plugins/okf/tools/okf_validate.py" "$LEARNINGS" --strict \
+       || echo "learnings bundle gate failed (rc=$?)" >&2
+     python3 "$ASHA_ROOT/plugins/okf/tools/okf_index.py" "$LEARNINGS" --check --title Learnings \
+       || echo "learnings indexes are stale (a derived write failed earlier); the next learning save rebuilds them" >&2
+   fi
+   ```
 7. Unless the **effective** scope is `none`, stage only the selected plane's
    `Memory/activeContext.md` and `Memory/decisions.md`, then commit. Do not
    stage unrelated work:

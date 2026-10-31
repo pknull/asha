@@ -34,6 +34,7 @@ Use these sources instead of copying their facts into new catalogues:
 | Tested enforcement verdicts and caveats | `docs/harness-enforcement.md` |
 | Install and launcher mechanics | `INSTALLER.md`, then live scripts |
 | Memory authority and workspace planes | `docs/memory-architecture.md` |
+| OKF bundles, learnings record mapping, gate | `docs/okf.md` |
 | Retired initiative evidence (read-only `asha initiative list/show/export`) | `docs/control.md` |
 | Release history | `CHANGELOG.md` |
 | Current behavior | Live state and repository code |
@@ -245,6 +246,7 @@ Run suites in a scrubbed environment. Each item below has cost a full run:
 - [Installer and launcher model](INSTALLER.md)
 - [Harness enforcement](docs/harness-enforcement.md)
 - [Memory architecture](docs/memory-architecture.md)
+- [OKF bundles](docs/okf.md)
 - [Manual save fallback](docs/save-manual-pipeline.md)
 - [Copilot distribution](docs/distribution-copilot.md)
 - [Secrets](docs/secrets.md)

@@ -55,13 +55,13 @@ asha_hook_context_join() {
 # Appends Claude's operational layer through the caller's append_context:
 # operation.md (or CORE.md) and active learnings as separate blocks, so the
 # ceiling keeps one when it cannot keep both. Expects PROJECT_DIR, PLUGIN_ROOT
-# and PYTHON_CMD. Expiry runs first: it replays a pending learnings journal,
+# and PYTHON_CMD. Maintenance runs first: it replays a pending learnings journal,
 # which the read-only render refuses, whichever SessionStart entry runs first.
 asha_append_operational_context() {
   local manager="$PLUGIN_ROOT/tools/learnings_manager.py" asha_dir="${ASHA_HOME:-$HOME/.asha}"
   local op_source="" text block active
   if [[ ! -f "$PROJECT_DIR/Work/markers/silence" && -n "$PYTHON_CMD" && -f "$manager" ]]; then
-    "$PYTHON_CMD" "$manager" expire --project-dir "$PROJECT_DIR" >/dev/null 2>&1 || true
+    "$PYTHON_CMD" "$manager" maintain --project-dir "$PROJECT_DIR" >/dev/null 2>&1 || true
   fi
   if [[ -f "$asha_dir/operation.md" ]]; then
     op_source="$asha_dir/operation.md"

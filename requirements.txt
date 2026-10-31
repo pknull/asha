@@ -1,8 +1,10 @@
 # Python dependencies for asha session tooling.
 #
-# PyYAML powers OKF frontmatter parsing in learnings_manager.py (which also has a
-# JSON-scalar fallback if it is absent) and is REQUIRED by the vendored OKF
-# validator/visualizer (validate.py / visualize.py). Tests skip gracefully when
-# it is missing.
+# PyYAML is REQUIRED by the vendored OKF validator and visualizer
+# (plugins/okf/tools/validate.py, visualize.py) and therefore by the strict
+# bundle gate at explicit save. learnings_manager.py and the SessionStart render
+# path read JSON-in-YAML records with the standard library only and never
+# import PyYAML. Without PyYAML the gate exits 2 ("validator unavailable"),
+# which is a reported failure, never a pass.
 PyYAML>=6.0
 tomli>=2.0; python_version < "3.11"

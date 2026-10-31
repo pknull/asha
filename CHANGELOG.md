@@ -1,5 +1,77 @@
 # Changelog
 
+## Unreleased — okf 0.1.0, session 3.0.0: the learnings store becomes an OKF v0.2 bundle
+
+Decided in the OKF Room and its panel (2026-10-31,
+`Work/panels/2026-10-31--okf-phase-one/decision.md`); mechanism in
+`docs/okf.md`.
+
+- New `okf` plugin. `tools/okf_common.py`, `validate.py` and `visualize.py` are
+  re-vendored from sniperunder123/okf-knowledge at the full commit
+  `cbfb00bc42be73c0756b243029c783ad31406f60` (OKF v0.2) with each upstream
+  body's sha256 in its header and asserted by test; the v0.1 copies under
+  `plugins/session/tools/` (pin `4d4a0f2` by abbreviated sha, no call site
+  since 2026-08-13) are removed. `okf_validate.py` gates the upstream validator:
+  an exclude list for harness-owned files, the validated file count checked
+  against the admitted set (`0 file(s)` never passes), three Asha lints the
+  upstream misses (reachability from the root index, log order, non-mapping
+  `verified` entries), and exit 2 reported as "validator unavailable", never a
+  pass. `okf_index.py` generates every directory's `index.md` from concept
+  descriptions (`--check` reports drift); `okf_log.py` appends newest-first,
+  date-grouped entries; `okf_viz.py` runs the visualizer with `</` escaped in
+  its inline JSON, which the vendored template did not do. The `okf-bundle`
+  skill teaches validate, reindex, log, index-first query and viz; every tool
+  takes the bundle root as an argument, with no `okf/` convention.
+- **Breaking (on-disk, session 3.0.0):** learnings records gain the OKF v0.2
+  families once `tools/migrate_learnings_okf.py` has written `.okf-0.2.json`:
+  `title` (the id), `description` (the trigger), `status` mirroring `state`
+  (draft, stable, deprecated), `generated {by: asha/<version>, at}`,
+  `stale_after` on candidates (last corroboration plus 90 days, so
+  corroboration bumps it), and `verified` only after the Keeper's `verify`.
+  `evidence`, `state`, `applicability`, `retirement_reason`, `created` and
+  `updated` stay as private keys: evidence drives activation, dedup and
+  Control's rule order, and OKF's `verified` cannot carry it. Frontmatter stays
+  JSON-in-YAML; a record carrying a code point PyYAML or UTF-8 refuses is
+  refused before any write, and the legacy writer is byte-for-byte unchanged,
+  so the SessionStart render path still needs no PyYAML. Until the marker exists the
+  writer keeps the legacy shape, so SessionStart maintenance cannot migrate the
+  store a record at a time. Older asha versions read the new records (the
+  private keys are unchanged) but rewrite them in the legacy shape; land and
+  reinstall together.
+- The migration is the Keeper's step, once, after rehearsing on a copy
+  (`--root COPY --yes`): it renders and checks every record before touching
+  anything, copies the resolved bundle to `<name>.pre-okf-v02-YYYYMMDD` beside
+  it and verifies the copy, refuses a pending transition journal, a second
+  run, an already-migrated record, an existing backup or symlinked state
+  directories, keeps every filename, writes no `verified`, regenerates the
+  indexes, starts `log.md`, writes `.stale.json`, and ends by proving the
+  SessionStart render byte-identical. Rollback is `mv`. Rehearsed on a copy of
+  the live store on 2026-10-31: 120 records, filenames identical, render
+  identical, strict validation at zero lints.
+- `expire` no longer retires anything (it has not been a lifecycle decision
+  since the Keeper's 2026-10-31 ruling): the SessionStart entries call
+  `maintain`, which replays a pending journal exactly as before and lists
+  candidates stale 90 days after their last corroboration in `.stale.json`.
+  `extend --id` gives a stale candidate another 90 days; `retire` is the other
+  ruling. `/session:status` shows the stale list.
+- The gate is layered strict. Inside the writer, before the transition journal
+  is written, a dependency-free per-record check plus a check that the index
+  entry parses as one link under the spec's link grammar; a failure writes
+  nothing, so journal replay cannot land an unchecked record. The derived
+  indexes and `log.md` are written after the journal is cleared and a failure
+  there is reported, never a wedge: master refused a bad proposal and so does
+  this, where an earlier draft of this change left a journal behind. At `/session:save` (once the marker
+  exists) and in `tests/validate-plugins.sh` Test 5 over committed fixture
+  twins, the bundle-wide strict run through `okf_validate.py`; Memory
+  publication stays independent and the save reports both results.
+- `active/index.md` is now a generated OKF index with real links whose
+  descriptions carry each learning's trigger; `render-active` is unchanged
+  byte for byte (goldens in `tests/python/golden/learnings-v2/`).
+  `codebase-historian` reads the root index first.
+- Corrections: v2.0.0's "warn-only validate-on-`/save`" lapsed on 2026-08-13
+  (b99863b removed the three call sites) and `requirements.txt` claimed a
+  PyYAML fallback the manager never had; both now describe the live state.
+
 ## Unreleased — rp 0.5.4: the GM waits for its agents; the Room never waits on a GM it has heard from
 
 - `roleplay-gm` gets every character agent's result inside its own run before

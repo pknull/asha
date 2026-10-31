@@ -52,7 +52,11 @@ The manager reads the actual project `project_id` from config.
 Activation requires three distinct sessions across two projects. Propose at
 most three candidates per explicit save. This is a user-controlled heuristic
 over local evidence, not a security authority. Contradiction and retirement are
-visible state transitions; neither silently deletes a record.
+visible state transitions; neither silently deletes a record. Once migrated
+(`docs/okf.md`), the store is an OKF v0.2 bundle: records carry `status`,
+`generated`, `stale_after` and, only after the Keeper's `verify`, `verified`;
+`maintain` lists stale candidates in `.stale.json` for `extend` or `retire`;
+`okf_validate.py --strict` over the bundle is the explicit save's gate.
 
 ## Legacy Memory
 

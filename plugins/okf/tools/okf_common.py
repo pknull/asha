@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # ---------------------------------------------------------------------------
-# Vendored from https://github.com/sniperunder123/okf-knowledge (MIT, @4d4a0f2)
-# OKF v0.1 tooling. Do not edit locally; re-vendor from upstream to update.
+# Vendored from https://github.com/sniperunder123/okf-knowledge (MIT)
+# commit cbfb00bc42be73c0756b243029c783ad31406f60 (2026-09-17), OKF v0.2 tooling.
+# upstream-sha256: 1400b7a89af9404c424a32a45cc1abaf5b38743ade9e60482a9288af7fea6858
+# Do not edit locally; re-vendor from upstream (plugins/okf/README.md).
 # ---------------------------------------------------------------------------
 """Shared helpers for the Open Knowledge Format (OKF) tooling.
 
@@ -11,6 +13,7 @@ parsing:  pip install pyyaml
 """
 from __future__ import annotations
 
+import datetime
 import re
 
 try:
@@ -109,3 +112,69 @@ def resolve_link(part, md_file, root):
 
 def is_nonempty_string(value):
     return isinstance(value, str) and value.strip() != ""
+
+
+# ---------------------------------------------------------------------------
+# OKF v0.2 helpers: trust (`generated`/`verified`) and lifecycle (`stale_after`).
+# Shared by validate.py (lints) and visualize.py (styling) so both agree.
+# ---------------------------------------------------------------------------
+
+def parse_iso8601(value):
+    """Return a `datetime` for an ISO 8601 value, or None if unparseable.
+
+    PyYAML resolves an unquoted ISO 8601 scalar to a native `datetime.date` /
+    `datetime.datetime` at parse time, so `value` may already be one of those
+    (accepted as-is) rather than the YAML source string.
+    """
+    if isinstance(value, datetime.datetime):
+        return value
+    if isinstance(value, datetime.date):
+        return datetime.datetime(value.year, value.month, value.day)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def normalize_verified(data):
+    """Return frontmatter `verified` as a list of {by, at} mappings.
+
+    A bare `{by, at}` mapping counts as a one-element list (OKF v0.2 §5.2).
+    """
+    verified = data.get("verified") if isinstance(data, dict) else None
+    if isinstance(verified, dict):
+        return [verified]
+    if isinstance(verified, list):
+        return [v for v in verified if isinstance(v, dict)]
+    return []
+
+
+def actor_is_human(actor):
+    return isinstance(actor, str) and actor.startswith("human:")
+
+
+def trust_tier(verified_list):
+    """Derive a trust tier from a normalized `verified` list (OKF v0.2 §5.3)."""
+    if not verified_list:
+        return "unverified"
+    if any(actor_is_human(v.get("by")) for v in verified_list):
+        return "human-reviewed"
+    return "machine-confirmed"
+
+
+def is_stale(stale_after, now=None):
+    """True if `now` is at or after `stale_after` (OKF v0.2 §5.5)."""
+    dt = parse_iso8601(stale_after)
+    if dt is None:
+        return False
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=datetime.timezone.utc)
+    return now >= dt

@@ -32,10 +32,10 @@ if [[ ! -f "$PROJECT_DIR/Work/markers/silence" && -n "$PYTHON_CMD" && -f "$RECOV
   fi
 fi
 
-# Candidate expiry is lifecycle maintenance, not semantic publication.
+# Candidate maintenance (journal replay, stale listing) is lifecycle work, not semantic publication.
 if [[ ! -f "$PROJECT_DIR/Work/markers/silence" && -n "$PYTHON_CMD" \
       && -f "$PLUGIN_ROOT/tools/learnings_manager.py" ]]; then
-  "$PYTHON_CMD" "$PLUGIN_ROOT/tools/learnings_manager.py" expire \
+  "$PYTHON_CMD" "$PLUGIN_ROOT/tools/learnings_manager.py" maintain \
     --project-dir "$PROJECT_DIR" >/dev/null 2>&1 || true
 fi
 

@@ -517,6 +517,42 @@ for plugin_dir in "$REPO_ROOT"/plugins/*/; do
     fi
 done
 
+# Test 5: The OKF gate runs over committed fixture twins and fails closed.
+# The good twin must pass with its exact file count; the broken twin must fail
+# naming the spec error and the orphan; any other exit (including 2, validator
+# unavailable) is a failure of the gate itself, never a skip.
+echo -n "Test 5: OKF gate passes the good fixture and fails the broken one... "
+OKF_GATE="$REPO_ROOT/plugins/okf/tools/okf_validate.py"
+OKF_ERRORS=()
+good_rc=0
+good_out="$(python3 "$OKF_GATE" "$REPO_ROOT/tests/fixtures/okf/good" --strict 2>&1)" || good_rc=$?
+if [[ $good_rc -ne 0 ]]; then
+    OKF_ERRORS+=("good fixture rc=$good_rc (validator did not pass; rc 2 means unavailable)")
+elif [[ "$good_out" != *"5 file(s), 0 error(s), 0 lint(s)"* ]]; then
+    OKF_ERRORS+=("good fixture summary did not name 5 files with 0 errors and 0 lints")
+fi
+broken_rc=0
+broken_out="$(python3 "$OKF_GATE" "$REPO_ROOT/tests/fixtures/okf/broken" --strict 2>&1)" || broken_rc=$?
+if [[ $broken_rc -ne 1 ]]; then
+    OKF_ERRORS+=("broken fixture rc=$broken_rc (expected 1)")
+else
+    [[ "$broken_out" == *"missing a non-empty 'type'"* ]] || OKF_ERRORS+=("broken fixture: type error not reported")
+    [[ "$broken_out" == *"orphan concept"* ]] || OKF_ERRORS+=("broken fixture: orphan not reported")
+fi
+# The gate has call sites: the explicit save and the learnings writer's index/log seams.
+grep -q 'okf_validate.py' "$REPO_ROOT/plugins/session/commands/save.md" \
+    || OKF_ERRORS+=("plugins/session/commands/save.md does not invoke okf_validate.py")
+grep -q '_okf_tools()' "$REPO_ROOT/plugins/session/tools/learnings_manager.py" \
+    || OKF_ERRORS+=("learnings_manager.py does not import the okf tools")
+if [[ ${#OKF_ERRORS[@]} -eq 0 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    printf '  %s\n' "${OKF_ERRORS[@]}"
+    FAILED=$((FAILED + 1))
+fi
+
 echo ""
 echo "=== Test Summary ==="
 echo -e "Passed: ${GREEN}$PASSED${NC}"
