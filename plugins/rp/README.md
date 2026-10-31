@@ -1,6 +1,6 @@
 # RP Plugin
 
-**Version**: 0.5.3
+**Version**: 0.5.4
 
 Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification, and world/history lookup. The *verbs* of running a game live here; the *nouns* — canon, character registers, rulesets, the invariants projection — stay in the consuming project.
 
@@ -109,7 +109,7 @@ disabled with `Work/markers/rp-priced-stakes-off` (the historical
 | Subcommand | Use |
 |---|---|
 | `session` | prints the live session file (the marker's `session_file:`, else with a warning the newest open session: the head of a day-file chain, or the newest legacy `Work/rp/rp_session_*.md` unless `/rp:end` closed it or it moved to day files; an older legacy log is never offered, so another campaign opens with `/rp:start load <session>`; when nothing is open but `/rp:end` closed a legacy log that can still rotate, the warning names it to `load` with the opening day), the gate settings, where current state is (`live_state`), the continuity read (`continuity`: the last `previousBeats` beats, and the day's `plans`), the files this session wrote (`session_files`) and any warnings |
-| `turn` | writes the gate's turn file from the GM's final message (`/rp:turn` 3b): the five headed blocks, in order, each once, KEEPER_INPUT from the input file Step 2 wrote; a message may open with the draft itself, and a sentence before the first header is dropped; it refuses a message with no GM block, a block twice or blocks out of order and writes nothing; `--format claude-jsonl` (Claude Code only) reads a task's JSONL output for the GM's handback, the last message (text or a tool call's `message`) carrying its blocks |
+| `turn` | writes the gate's turn file from the GM's final message (`/rp:turn` 3b): the five headed blocks, in order, each once, KEEPER_INPUT from the input file Step 2 wrote; a message may open with the draft itself, a header is the block's name with a colon or alone on its line, and a sentence before the first header is dropped; it refuses a message with no GM block (a status note included), a block twice or blocks out of order and writes nothing; `--format claude-jsonl` (Claude Code only) reads a task's JSONL output for the GM's handback, the last message (text or a tool call's `message`) carrying its blocks |
 | `check` | lints one GM turn and routes it (ship, fix or review; a rewrite is always reviewed); appends `lint` (and `skipped`) lines |
 | `rotate` | before a beat ships: names the file it goes to, rotating to the next fiction day's file when the day moved (see **Day files**), then writes the turn's struck drafts into it (see **Struck drafts**); `--start` records the session's opening in the marker; `--repair` only closes a file an interrupted rotation left open and writes struck drafts still waiting |
 | `strike` | keeps a draft the gate rejected: stashes the turn file's DRAFT for `rotate` to write |
