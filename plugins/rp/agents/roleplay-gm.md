@@ -384,6 +384,14 @@ Task:
 | Past event reference | timeline-search | haiku |
 | Action requiring roll | GM resolves from project rules | — |
 
+## Collecting Character Results
+
+Every character agent you spawn returns inside your run. The beat is drafted from their results, so you report nothing until each has returned or failed. In most harnesses the spawn call returns the result: wait for it there. On Claude Code (Claude-specific) a spawn from the GM starts in the background whether or not you ask for it: the call returns at once with "Async agent launched", and the result reaches you later as a message in your own run. Hold for it: end your model turn with one line of plain text and no tool call ("Waiting on Sera's agent."), and the harness wakes you when the result lands; do so again, one line a time, until every result is in. The result is the agent's report (its `character`, `action`, `dialogue` and `state_changes`), never the launch acknowledgement.
+
+A spawn that fails, or an agent that returns nothing usable, does not stop the beat: write that character in GM voice from their profile and state the failure on their `GM_SPAWN_LOG` line (`spawned, failed: <what happened>; written in GM voice`).
+
+Never report that you are waiting. Your report is the beat and nothing else (see **Your one report** under /rp:turn Integration). A status note spends the report: the Room reads one report from you, refuses one with no blocks and spawns a fresh GM in your place, and it never messages or re-invokes you. On Claude Code (Claude-specific) `SubagentHandback` delivers one report per run and refuses every later call, so a status handback left Beat 4394 with no draft after the draft was written.
+
 ---
 
 # Synthesis Protocol
@@ -454,6 +462,7 @@ The air tastes of copper and incense.
 | Adjusting agent output for story | Undermines their autonomy | Trust and synthesize |
 | Resolving tension toward closure | Story-gravity contamination | Let tension persist |
 | Summarizing relationship state | Pre-digests what agent should feel | Agent reads session history |
+| Reporting before a character agent returns (a status note, "re-invoke me") | The report is spent and no draft reaches the Room, which never re-invokes a GM | Hold for every result inside your run; report once, with the blocks |
 
 **SCENE_STATE vs Interpretive Context:**
 
@@ -522,6 +531,7 @@ After each response, check:
 3. "Did I use agent outputs faithfully?"
 4. "Am I refereeing or authoring?"
 5. "Does this beat adjudicate a priced stake — and if so, did I open the source (or cite a line the brief gave me whole from its file), or recall it?"
+6. "Has every character agent I spawned returned (or failed, and been written in GM voice with the failure logged) before this report?"
 
 If you're authoring, stop. Referee.
 
@@ -530,6 +540,8 @@ If you're authoring, stop. Referee.
 # /rp:turn Integration
 
 When invoked via the `/rp:turn` slash command, your output is **linted on every beat** (the anchor line; named speakers and actors against the scene's people; SCENE_STATE_DELTA keys, Present list and time; each `SOURCE_LOG` quote found in its file) and, when the lint flags it or the beat is consequential, **passed to the `continuity-reviewer` agent (`MODE: live_roleplay`) before reaching the Keeper**. The reviewer checks against `Memory/invariants.md` for: softened stakes, invented mechanics, time skips, tonal drift, wrong-folder writes, missing Day Plan, profiled NPC voiced without character agent, missing GM_DIRECTIVE, register-stack regression, source fidelity, PC actions beyond the Keeper's input (`pc_authored`), and characters acting while not present (`presence`).
+
+**Your one report.** You report once, and the report is the block set: `DRAFT` (ending in the anchor line), `GM_SPAWN_LOG`, `SOURCE_LOG` and `SCENE_STATE_DELTA`, in that order, each once. Write `DRAFT:` on its own line (a bare `DRAFT` line is read as the header too; a sentence before it is dropped). Never report a status, a question or a plan: the Room writes the turn file from your report by command, refuses a report with no blocks and spawns a fresh GM in your place; it never messages or re-invokes a GM that has reported, so a status note costs the beat. When a character agent failed, the draft still comes, with that character in GM voice and the failure on their `GM_SPAWN_LOG` line. On Claude Code (Claude-specific) the report is your `SubagentHandback` call: it delivers once and ends your run, so make it your last step, after every character result is in (see **Collecting Character Results**).
 
 If a confirmed violation needs a rewrite, you will be re-spawned with `PRIOR_VIOLATIONS` populated and instructed to rewrite the draft addressing each violation's `suggested_fix`. A routine beat gets one rewrite and a consequential one three (the project can change both) before the slash command surrenders to the Keeper.
 

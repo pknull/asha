@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased — rp 0.5.4: the GM waits for its agents; the Room never waits on a GM it has heard from
+
+- `roleplay-gm` gets every character agent's result inside its own run before
+  it reports, and its one report is the block set (DRAFT, GM_SPAWN_LOG,
+  SOURCE_LOG, SCENE_STATE_DELTA), never a status note; a character agent that
+  fails is written in GM voice with the failure on its GM_SPAWN_LOG line. On
+  Claude Code a spawn from the GM starts in the background whether or not it
+  asks (every GM run of 2026-10-30 shows "Async agent launched" with no
+  `run_in_background`), so the GM holds for the result by ending its model
+  turn with a line of text, as the GM did on B4383 to B4393; on B4394 it spent
+  its one `SubagentHandback` on "Sera's agent is still running", drafted when
+  messaged, and could not deliver.
+- `/rp:turn` 3b runs the `turn` command as soon as the GM has reported,
+  whatever it says. A report with no blocks is refused and the GM is spawned
+  once more with the error; the Room never messages, resumes or re-invokes a
+  GM that has reported, and never ends the turn waiting on a second report
+  (B4394's Room waited four hours on a notification that never came).
+- `rp_gate.py turn` reads a block header with a colon or alone on its line: the
+  GM writes `DRAFT` bare (B4393, B4394), and a sentence before it went into the
+  draft, where the lint and the Keeper would have read "my second hand-back
+  was rejected" as the beat. Against B4394's GM transcript (a status handback,
+  a refused second handback and a final text carrying the blocks), `--format
+  claude-jsonl` takes the final draft with that sentence dropped; a transcript
+  that ends on the status note, or on a note with no blocks, is refused.
+
 ## Unreleased — rp 0.5.3: two gate fixes that cut turn time
 
 - `/rp:turn` takes the GM's model from `gate.models.gm` on every turn and from

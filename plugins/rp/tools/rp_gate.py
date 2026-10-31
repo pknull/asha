@@ -833,7 +833,9 @@ def invariants_report(project, state: dict | None) -> dict | None:
 
 # -------------------------------------------------------------- turn input
 
-SECTION_RE = re.compile(r"^\s*(?:#+\s*)?(?:\*\*)?(%s)(?:\*\*)?\s*:(?:\*\*)?\s*(.*)$" % "|".join(SECTIONS))
+# a block header: the name, with or without a heading mark or bold, followed by a colon, or alone on its line
+# (the GM writes "DRAFT" bare, B4393 and B4394); a name inside a sentence is prose
+SECTION_RE = re.compile(r"^\s*(?:#+\s*)?(?:\*\*)?(%s)(?:\*\*)?\s*(?::(?:\*\*)?\s*(.*))?$" % "|".join(SECTIONS))
 
 
 def parse_turn(text: str) -> dict:
@@ -846,7 +848,7 @@ def parse_turn(text: str) -> dict:
         if m:
             if current:
                 sections[current] = "\n".join(buf).strip()
-            current, rest = m.group(1), m.group(2).strip()
+            current, rest = m.group(1), (m.group(2) or "").strip()
             buf = [] if rest in ("", "|", ">") else [rest]
         elif current:
             buf.append(line)
@@ -5372,7 +5374,8 @@ class _NoBlock(ValueError):
 def gm_message_blocks(text: str) -> dict:
     """The GM message's sections and the lines dropped before them, or _NoBlock."""
     lines = YAML_BREAK_RE.split(text)
-    heads = [(i, m.group(1), m.group(2).strip()) for i, m in ((i, SECTION_RE.match(line)) for i, line in enumerate(lines))
+    heads = [(i, m.group(1), (m.group(2) or "").strip())
+             for i, m in ((i, SECTION_RE.match(line)) for i, line in enumerate(lines))
              if m]
     names = [name for _i, name, _rest in heads]
     for name in SECTIONS:

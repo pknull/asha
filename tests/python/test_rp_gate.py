@@ -995,6 +995,110 @@ class TurnFileTests(unittest.TestCase):
         self.assertEqual(parsed["DRAFT"], f"Liss nods.\n\n{ANCHOR}")
         self.assertEqual(json.loads(out)["warnings"], [])
 
+    def test_a_bare_draft_header_opens_the_draft_and_a_sentence_before_it_is_dropped(self):
+        # B4393 and B4394: the GM wrote "DRAFT" on a line of its own, no colon; the line and the sentence
+        # before it went into the draft.
+        p = Project(self)
+        self.message(p, "I keep working.\n", name="input.md")
+        for header in ("DRAFT", "**DRAFT**", "## DRAFT"):
+            with self.subTest(header=header):
+                text = f"My hand-back was refused, so the draft is below.\n\n{header}\n\nLiss nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+                code, out, err = run("turn", "--project-dir", str(p.root), "--from", str(self.message(p, text)),
+                                     "--input-file", "Work/rp/.gate/input.md")
+                self.assertEqual((code, err), (0, ""))
+                parsed = rp_gate.parse_turn((p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8"))
+                self.assertEqual(parsed["DRAFT"], f"Liss nods.\n\n{ANCHOR}")
+                self.assertEqual(json.loads(out)["dropped_before"], 1)
+        # a header's name inside a sentence is prose
+        text = f"Liss reads the DRAFT of the notice and nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+        code, _out, _err = run("turn", "--project-dir", str(p.root), "--from", str(self.message(p, text)),
+                               "--input-file", "Work/rp/.gate/input.md")
+        self.assertEqual(code, 0)
+        parsed = rp_gate.parse_turn((p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8"))
+        self.assertEqual(parsed["DRAFT"], f"Liss reads the DRAFT of the notice and nods.\n\n{ANCHOR}")
+
+    def b4394_lines(self, final_text, after_status=True):
+        """The shape of the B4394 GM transcript: a STATUS handback (its one report), the character agent's
+        result, a second handback the harness refused, then a final text carrying the blocks."""
+        status = ("STATUS: Sera's character agent is still running. I have not drafted yet.\n\n"
+                  "Scene anchor to use: " + ANCHOR + "\n\nGM_SPAWN_LOG:\n  - liss: spawned, in flight, no result yet.")
+        draft = f"DRAFT\n\nLiss nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+        lines = [
+            {"type": "user", "message": {"role": "user", "content": "KEEPER_INPUT: I keep working."}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "a", "name": "Agent", "input": {"subagent_type": "character-template",
+                                                                             "prompt": "TRIGGER: ..."}}]}},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "content": "Async agent launched successfully."}]}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "h1", "name": "SubagentHandback", "input": {"message": status}}]}},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "content": '{"success":true,"message":"Report delivered to your caller."}'}]}},
+        ]
+        if after_status:
+            lines += [
+                {"type": "user", "message": {"role": "user", "content": "<agent-message>character: Liss ...</agent-message>"}},
+                {"type": "assistant", "message": {"role": "assistant", "content": [
+                    {"type": "text", "text": "Liss's agent returned, so this is the draft.\n\n" + draft}]}},
+                {"type": "assistant", "message": {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "h2", "name": "SubagentHandback", "input": {"message": draft}}]}},
+                {"type": "user", "message": {"role": "user", "content": [
+                    {"type": "tool_result", "content": '{"success":false,"message":"Nothing was sent: your report was '
+                                                       'already delivered (SubagentHandback delivers one report)."}'}]}},
+            ]
+            if final_text is not None:
+                lines.append({"type": "assistant", "message": {"role": "assistant", "content": [
+                    {"type": "text", "text": final_text}]}})
+        return lines
+
+    def test_claude_task_output_takes_the_final_draft_over_a_status_handback(self):
+        # B4394: the GM spent its one handback on a status note, its second handback was refused, and its final
+        # text carried the draft under a bare DRAFT line: the final draft is the message, its sentence dropped.
+        p = Project(self)
+        self.message(p, "I keep working.\n", name="input.md")
+        final = ("My second hand-back was rejected, so it never arrived. The draft is below.\n\n"
+                 f"DRAFT\n\nLiss nods.\n\n{ANCHOR}\n\n{GM_TAIL}")
+        path = self.message(p, "".join(json.dumps(line) + "\n" for line in self.b4394_lines(final)), name="task.jsonl")
+        code, out, err = run("turn", "--project-dir", str(p.root), "--from", str(path), "--format", "claude-jsonl",
+                             "--input-file", "Work/rp/.gate/input.md")
+        self.assertEqual((code, err), (0, ""))
+        parsed = rp_gate.parse_turn((p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8"))
+        self.assertEqual(parsed["DRAFT"], f"Liss nods.\n\n{ANCHOR}")
+        self.assertNotIn("STATUS", parsed["DRAFT"])
+        self.assertEqual(parsed["GM_SPAWN_LOG"], "- liss: NOT spawned (routine)")
+        self.assertEqual(json.loads(out)["dropped_before"], 1)
+
+    def test_claude_task_output_never_takes_a_status_handback(self):
+        # the GM handed back a status note and stopped, or its final text after the refusal carried no blocks:
+        # the command refuses and writes nothing, and 3b respawns the GM.
+        p = Project(self)
+        self.message(p, "I keep working.\n", name="input.md")
+        cases = {
+            "status, then nothing": self.b4394_lines(None, after_status=False),
+            "status, then a note with no blocks": self.b4394_lines(None, after_status=False) + [
+                {"type": "user", "message": {"role": "user", "content": "Continue the beat."}},
+                {"type": "assistant", "message": {"role": "assistant", "content": [
+                    {"type": "text", "text": "I handed back a status note and have no draft to give."}]}}],
+        }
+        for label, lines in cases.items():
+            with self.subTest(label=label):
+                (p.root / "Work/rp/.gate/turn.md").unlink(missing_ok=True)
+                path = self.message(p, "".join(json.dumps(line) + "\n" for line in lines), name="task.jsonl")
+                code, out, err = run("turn", "--project-dir", str(p.root), "--from", str(path), "--format",
+                                     "claude-jsonl", "--input-file", "Work/rp/.gate/input.md")
+                self.assertEqual(code, 2)
+                self.assertIn("no GM block", err)
+                self.assertEqual(out, "")
+                self.assertFalse((p.root / "Work/rp/.gate/turn.md").exists())
+        # a handback the harness refused still carries the GM's draft: it is the message when nothing follows it
+        lines = self.b4394_lines(None)
+        path = self.message(p, "".join(json.dumps(line) + "\n" for line in lines), name="task.jsonl")
+        code, _out, err = run("turn", "--project-dir", str(p.root), "--from", str(path), "--format", "claude-jsonl",
+                              "--input-file", "Work/rp/.gate/input.md")
+        self.assertEqual((code, err), (0, ""))
+        parsed = rp_gate.parse_turn((p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8"))
+        self.assertEqual(parsed["DRAFT"], f"Liss nods.\n\n{ANCHOR}")
+
     def test_the_written_file_checks_like_a_hand_written_one(self):
         p = Project(self)
         session = p.session()

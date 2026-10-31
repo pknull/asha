@@ -174,7 +174,10 @@ LOOP:
       verified, or a line it carries whole, needs no search. Spawn the
       character agents of one trigger in one message when
       neither answers the other; in turn only when one's answer is
-      the other's trigger.
+      the other's trigger. Every character agent returns inside your
+      run before you report; your one report is the block set, never
+      a status note (a character agent that failed is written in GM
+      voice, the failure on its GM_SPAWN_LOG line).
 
       Draft the GM response for this turn. If PRIOR_VIOLATIONS is present,
       the previous draft failed validation. Use the suggested_fix entries
@@ -208,9 +211,11 @@ LOOP:
   Receive DRAFT, GM_SPAWN_LOG, SOURCE_LOG and SCENE_STATE_DELTA from roleplay-gm output.
 
   # 3b. Lint the draft (every beat; no model call)
-  Write the turn file by command from the GM's final message; extract
-  nothing by hand and never re-emit the message yourself. On Claude Code the
-  GM runs as a background task whose notification names a JSONL output file
+  Write the turn file by command from the GM's final message, as soon as the
+  GM has reported and whatever its report says; extract nothing by hand and
+  never re-emit the message yourself. The GM reports once: a message from it
+  is its whole result, a status note included. On Claude Code the GM runs as
+  a background task whose completion notification names a JSONL output file
   (Claude-specific): pass that file, and the command reads the GM's
   handback from it (the last message carrying the blocks):
     ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" turn --project-dir . --format claude-jsonl --from <the task's output file> --input-file Work/rp/.gate/input.md
@@ -221,15 +226,22 @@ LOOP:
   SCENE_STATE_DELTA:; a message may open with the draft itself) and writes
   Work/rp/.gate/turn.md with the five, in order, each verbatim, KEEPER_INPUT
   from Step 2's input file; a sentence to you before the first header is
-  dropped (`dropped_before`). It refuses, exit 2 and nothing written, a
-  message with no GM block, a block twice or blocks out of order: the GM's
-  output is at fault, not the file. Spawn roleplay-gm once more (3a, the same
+  dropped (`dropped_before`; a header is the block's name with a colon, or
+  alone on its line). It refuses, exit 2 and nothing written, a message with
+  no GM block (a status note, a question, "waiting on an agent": the GM spent
+  its report on it), a block twice or blocks out of order: the GM's output
+  is at fault, not the file. Spawn roleplay-gm once more (3a, the same
   prompt and ATTEMPT_NUMBER, a malformed message being no rewrite, with the
   error appended as its last line: "Your last output: <error>. Emit DRAFT,
-  GM_SPAWN_LOG, SOURCE_LOG and SCENE_STATE_DELTA once, in that order."); a
-  second refusal ends the turn: tell the Keeper, and if the Keeper has you
-  ship the draft anyway, log it (Step 4, --verdict unreviewed --note "<the
-  error>").
+  GM_SPAWN_LOG, SOURCE_LOG and SCENE_STATE_DELTA once, in that order."). The
+  respawn is the only path to a draft: never message, resume or re-invoke
+  the GM that reported, and never end the turn waiting for a second report
+  from it. It reported once and reports no more (on Claude Code a second
+  SubagentHandback is refused: B4394's GM handed back a status note, was
+  messaged to continue, drafted, and could not deliver; the Room waited four
+  hours on a notification that never came). A second refusal ends the turn:
+  tell the Keeper, and if the Keeper has you ship the draft anyway, log it
+  (Step 4, --verdict unreviewed --note "<the error>").
   Run (add --beat <label> when the session numbers its beats; any
   --attempt above 1 is treated as a rewrite and always reviewed):
     ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"; python3 "$ASHA_ROOT/plugins/rp/tools/rp_gate.py" check --project-dir . --session-file "<SESSION_FILE>" --turn-file Work/rp/.gate/turn.md --attempt <ATTEMPT_NUMBER>
@@ -502,6 +514,7 @@ Do not narrate the validation process to the Keeper unless they ask. The gate ru
 | `live_state` warning (no run state resolved) | Proceed on the session's frontmatter and header; tell the Keeper once |
 | No open session file (`source: new`) | Halt, instruct Keeper to run `/rp:start` |
 | roleplay-gm spawn fails | Surface error to Keeper; do not retry blindly |
+| The GM's report carries no blocks (a status note, a question, "waiting on an agent") | 3b: run `turn` on it; it refuses; spawn the GM once more with the error (3a). Never message, resume or wait on the GM that reported |
 | `rp_gate.py check` fails | Surface the error; offer to review the draft with the routine pass instead (Keeper's choice); log the turn with `--note` |
 | continuity-reviewer spawn fails | Surface error and offer to ship the draft unvalidated (Keeper's choice); log the turn with verdict `unreviewed` |
 | No rewrites left | Surrender flow as above |
