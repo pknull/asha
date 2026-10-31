@@ -17,8 +17,13 @@ python3 "$TOOLS/recovery_state.py" latest --project-dir "$PROJECT_DIR"
 python3 "$TOOLS/learnings_manager.py" list --state candidate
 python3 "$TOOLS/learnings_manager.py" list --state active
 python3 "$TOOLS/learnings_manager.py" list --state retired
+python3 "$TOOLS/learnings_manager.py" maintain --project-dir "$PROJECT_DIR"
 ```
 
 Report published file byte sizes, the stable project id, silence/RP markers,
-the newest snapshot as **unpublished recovery**, and learning counts by state.
-Never present recovery or candidates as authoritative memory.
+the newest snapshot as **unpublished recovery**, learning counts by state, and
+the stale candidates `maintain` lists (each awaits `extend --id` or
+`retire --id --reason`; nothing retires on its own). `maintain` is the one
+mutation here: it replays a pending transition journal and refreshes
+`.stale.json`, exactly as SessionStart does. Never present recovery or
+candidates as authoritative memory.

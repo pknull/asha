@@ -92,10 +92,12 @@ user-controlled corroboration heuristic, not a security boundary. Activation
 measures recurrence, not effect: nothing checks that an active learning improves
 outcomes. Only active learnings are rendered at SessionStart, within a
 4,500-byte budget; learnings past it, and a render that fails, are named rather
-than dropped silently. SessionStart runs candidate expiry, moving records
-older than 90 days to retired; no record
-is silently deleted. Contradiction is an explicit transition back to candidate;
-retirement is explicit and keeps the record.
+than dropped silently. SessionStart runs `maintain`, which replays a pending
+transition journal and lists candidates stale 90 days after their last
+corroboration in `.stale.json`; nothing retires or is deleted without the
+Keeper's `retire` or `extend`. Contradiction is an explicit transition back to
+candidate; retirement is explicit and keeps the record. The store is an OKF
+v0.2 bundle once migrated; `docs/okf.md` holds the record mapping and the gate.
 
 ## Legacy Memory
 

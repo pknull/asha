@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 2.12.3
+**Version**: 3.0.0
 
 Compact explicit memory publication, bounded crash recovery, reviewed learning
 lifecycle, policy guardrails, guarded loops, and workspace management.
@@ -46,13 +46,15 @@ and a blocker indicator. They are unpublished and must be verified against
 disk. `Work/markers/silence` disables all persistence.
 
 Global learnings are explicit files under
-`~/.asha/learnings/{candidate,active,retired}/`. Evidence is deduplicated by
-stable `(session_id, project_id)`. A candidate activates only after three
-distinct sessions across two projects. Evidence uses a local session-id
-heuristic resolved by explicit save; it is not a security authority.
+`~/.asha/learnings/{candidate,active,retired}/`, an OKF v0.2 bundle once the
+one-way `tools/migrate_learnings_okf.py` has run (see `docs/okf.md`). Evidence
+is deduplicated by stable `(session_id, project_id)`. A candidate activates only
+after three distinct sessions across two projects. Evidence uses a local
+session-id heuristic resolved by explicit save; it is not a security authority.
 Only active learnings load at start. SessionStart also reads the initialized
-project's published pair through the shared lock and retires candidates older
-than 90 days.
+project's published pair through the shared lock and runs `maintain`, which
+replays a pending journal and lists candidates stale 90 days after their last
+corroboration; nothing retires without the Keeper's `retire` or `extend`.
 
 ## Commands
 

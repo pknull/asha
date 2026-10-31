@@ -305,7 +305,12 @@ cat > "$HOME_DIR/.asha/learnings/candidate/expired-hook.md" <<'EOF'
 **Action:** a
 EOF
 run_hook session-start.sh '{"session_id":"expiry","cwd":"'"$PROJECT"'"}' >/dev/null
-check "SessionStart wires 90-day candidate expiry into lifecycle" test -f "$HOME_DIR/.asha/learnings/retired/expired-hook.md"
+check "SessionStart maintenance never retires a stale candidate" test -f "$HOME_DIR/.asha/learnings/candidate/expired-hook.md"
+check "SessionStart maintenance leaves retired untouched" test ! -e "$HOME_DIR/.asha/learnings/retired/expired-hook.md"
+STALE_OUT="$(HOME="$HOME_DIR" python3 "$REPO_ROOT/plugins/session/tools/learnings_manager.py" maintain --project-dir "$PROJECT" 2>/dev/null)"
+[[ "$STALE_OUT" == *expired-hook* ]] \
+  && ok "maintain lists the stale candidate for the Keeper's ruling" \
+  || fail "maintain lists the stale candidate for the Keeper's ruling"
 
 run_hook user-prompt-submit.sh '{"session_id":"p1","cwd":"'"$PROJECT"'","prompt":"resume src/main.py"}' >/dev/null
 python3 - "$PROJECT/Work/session-state/claude-p1.json" <<'PY' \

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # ---------------------------------------------------------------------------
-# Vendored from https://github.com/sniperunder123/okf-knowledge (MIT, @4d4a0f2)
-# OKF v0.1 tooling. Do not edit locally; re-vendor from upstream to update.
+# Vendored from https://github.com/sniperunder123/okf-knowledge (MIT)
+# commit cbfb00bc42be73c0756b243029c783ad31406f60 (2026-09-17), OKF v0.2 tooling.
+# upstream-sha256: 6c27b624b8d7828184fff674ba41d4cc442353479b7e711431d06df8a6138db5
+# Do not edit locally; re-vendor from upstream (plugins/okf/README.md).
 # ---------------------------------------------------------------------------
 """Visualize an Open Knowledge Format (OKF) bundle as an interactive graph.
 
@@ -36,9 +38,11 @@ from pathlib import Path
 from okf_common import (
     extract_links,
     is_external,
+    normalize_verified,
     parse_frontmatter,
     path_part,
     resolve_link,
+    trust_tier,
 )
 
 try:
@@ -119,11 +123,17 @@ def main(argv=None):
         desc = data.get("description")
         if not isinstance(desc, str):
             desc = ""
+        status = data.get("status")
+        if status not in ("draft", "stable", "deprecated"):
+            status = "stable"
         nodes[cid] = {
             "label": label.strip(),
             "type": ctype.strip(),
             "desc": desc.strip(),
             "group": group_of(rel),
+            "status": status,
+            "trust": trust_tier(normalize_verified(data)),
+            "attested": ctype.strip() == "Attested Computation",
         }
         files[cid] = md
         text_by_id[cid] = text
@@ -168,6 +178,9 @@ def main(argv=None):
             "group": n["group"] or "root",
             "color": color,
             "deg": deg.get(cid, 0),
+            "status": n["status"],
+            "trust": n["trust"],
+            "attested": n["attested"],
         })
     out_edges = [{"from": a, "to": b} for a, b in sorted(edges)]
 
@@ -194,11 +207,16 @@ def main(argv=None):
         if ga != gb:
             inter[(ga, gb)] += 1
     counts = defaultdict(int)
+    deprecated = defaultdict(int)
     for n in nodes.values():
-        counts[n["group"] or "root"] += 1
+        g = n["group"] or "root"
+        counts[g] += 1
+        if n["status"] == "deprecated":
+            deprecated[g] += 1
     lines = ["```mermaid", "graph LR"]
     for g in sorted(counts):
-        lines.append(f'    {g}["{g} ({counts[g]})"]')
+        suffix = f", {deprecated[g]} deprecated" if deprecated[g] else ""
+        lines.append(f'    {g}["{g} ({counts[g]}{suffix})"]')
     for (ga, gb), c in sorted(inter.items(), key=lambda kv: -kv[1]):
         lines.append(f"    {ga} -->|{c}| {gb}")
     lines.append("```")
@@ -240,6 +258,10 @@ _HTML = r"""<!DOCTYPE html>
   .lg { display:flex; align-items:center; gap:6px; cursor:pointer; user-select:none; opacity:0.95; }
   .lg.off { opacity:0.35; text-decoration:line-through; }
   .dot { width:11px; height:11px; border-radius:50%; display:inline-block; }
+  #trustlegend { padding:6px 20px; border-bottom:1px solid #21262d; font-size:11px; color:#8b949e;
+                 display:flex; gap:14px; flex-wrap:wrap; align-items:center; }
+  .tdot { width:10px; height:10px; border-radius:50%; display:inline-block; border:2px solid;
+          background:transparent; vertical-align:middle; }
   #wrap { position:relative; width:100vw; height:calc(100vh - 112px); }
   #net { display:block; width:100%; height:100%; cursor:grab; }
   #net.dragging { cursor:grabbing; }
@@ -262,6 +284,13 @@ _HTML = r"""<!DOCTYPE html>
   <input id="search" placeholder="Search concepts…" autocomplete="off" spellcheck="false">
 </header>
 <div id="legend"></div>
+<div id="trustlegend">
+  <span><span class="tdot" style="border-color:#8b949e"></span> unverified</span>
+  <span><span class="tdot" style="border-color:#58a6ff"></span> machine-confirmed</span>
+  <span><span class="tdot" style="border-color:#3fb950"></span> human-reviewed</span>
+  <span>dashed ring = draft/deprecated</span>
+  <span>&#9670; = Attested Computation</span>
+</div>
 <div id="wrap">
   <canvas id="net"></canvas>
   <div id="tip"></div>
@@ -435,6 +464,8 @@ function nodeActive(n){
   return true;
 }
 
+var TRUST_COLOR = { unverified: '#8b949e', 'machine-confirmed': '#58a6ff', 'human-reviewed': '#3fb950' };
+
 function draw(){
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   ctx.clearRect(0, 0, W, H);
@@ -463,13 +494,23 @@ function draw(){
     var p = worldToScreen(nd.x, nd.y);
     var r = Math.max(2, nd.r * view.k);
     var active = nodeActive(nd);
+    var dashed = nd.status === 'draft' || nd.status === 'deprecated';
+    ctx.save();
+    if (nd.status === 'deprecated') ctx.globalAlpha = active ? 0.55 : 0.3;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    if (nd.attested){
+      ctx.moveTo(p.x, p.y - r); ctx.lineTo(p.x + r, p.y);
+      ctx.lineTo(p.x, p.y + r); ctx.lineTo(p.x - r, p.y); ctx.closePath();
+    } else {
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+    }
     ctx.fillStyle = active ? nd.color : '#2a2f37';
     ctx.fill();
+    ctx.setLineDash(dashed ? [3, 2] : []);
     if (nd.id === selected){ ctx.lineWidth = 2.5; ctx.strokeStyle = '#fff'; ctx.stroke(); }
     else if (nd === hoverNode){ ctx.lineWidth = 2; ctx.strokeStyle = '#cdd9e5'; ctx.stroke(); }
-    else { ctx.lineWidth = 1.2; ctx.strokeStyle = '#0d1117'; ctx.stroke(); }
+    else { ctx.lineWidth = 1.5; ctx.strokeStyle = TRUST_COLOR[nd.trust] || '#0d1117'; ctx.stroke(); }
+    ctx.restore();
 
     // Label (only when zoomed in enough or active, to reduce clutter)
     if ((view.k > 0.55 || active || nd === hoverNode) && (active || !selected && !searchHits)){
@@ -607,6 +648,10 @@ function showTip(nd, ev){
   if (!nd){ tip.style.display = 'none'; return; }
   var h = '<b>' + esc(nd.label) + '</b><br><i>' + esc(nd.type) + '</i>';
   if (nd.desc){ h += '<br>' + esc(nd.desc); }
+  var extra = [];
+  if (nd.status !== 'stable') extra.push(nd.status);
+  if (nd.trust !== 'unverified') extra.push(nd.trust);
+  if (extra.length){ h += '<br><span style="color:#6e7681">' + extra.join(' · ') + '</span>'; }
   h += '<br><span style="color:#6e7681">' + esc(nd.group) + ' · ' + nd.deg + ' link' +
        (nd.deg === 1 ? '' : 's') + '</span>';
   tip.innerHTML = h;

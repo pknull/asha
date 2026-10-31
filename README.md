@@ -48,7 +48,7 @@ Asha exposes four kinds of reusable surface:
 The root README is the map. Each plugin README is the authority for that
 plugin's version, detailed usage, inventory, prerequisites, and safety
 boundaries:
-[Session](plugins/session/README.md), [Code](plugins/code/README.md),
+[Session](plugins/session/README.md), [OKF](plugins/okf/README.md), [Code](plugins/code/README.md),
 [Write](plugins/write/README.md), [Panel](plugins/panel/README.md),
 [RP](plugins/rp/README.md), [RPG](plugins/rpg/README.md),
 [Image](plugins/image/README.md),
@@ -288,6 +288,7 @@ The owning guide below is the catalogue for each plugin.
 | `rp` | `/rp:*` or rendered `rp-*` skills | Live roleplay lifecycle, continuity gates, canon ratification | [RP guide](plugins/rp/README.md) |
 | `rpg` | Name the required skill, or `rpg-router` | Exact odds, mechanic and encounter design, character checks, rulings and oracles for any system; DriveThruRPG library audit, fetch and placement | [RPG guide](plugins/rpg/README.md) |
 | `image` | `image-generation` or `image-fal` skill | Stable Diffusion prompts and ComfyUI workflows (local first); priced, user-approved fal.ai images, sprites, textures, 3D, rigging, audio and video | [Image guide](plugins/image/README.md) |
+| `okf` | `okf-bundle` skill; `plugins/okf/tools/okf_validate.py BUNDLE --strict` | Open Knowledge Format bundles: pinned v0.2 validator and visualizer, generated indexes and logs, the strict gate the learnings store runs through | [OKF guide](plugins/okf/README.md) |
 | `admin` | Name the required skill | Todoist, Gemini, Wolfram, BookStack, and Proton Mail operations | [Admin guide](plugins/admin/README.md) |
 | `devops` | `devops-inspect`, `devops-unifi`, or `devops-change` skill | Inspect owned hosts, read UniFi inventory and health, or execute authorized changes with preflight, recovery, and verification | [DevOps guide](plugins/devops/README.md) |
 | `security` | `security-review` skill | Security-sensitive implementation and review | [Security guide](plugins/security/README.md) |

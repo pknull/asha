@@ -150,13 +150,15 @@ class LearningLifecycleTests(unittest.TestCase):
         self.write_active("small", "t", "a")
         self.assertEqual("- small: when t; a", lm.render_active(3000))
 
-    def test_candidate_expiry_moves_old_record_to_retired(self):
+    def test_candidate_maintenance_lists_a_stale_record_without_retiring_it(self):
         learning = self.propose()
         learning.updated = (date.today() - timedelta(days=91)).isoformat()
         lm.save(learning, project_dir=self.project)
-        expired = lm.expire_candidates(project_dir=self.project, days=90)
-        self.assertEqual(["disk-pressure"], expired)
-        self.assertTrue((self.bundle / "retired/disk-pressure.md").exists())
+        stale = lm.maintain_candidates(project_dir=self.project, days=90)
+        self.assertEqual(["disk-pressure"], stale)
+        self.assertEqual(stale, lm.expire_candidates(project_dir=self.project, days=90))
+        self.assertTrue((self.bundle / "candidate/disk-pressure.md").exists())
+        self.assertFalse((self.bundle / "retired/disk-pressure.md").exists())
 
     def test_save_batch_limits_new_candidates_to_three(self):
         proposals = [

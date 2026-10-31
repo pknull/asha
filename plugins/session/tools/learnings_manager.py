@@ -23,6 +23,22 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 
 from path_safety import secure_path, secure_project_root
 
+# The session plugin's own version, mirrored from plugins/session/README.md and
+# asserted equal by tests: it is the `generated.by` actor of every record this
+# writer emits (`asha/<version>`), so it must never read "unknown".
+SESSION_PLUGIN_VERSION = "3.0.0"
+GENERATED_BY = f"asha/{SESSION_PLUGIN_VERSION}"
+# The OKF v0.2 record shape is emitted only once the migration script has
+# written this marker; until then the writer keeps the legacy shape so a
+# SessionStart maintenance save can never migrate the store incrementally.
+OKF_MARKER = ".okf-0.2.json"
+STALE_LIST = ".stale.json"
+STATUS_BY_STATE = {"candidate": "draft", "active": "stable", "retired": "deprecated"}
+STATE_BY_STATUS = {status: state for state, status in STATUS_BY_STATE.items()}
+_OKF_TOOLS = Path(__file__).resolve().parents[2] / "okf" / "tools"
+_UNPRINTABLE_RE = re.compile("[\x7f-\x9f\ufffe\uffff\ud800-\udfff]")
+_ISO_INSTANT_RE = re.compile(r"\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2}))?")
+
 
 _SELECTED_HOME = ContextVar('learning_home', default=None)
 
@@ -75,10 +91,68 @@ class Learning:
     updated: str = ""
     retirement_reason: str = ""
     applicability: dict = field(default_factory=dict)
+    # OKF v0.2 trust fields. generated_at is the date trigger/action last
+    # changed; verified holds only confirmations a person made (human: actors).
+    generated_at: str = ""
+    verified: list[dict] = field(default_factory=list)
 
 
 def _today() -> str:
     return date.today().isoformat()
+
+
+_FORCE_OKF = ContextVar("force_okf_shape", default=False)
+
+
+@contextmanager
+def force_okf_shape():
+    """Render the OKF shape before the marker exists (the migration's pre-check)."""
+    token = _FORCE_OKF.set(True)
+    try:
+        yield
+    finally:
+        _FORCE_OKF.reset(token)
+
+
+def _okf_tools():
+    """Import the okf plugin's indexer, log writer and link grammar from the sibling plugin."""
+    import importlib.util
+    modules = {}
+    for name in ("okf_io", "okf_common", "okf_index", "okf_log"):
+        location = _OKF_TOOLS / f"{name}.py"
+        existing = sys.modules.get(name)
+        if existing is not None:
+            if Path(getattr(existing, "__file__", "") or "").resolve() != location.resolve():
+                raise ValueError(f"a different module named {name} is already loaded; okf tools unavailable")
+            modules[name] = existing
+            continue
+        spec = importlib.util.spec_from_file_location(name, location)
+        if spec is None or spec.loader is None:
+            raise ValueError(f"okf plugin tools unavailable at {_OKF_TOOLS}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except (OSError, ImportError) as exc:
+            del sys.modules[name]
+            raise ValueError(f"okf plugin tools unavailable at {_OKF_TOOLS}") from exc
+        modules[name] = module
+    return modules["okf_index"], modules["okf_log"], modules["okf_common"]
+
+
+def _okf_enabled() -> bool:
+    return _FORCE_OKF.get() or _secure_learning_child(OKF_MARKER).is_file()
+
+
+def _stale_after(learning: "Learning", days: int = CANDIDATE_TTL_DAYS) -> str | None:
+    """Candidates go stale `days` after their last corroboration (`updated`)."""
+    if learning.state != "candidate":
+        return None
+    try:
+        anchor = date.fromisoformat(learning.updated or learning.created)
+    except ValueError:
+        return None
+    return f"{(anchor + timedelta(days=days)).isoformat()}T00:00:00+00:00"
 
 
 def _slug(value: str) -> str:
@@ -176,12 +250,9 @@ def _secure_learning_roots(*, create: bool = False) -> None:
         _secure_learning_child(relative, create_parents=create)
 
 
-def _render(learning: Learning) -> str:
-    data = {
-        "type": "learning",
-        "id": learning.id,
-        "trigger": learning.trigger,
-        "action": learning.action,
+def _record(learning: Learning) -> dict:
+    """The frontmatter mapping: legacy shape, or OKF v0.2 once the store is migrated."""
+    private = {
         "state": learning.state,
         "created": learning.created,
         "updated": learning.updated,
@@ -189,6 +260,30 @@ def _render(learning: Learning) -> str:
         "evidence": [asdict(item) for item in learning.evidence],
         "applicability": learning.applicability,
     }
+    if not _okf_enabled():
+        return {"type": "learning", "id": learning.id, "trigger": learning.trigger,
+                "action": learning.action, **private}
+    data = {
+        "type": "learning",
+        "id": learning.id,
+        "title": learning.id,
+        "description": learning.trigger,
+        "status": STATUS_BY_STATE[learning.state],
+        "trigger": learning.trigger,
+        "action": learning.action,
+        "generated": {"by": GENERATED_BY, "at": learning.generated_at or learning.created},
+    }
+    if learning.verified:
+        data["verified"] = [dict(item) for item in learning.verified]
+    stale_after = _stale_after(learning)
+    if stale_after:
+        data["stale_after"] = stale_after
+    data.update(private)
+    return data
+
+
+def _render(learning: Learning) -> str:
+    data = _record(learning)
     # JSON is a valid YAML mapping and lets the manager remain dependency-free.
     return f"---\n{json.dumps(data, ensure_ascii=False, indent=2)}\n---\n\n# {learning.id}\n\n**Trigger:** {learning.trigger}\n\n**Action:** {learning.action}\n"
 
@@ -200,13 +295,92 @@ def _parse(path: Path) -> Learning:
         raise ValueError(f"invalid learning frontmatter: {path}")
     data = json.loads(match.group(1))
     evidence = [Evidence(**item) for item in data.get("evidence", [])]
+    state = data.get("state") or STATE_BY_STATUS.get(data.get("status"), path.parent.name)
+    generated = data.get("generated") if isinstance(data.get("generated"), dict) else {}
+    verified = data.get("verified")
+    if isinstance(verified, dict):
+        verified = [verified]
     return Learning(
         id=str(data["id"]), trigger=str(data.get("trigger", "")),
-        action=str(data.get("action", "")), state=str(data.get("state", path.parent.name)),
+        action=str(data.get("action", "")), state=str(state),
         evidence=evidence, created=str(data.get("created", "")),
         updated=str(data.get("updated", "")), retirement_reason=str(data.get("retirement_reason", "")),
         applicability=data.get("applicability", {}),
+        generated_at=str(generated.get("at", "") or ""),
+        verified=[dict(item) for item in verified if isinstance(item, dict)] if isinstance(verified, list) else [],
     )
+
+
+def _check_record(data: dict, rendered: str, destination: Path) -> None:
+    """Dependency-free per-record check, run before the transition journal is written.
+
+    It covers what a writer can know about one record: the spec's required
+    `type`, the recommended title and description, the v0.2 families this
+    writer emits, no code point PyYAML or UTF-8 refuses, and that the index
+    entry the indexer would write parses as one link to the file under the
+    spec's link grammar. The bundle-wide strict run belongs to okf_validate.py
+    at the explicit save.
+    """
+    def nonempty(key):
+        value = data.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"learning record {destination.name}: '{key}' must be a non-empty string")
+    if data.get("type") != "learning":
+        raise ValueError(f"learning record {destination.name}: type must be 'learning'")
+    for key in ("id", "title", "description"):
+        nonempty(key)
+    if data.get("status") not in STATE_BY_STATUS:
+        raise ValueError(f"learning record {destination.name}: status must be draft|stable|deprecated")
+    generated = data.get("generated")
+    if not isinstance(generated, dict) or not isinstance(generated.get("by"), str) or not generated["by"].strip():
+        raise ValueError(f"learning record {destination.name}: generated.by is required")
+    if not isinstance(generated.get("at"), str) or not _ISO_INSTANT_RE.fullmatch(generated["at"]):
+        raise ValueError(f"learning record {destination.name}: generated.at must be an ISO 8601 date or instant")
+    stale_after = data.get("stale_after")
+    if stale_after is not None and not (isinstance(stale_after, str) and _ISO_INSTANT_RE.fullmatch(stale_after)):
+        raise ValueError(f"learning record {destination.name}: stale_after must be an ISO 8601 instant")
+    for item in data.get("verified", []):
+        if not isinstance(item, dict) or not isinstance(item.get("by"), str) or not item["by"].startswith("human:") \
+                or not isinstance(item.get("at"), str) or not _ISO_INSTANT_RE.fullmatch(item["at"]):
+            raise ValueError(f"learning record {destination.name}: verified entries need a human: actor and an ISO date")
+    if _UNPRINTABLE_RE.search(rendered):
+        raise ValueError(f"learning record {destination.name}: text contains a code point YAML or UTF-8 refuses "
+                         "(DEL, C1 controls, U+FFFE/FFFF or a lone surrogate)")
+    okf_index, _, okf_common = _okf_tools()
+    entry = okf_index.concept_entry(Path(destination.name), data)
+    links = okf_common.extract_links(entry)
+    # The gate strips inline code over the whole index, so a backtick this entry
+    # leaves unpaired would pair with a neighbour's and hide that neighbour's link.
+    if not links or links[0] != f"./{destination.name}" or "`" in okf_common.strip_code(entry):
+        raise ValueError(f"learning record {destination.name}: its index entry would not parse as one link to the "
+                         f"file (the id must not contain ']' and the id and trigger must not carry an unpaired backtick)")
+
+
+_LOG_KEYWORDS = {"propose": "Creation", "retire": "Deprecation", "recover": "Fix", "migrate": "Update"}
+
+
+def _log_unlocked(operation: str, learning: Learning) -> None:
+    _, okf_log, _ = _okf_tools()
+    keyword = _LOG_KEYWORDS.get(operation, "Update")
+    okf_log.append_entry(_learning_root(), f"**{keyword}** `{learning.id}` {operation}: {learning.state}",
+                         actor=GENERATED_BY)
+
+
+def _derive_unlocked(operation: str, learning: Learning | None) -> None:
+    """Regenerate the indexes and append the log entry after the record is durable.
+
+    These are derived artifacts. A failure here is reported, never raised: the
+    record and journal are already consistent, so raising would leave a journal
+    that every later lock holder replays into the same failure. The strict gate
+    at the explicit save reports a stale index as orphan lints.
+    """
+    try:
+        _rebuild_index_unlocked()
+        if learning is not None:
+            _log_unlocked(operation, learning)
+    except (OSError, ValueError, UnicodeError) as exc:
+        print(f"WARNING: learnings index/log not updated ({exc}); the next save or okf_index.py rebuilds them",
+              file=sys.stderr)
 
 
 @contextmanager
@@ -273,11 +447,13 @@ def _recover_transitions_unlocked() -> None:
             recovered = True
         except (OSError, KeyError, ValueError, json.JSONDecodeError) as exc:
             raise ValueError(f"learning transition recovery failed: {journal}") from exc
-    if recovered:
+        if _okf_enabled():
+            _derive_unlocked("recover", parsed)
+    if recovered and not _okf_enabled():
         _rebuild_index_unlocked()
 
 
-def _save_unlocked(learning: Learning) -> Learning:
+def _save_unlocked(learning: Learning, operation: str = "update") -> Learning:
     if learning.state not in STATES:
         raise ValueError(f"invalid state: {learning.state}")
     learning.created = learning.created or _today()
@@ -287,6 +463,10 @@ def _save_unlocked(learning: Learning) -> Learning:
     destination = _path(learning)
     journal = _transition_journal_path(learning)
     rendered = _render(learning)
+    if _okf_enabled():
+        # Refuse before any write: a failure after the journal exists would be
+        # replayed by the next lock holder and land unchecked.
+        _check_record(_record(learning), rendered, destination)
     _atomic(journal, json.dumps({"version": 2, "name": destination.name,
                                 "state": learning.state, "content": rendered,
                                 "content_sha256": hashlib.sha256(rendered.encode("utf-8")).hexdigest()},
@@ -296,8 +476,14 @@ def _save_unlocked(learning: Learning) -> Learning:
         other = _secure_learning_child(f"{state}/{destination.name}")
         if other != destination:
             _unlink_durable(other)
-    _rebuild_index_unlocked()
-    _unlink_durable(journal)
+    if _okf_enabled():
+        # The journal guards the record write only; derived artifacts follow it
+        # and are regenerated by any later save if they fail.
+        _unlink_durable(journal)
+        _derive_unlocked(operation, learning)
+    else:
+        _rebuild_index_unlocked()
+        _unlink_durable(journal)
     return learning
 
 
@@ -467,8 +653,10 @@ def propose(learning_id: str, trigger: str, action: str, *, project_dir: Path,
             if learning.applicability and learning.applicability != applicability:
                 learning.evidence = [item for item in learning.evidence if item.kind == 'contradict']
             learning.applicability = applicability
+        if semantics_changed or not learning.generated_at:
+            learning.generated_at = _today()
         _add_evidence(learning, session_id, project_id, reason, "propose", source_provenance)
-        return _save_unlocked(learning)
+        return _save_unlocked(learning, "propose")
 
 
 def propose_many(proposals: Iterable[dict[str, Any]], *, project_dir: Path,
@@ -491,7 +679,7 @@ def corroborate(learning_id: str, *, project_dir: Path, session_id: str,
         if learning.state == "retired":
             raise ValueError("retired learning cannot be corroborated")
         if _add_evidence(learning, session_id, project_id, reason, "corroborate", source_provenance):
-            _save_unlocked(learning)
+            _save_unlocked(learning, "corroborate")
         return learning
 
 
@@ -538,9 +726,10 @@ def adopt_reviewed(learning_id: str, *, project_dir: Path, session_id: str, reas
                             for e in candidate.evidence) for candidate in _list_state_unlocked())
             if count >= MAX_PROPOSALS_PER_SAVE:
                 raise ValueError('at most 3 learning candidates may be proposed per save')
+        learning.generated_at = learning.generated_at or _today()
         _add_evidence(learning, session_id, project_id, reason, operation, source)
         _assert_not_silenced(project_dir)
-        return _save_unlocked(learning)
+        return _save_unlocked(learning, "adopt")
 
 
 def activate_if_eligible(learning_id: str, *, project_dir: Path) -> bool:
@@ -559,7 +748,7 @@ def activate_if_eligible(learning_id: str, *, project_dir: Path) -> bool:
             return False
         learning.state = "active"
         learning.updated = _today()
-        _save_unlocked(learning)
+        _save_unlocked(learning, "activate")
         return True
 
 
@@ -574,7 +763,7 @@ def contradict(learning_id: str, *, project_dir: Path, session_id: str,
             raise ValueError("retired learning cannot transition")
         _add_evidence(learning, session_id, project_id, reason, "contradict", source_provenance)
         learning.state = "candidate"
-        return _save_unlocked(learning)
+        return _save_unlocked(learning, "contradict")
 
 
 def retire(learning_id: str, reason: str, *, project_dir: Path) -> Learning:
@@ -584,7 +773,38 @@ def retire(learning_id: str, reason: str, *, project_dir: Path) -> Learning:
         learning.state = "retired"
         learning.retirement_reason = reason.strip()
         learning.updated = _today()
-        return _save_unlocked(learning)
+        return _save_unlocked(learning, "retire")
+
+
+def _require_okf(verb: str) -> None:
+    if not _okf_enabled():
+        raise ValueError(f"{verb} needs the OKF-migrated store (run migrate_learnings_okf.py first)")
+
+
+def extend(learning_id: str, *, project_dir: Path) -> Learning:
+    """Keeper ruling on a stale candidate: another 90 days from today, no evidence added."""
+    _assert_not_silenced(project_dir)
+    with _global_lock():
+        _require_okf("extend")
+        learning = _load_unlocked(learning_id)
+        if learning.state != "candidate":
+            raise ValueError("only a candidate learning can be extended")
+        learning.updated = _today()
+        return _save_unlocked(learning, "extend")
+
+
+def verify(learning_id: str, *, project_dir: Path, by: str = "human:keeper") -> Learning:
+    """Record a person's confirmation; the only writer of OKF `verified`."""
+    _assert_not_silenced(project_dir)
+    if not isinstance(by, str) or not by.startswith("human:") or len(by) <= len("human:"):
+        raise ValueError("verified entries record people only: use a human:<id> actor")
+    with _global_lock():
+        _require_okf("verify")
+        learning = _load_unlocked(learning_id)
+        if learning.state == "retired":
+            raise ValueError("retired learning cannot be verified")
+        learning.verified.append({"by": by, "at": _today()})
+        return _save_unlocked(learning, "verify")
 
 
 def _list_state_unlocked(state: str | None = None) -> list[Learning]:
@@ -628,6 +848,11 @@ def render_active(max_bytes: int = ACTIVE_RENDER_MAX_BYTES) -> str:
 
 
 def _rebuild_index_unlocked(max_bytes: int = ACTIVE_RENDER_MAX_BYTES) -> None:
+    # max_bytes shapes only the legacy budgeted index; OKF indexes list every record.
+    if _okf_enabled():
+        okf_index, _, _ = _okf_tools()
+        okf_index.write_indexes(_learning_root(), title="Learnings")
+        return
     content = _render_active_index(_list_state_unlocked("active"), max_bytes)
     _atomic(_secure_learning_child("active/index.md", create_parents=True), content)
 
@@ -661,23 +886,30 @@ def rebuild_index(max_bytes: int = ACTIVE_RENDER_MAX_BYTES) -> None:
         _rebuild_index_unlocked(max_bytes)
 
 
-def expire_candidates(*, project_dir: Path, days: int = CANDIDATE_TTL_DAYS) -> list[str]:
+def maintain_candidates(*, project_dir: Path, days: int = CANDIDATE_TTL_DAYS) -> list[str]:
+    """SessionStart maintenance: replay any pending journal, then list stale candidates.
+
+    Nothing is retired here. A candidate is stale `days` after its last
+    corroboration; the list is for the Keeper's ruling (`extend` or `retire`)
+    and persists in the bundle's .stale.json once the store is OKF-shaped.
+    """
     _assert_not_silenced(project_dir)
-    cutoff = date.today() - timedelta(days=days)
-    expired: list[str] = []
+    today = date.today()
+    stale: list[str] = []
     with _global_lock():
         for learning in _list_state_unlocked("candidate"):
-            try:
-                stale = date.fromisoformat(learning.updated) < cutoff
-            except ValueError:
-                stale = False
-            if stale:
-                learning.state = "retired"
-                learning.retirement_reason = f"candidate expired after {days} days"
-                learning.updated = _today()
-                _save_unlocked(learning)
-                expired.append(learning.id)
-    return expired
+            instant = _stale_after(learning, days)
+            if instant and date.fromisoformat(instant[:10]) <= today:
+                stale.append(learning.id)
+        if _okf_enabled():
+            _atomic(_secure_learning_child(STALE_LIST),
+                    json.dumps({"checked": today.isoformat(), "days": days, "stale": stale}, indent=2) + "\n")
+    return stale
+
+
+# Kept as an alias for the maintenance verb; it has not retired a record since
+# session 3.0.0 (Keeper, 2026-10-31: stale candidates wait for a ruling).
+expire_candidates = maintain_candidates
 
 
 def _main(argv: list[str] | None = None) -> int:
@@ -703,8 +935,16 @@ def _main(argv: list[str] | None = None) -> int:
     listing.add_argument("--state", choices=STATES)
     render = sub.add_parser("render-active")
     render.add_argument("--max-bytes", type=int, default=ACTIVE_RENDER_MAX_BYTES)
-    expire = sub.add_parser("expire")
-    expire.add_argument("--project-dir", required=True, type=Path)
+    for name in ("maintain", "expire"):
+        maintain = sub.add_parser(name)
+        maintain.add_argument("--project-dir", required=True, type=Path)
+    extend_cmd = sub.add_parser("extend")
+    extend_cmd.add_argument("--id", required=True)
+    extend_cmd.add_argument("--project-dir", required=True, type=Path)
+    verify_cmd = sub.add_parser("verify")
+    verify_cmd.add_argument("--id", required=True)
+    verify_cmd.add_argument("--project-dir", required=True, type=Path)
+    verify_cmd.add_argument("--by", default="human:keeper")
     args = parser.parse_args(argv)
     try:
         if args.command == "propose":
@@ -726,8 +966,12 @@ def _main(argv: list[str] | None = None) -> int:
         elif args.command == "render-active":
             print(render_active(args.max_bytes))
             return 0
+        elif args.command == "extend":
+            result = extend(args.id, project_dir=args.project_dir)
+        elif args.command == "verify":
+            result = verify(args.id, project_dir=args.project_dir, by=args.by)
         else:
-            result = {"expired": expire_candidates(project_dir=args.project_dir)}
+            result = {"stale": maintain_candidates(project_dir=args.project_dir)}
         print(json.dumps(asdict(result) if isinstance(result, Learning) else result,
                          ensure_ascii=False, indent=2))
         return 0

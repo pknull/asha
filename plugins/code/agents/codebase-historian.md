@@ -65,8 +65,10 @@ git log --format=format: --name-only --since="3 months ago" -- "path/" | sort | 
 
 ### Learnings bundle (`~/.asha/learnings/`, if present)
 
-- Read `~/.asha/learnings/active/index.md` first; only active records carry
-  instructional authority. Candidate and retired records are evidence, not guidance.
+- Read `~/.asha/learnings/index.md` first, then `active/index.md`, whose entries
+  carry each learning's trigger as its description; open a record for its
+  action. Only active records carry instructional authority. Candidate and
+  retired records are evidence, not guidance.
 
 ## Phase 3: Synthesis
 

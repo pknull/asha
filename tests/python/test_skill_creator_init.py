@@ -49,6 +49,7 @@ class InitSkillTemplateTests(unittest.TestCase):
         shutil.copy2(REPO_ROOT / "namespaces.json", self.root)
         shutil.copytree(REPO_ROOT / "plugins", self.root / "plugins", symlinks=True, ignore=ignore)
         shutil.copytree(REPO_ROOT / "harnesses", self.root / "harnesses", symlinks=True, ignore=ignore)
+        shutil.copytree(REPO_ROOT / "tests/fixtures", self.root / "tests/fixtures", ignore=ignore)
         (self.root / "lib").mkdir()
         for script in (REPO_ROOT / "lib").glob("*.sh"):
             shutil.copy2(script, self.root / "lib")
