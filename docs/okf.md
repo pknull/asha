@@ -134,7 +134,25 @@ the learnings subtree (the learnings manager on every save, the bundle indexer
 on request) and agree only because they see the same files: never scope
 anything under `learnings/` from the root `.okfignore`.
 
+## Canon vaults (phase two)
+
+Ruled 2026-10-31 on measured facts (about 1,100 of 1,643 Lore notes and some
+45 directories carry spaces or punctuation in their names, which the spec's
+link grammar cannot address): vaults keep their names and their
+`[[wikilinks]]`; Asha owns the link lints. The vault root (`~/Obsidian/AAS/Lore`, the Obsidian vault, not the
+repository) gets `.okfconfig` with `{"links": "obsidian"}` (in the phase-two vault change) so `okf_validate`
+runs its own strict set over `okf_links`, which resolves wikilinks the way
+Obsidian does (basename, partial path, case-insensitive; attachments by a
+known extension set skipped; two notes sharing a name reported as ambiguous
+unless one is in the linking note's own directory, which is Asha's tie-break,
+not a documented Obsidian rule). Links resolve against every note on disk, so
+a path into an excluded note is not broken, while only admitted notes are
+concepts. Generated indexes percent-encode their targets under this grammar;
+declare it in `.okfconfig` before the first index run. The vault's taxonomy (Decision
+002) owns `status` with its own ladder, so the bundle waives that lint. The
+vault's own quality gate (`Tools/validate_repo.py`) and link checker predate
+this and remain; the OKF gate joins them rather than replacing them.
+
 ## Later bundles
 
 Harness-owned files (`SKILL.md`, generated agents) stay outside bundles.
-Canon vaults follow, with wikilinks converted to standard links first.

@@ -81,6 +81,16 @@ Writes `viz.html` and `graph.mmd` into the bundle root with inline JSON made
 script-safe. Do not run the vendored `visualize.py` directly on a bundle whose
 descriptions agents write.
 
+## Vaults with wikilinks
+
+Put `{"links": "obsidian"}` in `.okfconfig` at the vault root BEFORE the first
+index run; never rename notes or rewrite `[[links]]` for the gate. Under this
+grammar index entries encode spaces as `%20`, which Obsidian reads; under the
+standard grammar nothing is encoded. A link into an excluded note is not
+broken; an excluded note is not a concept. The gate reports a missing target and a basename
+two notes share; fix the second by path-qualifying the link (`[[Magic/Notes]]`).
+Waive a field the vault's own taxonomy owns with `"waive": ["status"]`.
+
 ## Trust fields
 
 Actors: `human:keeper` for the Keeper's own confirmations, `asha/<plugin

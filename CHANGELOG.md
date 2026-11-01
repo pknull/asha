@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased — okf 0.3.0: Obsidian link grammar for vault bundles (phase two tooling)
+
+- `okf_links.py` resolves links in two grammars: standard markdown with
+  percent-decoding, and Obsidian wikilinks (`[[Note]]`, `[[Note|alias]]`,
+  `[[Note#heading]]`, partial paths, same-directory twins first, attachments
+  skipped by a known extension set, code and comments stripped first). A
+  basename two notes share is reported as ambiguous unless one twin sits in
+  the linking note's own directory, Asha's tie-break; Obsidian's rule for
+  duplicate names is undocumented, so the gate reports rather than guesses.
+  Links resolve against every note on disk (a path into an excluded note is
+  not broken), while only admitted notes are concepts, earn inbound credit or
+  can be orphans; excluded twins never make an admitted target ambiguous.
+  Reachability is keyed on realpath, so an aliased file (`~/.asha/keeper-voice.md`
+  links to `reference/keeper-voice.md`) is reachable through either name.
+- `okf_validate.py --links obsidian`, or `.okfconfig` `{"links": "obsidian"}`:
+  upstream checks the three conformance errors only and Asha runs the strict
+  set itself (field lints through the upstream functions, links and orphans
+  through okf_links). The spec's link grammar stops a target at whitespace, so
+  a vault whose 1,071 notes carry spaces in their names cannot pass upstream
+  strict and this is how it is gated instead. `.okfconfig` may also waive a
+  field lint the bundle's own taxonomy owns (`"waive": ["status"]`); the
+  verdict names every waiver and the grammar in use.
+- Under the obsidian grammar, generated index entries percent-encode their
+  targets, so space-named notes are addressable without renaming, and
+  `UNLINKABLE` names only `]`; under the standard grammar nothing is encoded
+  (the upstream validator decodes nothing) and `UNLINKABLE` keeps naming the
+  characters that grammar cannot address. Declare the grammar in `.okfconfig`
+  before indexing; a standard-grammar index of a space-named vault cannot be
+  followed by either validator.
+
 ## Unreleased — okf 0.2.0, asha 3.1.3: ~/.asha becomes one OKF bundle (phase one-b)
 
 - The okf walker follows directory symlinks once each and skips hidden

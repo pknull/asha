@@ -21,22 +21,30 @@ import sys
 from pathlib import Path
 
 try:
-    from okf_io import RESERVED, atomic_write, effective_excludes, iter_markdown, read_scalars, split_frontmatter
+    from okf_io import RESERVED, atomic_write, effective_excludes, iter_markdown, link_grammar, read_scalars, split_frontmatter
+    from okf_links import encode_target
 except ImportError:  # run as a script from another cwd
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from okf_io import RESERVED, atomic_write, effective_excludes, iter_markdown, read_scalars, split_frontmatter
+    from okf_io import RESERVED, atomic_write, effective_excludes, iter_markdown, link_grammar, read_scalars, split_frontmatter
+    from okf_links import encode_target
 
 
-def concept_entry(path: Path, data: dict) -> str:
+def _target(name: str, grammar: str) -> str:
+    # Only an obsidian-grammar bundle encodes: Asha's resolver decodes there,
+    # while the upstream validator (standard mode) decodes nothing.
+    return encode_target(name) if grammar == "obsidian" else name
+
+
+def concept_entry(path: Path, data: dict, grammar: str = "standard") -> str:
     title = data.get("title") if isinstance(data.get("title"), str) and data.get("title").strip() else path.stem
     description = data.get("description") if isinstance(data.get("description"), str) else ""
     description = " ".join(description.split())
-    line = f"- [{title}](./{path.name})"
+    line = f"- [{title}](./{_target(path.name, grammar)})"
     return f"{line}: {description}" if description else line
 
 
 def render_directory_index(directory: Path, files: list[Path], children: dict[Path, int], *,
-                           title: str, frontmatter: str | None = None) -> str:
+                           title: str, frontmatter: str | None = None, grammar: str = "standard") -> str:
     sections = [f"# {title}"]
     concepts = [f for f in files if f.parent == directory and f.name not in RESERVED]
     if concepts:
@@ -46,12 +54,12 @@ def render_directory_index(directory: Path, files: list[Path], children: dict[Pa
                 data = read_scalars(path.read_text(encoding="utf-8"))
             except (OSError, UnicodeDecodeError):
                 data = {}
-            entries.append(concept_entry(path, data))
+            entries.append(concept_entry(path, data, grammar))
         sections.append("## Concepts\n\n" + "\n".join(entries))
     if children:
         # No counts: a count changes on every save below and would make this
         # index stale whenever a nested writer adds or retires a concept.
-        lines = [f"- [{child.name}/](./{child.name}/index.md)" for child in sorted(children, key=lambda p: p.name)]
+        lines = [f"- [{child.name}/](./{_target(child.name, grammar)}/index.md)" for child in sorted(children, key=lambda p: p.name)]
         sections.append("## Directories\n\n" + "\n".join(lines))
     text = "\n\n".join(sections) + "\n"
     if frontmatter is not None:
@@ -61,7 +69,8 @@ def render_directory_index(directory: Path, files: list[Path], children: dict[Pa
 
 _H1_RE = re.compile(r"^# (.+?)\s*$", re.MULTILINE)
 _FENCE_RE = re.compile(r"^[ \t]*(`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]*\1[ \t]*$|\Z)", re.DOTALL | re.MULTILINE)
-_UNLINKABLE_RE = re.compile(r"[\s#?()<>]")
+_UNLINKABLE_STANDARD_RE = re.compile(r"[\s#?()<>\]]")  # the upstream grammar stops at these
+_UNLINKABLE_OBSIDIAN_RE = re.compile(r"[\]]")           # encoding covers the rest
 
 
 def build_indexes(root: Path, excludes=(), title: str | None = None, okf_version: str | None = None) -> dict[Path, str]:
@@ -74,6 +83,7 @@ def build_indexes(root: Path, excludes=(), title: str | None = None, okf_version
     """
     root = Path(root)
     excludes = effective_excludes(root, excludes)
+    grammar = link_grammar(root)
     all_files = iter_markdown(root, excludes)
     files = [f for f in all_files if f.name not in RESERVED]
     counts: dict[Path, int] = {}
@@ -117,25 +127,28 @@ def build_indexes(root: Path, excludes=(), title: str | None = None, okf_version
                 if match:
                     heading = match.group(1)
         result[directory / "index.md"] = render_directory_index(
-            directory, files, children, title=heading, frontmatter=frontmatter)
+            directory, files, children, title=heading, frontmatter=frontmatter, grammar=grammar)
     return result
 
 
 def unlinkable(root: Path, excludes=()) -> list[Path]:  # excludes already merged by callers
-    """Concept files whose names a standard markdown link cannot address.
+    """Concept files whose names no index entry can link cleanly.
 
-    The spec's link grammar stops a target at whitespace or ')' and treats '#'
-    and '?' as fragment and query; the upstream validator decodes nothing, so a
-    percent-encoded link would read as broken. Such files are indexed but will
-    lint; rename them.
+    Spaces, '#', '?', parentheses and angle brackets are percent-encoded in the
+    entry's target, which CommonMark and Obsidian read; the upstream validator
+    decodes nothing, so those entries lint under its own strict mode and the
+    bundle needs Asha's link grammar (okf_validate --links obsidian or
+    .okfconfig). A ']' in the name breaks the link text itself; rename those.
     """
+    pattern = _UNLINKABLE_OBSIDIAN_RE if link_grammar(Path(root)) == "obsidian" else _UNLINKABLE_STANDARD_RE
     return [p for p in iter_markdown(Path(root), excludes)
-            if p.name not in RESERVED and _UNLINKABLE_RE.search(p.name)]
+            if p.name not in RESERVED and pattern.search(p.name)]
 
 
 def index_links(content: str) -> set[str]:
-    """The `./target` link targets an index content names."""
-    return set(re.findall(r"\]\((\./[^)\s]+)\)", content))
+    """The `./target` link targets an index content names, percent-decoded."""
+    from urllib.parse import unquote
+    return {unquote(m) for m in re.findall(r"\]\((\./[^)\s]+)\)", content)}
 
 
 def write_indexes(root: Path, excludes=(), title: str | None = None, okf_version: str | None = None) -> list[Path]:
@@ -178,7 +191,8 @@ def main(argv=None) -> int:
     for path in written:
         print(f"WROTE  {path.relative_to(root).as_posix()}")
     for path in unlinkable(root, effective_excludes(root, args.exclude)):
-        print(f"UNLINKABLE  {path.relative_to(root).as_posix()}: rename; a markdown link cannot address this name")
+        print(f"UNLINKABLE  {path.relative_to(root).as_posix()}: rename, or declare the obsidian link grammar in .okfconfig; "
+              "the standard link grammar cannot address this name")
     print(f"{len(written)} index file(s) written")
     return 0
 

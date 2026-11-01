@@ -109,6 +109,41 @@ def is_excluded(rel: str, excludes) -> bool:
 
 
 IGNORE_FILE = ".okfignore"
+CONFIG_FILE = ".okfconfig"
+
+
+def load_config(root: Path) -> dict:
+    """The bundle's .okfconfig: a small JSON mapping, {} when absent or malformed."""
+    path = Path(root) / CONFIG_FILE
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def lint_waivers(root: Path) -> list[str]:
+    """Field-lint prefixes the bundle waives, from .okfconfig {"waive": ["status"]}.
+
+    A bundle whose own taxonomy owns a word OKF also uses (the AAS vault's
+    `status` ladder) keeps its vocabulary; the spec makes these producer lints,
+    never errors, and consumers must tolerate unknown values. Waivers are
+    printed with every verdict so a pass never hides them.
+    """
+    value = load_config(root).get("waive")
+    if not isinstance(value, list):
+        return []
+    return [str(v) for v in value if isinstance(v, str) and v.strip()]
+
+
+def link_grammar(root: Path, override: str | None = None) -> str:
+    """'standard' unless .okfconfig says {"links": "obsidian"} or the caller overrides."""
+    if override:
+        return override
+    value = load_config(root).get("links")
+    return value if value in ("standard", "obsidian") else "standard"
 
 
 def load_ignore(root: Path) -> list[str]:

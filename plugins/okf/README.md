@@ -1,6 +1,6 @@
 # OKF
 
-**Version**: 0.2.0
+**Version**: 0.3.0
 
 Asha's layer for the Open Knowledge Format (OKF): pinned upstream tooling, a
 dependency-free indexer and log writer, a gate that refuses a validator pass it
@@ -25,7 +25,8 @@ argument.
 | `tools/okf_index.py` | Generates every directory's `index.md` from concept descriptions and owns every `index.md` it finds (exclude hand-maintained ones); `--check` reports drift |
 | `tools/okf_log.py` | Appends newest-first, date-grouped `log.md` entries; exports the ordering lint |
 | `tools/okf_viz.py` | Runs the vendored visualizer with `</` escaped in its inline JSON |
-| `tools/okf_io.py` | Shared atomic write, the symlink-following walker, `.okfignore` loading, exclude matching and dependency-free frontmatter scalars |
+| `tools/okf_links.py` | Link resolution in two grammars: standard markdown with percent-decoding, and Obsidian wikilinks resolved by basename, partial path or same directory, with attachments skipped and ambiguity reported |
+| `tools/okf_io.py` | Shared atomic write, the symlink-following walker, `.okfignore` and `.okfconfig` loading, exclude matching and dependency-free frontmatter scalars |
 | `tools/okf_common.py`, `tools/validate.py`, `tools/visualize.py` | Vendored upstream, unchanged below the header |
 
 The learnings writer (`plugins/session/tools/learnings_manager.py`) imports the
@@ -69,6 +70,23 @@ once each (a dotfiles layout reaches `reference/` and `learnings/` through
 links, which `Path.rglob` would skip) and never descends hidden directories.
 The indexer keeps the root heading and `okf_version` across bare reruns and
 declares a version with `--okf-version`.
+
+## Vault bundles (Obsidian link grammar)
+
+An Obsidian vault names notes with spaces and links them with `[[wikilinks]]`.
+The spec's link grammar stops a target at whitespace, so the upstream strict
+lints cannot pass such a vault and would miss every wikilink. A `.okfconfig`
+at the bundle root with `{"links": "obsidian"}` switches the gate: upstream
+checks only the three conformance errors, and Asha runs the strict set itself,
+the recommended-field and v0.2 field lints through the upstream functions and
+links, orphans and reachability through `okf_links`. Generated index entries
+percent-encode their targets (`./Hot%20Springs%20Island.md`), which CommonMark
+and Obsidian read; files are never renamed. A bundle whose own taxonomy owns a
+word OKF also uses may waive that field's lints (`"waive": ["status"]`); the
+verdict names every waiver. `okf_validate.py --links` overrides the config for
+one run; the indexer always follows the config. An extensionless markdown link
+(`[t](./Target)`) is linted and earns no inbound credit under either grammar,
+as upstream does; write `./Target.md` or a wikilink.
 
 ## Conformance and lints
 
