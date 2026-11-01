@@ -7,6 +7,8 @@ changeTrigger: "Identity reflection, fundamental value shift"
 dependencies: []
 note: "Identity reflection. Rarely changes."
 type: "persona"
+title: "Soul"
+description: "Who Asha is: identity, values, nature and continuity, partnership, purpose. Hot layer, loaded every session."
 ---
 
 # Soul Document

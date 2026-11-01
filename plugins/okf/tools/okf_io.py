@@ -20,7 +20,15 @@ RESERVED = ("index.md", "log.md")
 
 
 def atomic_write(path: Path, text: str) -> None:
-    """Write text to path through a same-directory temp file and os.replace."""
+    """Write text to path through a same-directory temp file and os.replace.
+
+    A symlinked target (a stow link into a dotfiles tree) is written through:
+    os.replace on the link itself would turn it into a regular file and detach
+    it from the tree that tracks it.
+    """
+    path = Path(path)
+    if path.is_symlink():
+        path = path.resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, name = tempfile.mkstemp(prefix=f".{path.name}.tmp.", dir=path.parent)
     tmp = Path(name)
@@ -87,29 +95,81 @@ def read_scalars(text: str) -> dict:
 def is_excluded(rel: str, excludes) -> bool:
     """fnmatch against the bundle-relative posix path; a trailing slash means a prefix."""
     from fnmatch import fnmatch
+    rel = rel.rstrip("/")
     for pattern in excludes:
         pattern = pattern.strip()
         if not pattern:
             continue
-        if pattern.endswith("/"):
-            if rel == pattern[:-1] or rel.startswith(pattern):
-                return True
-            continue
-        if fnmatch(rel, pattern) or fnmatch(rel, pattern + "/*") or rel.startswith(pattern + "/"):
+        base = pattern.rstrip("/")
+        # A pattern names a path or a glob; with or without the trailing slash it
+        # also covers everything beneath a matching directory.
+        if fnmatch(rel, base) or fnmatch(rel, base + "/*"):
             return True
     return False
 
 
+IGNORE_FILE = ".okfignore"
+
+
+def load_ignore(root: Path) -> list[str]:
+    """Patterns from the bundle's .okfignore: one per line, # comments, blanks skipped.
+
+    The same syntax as --exclude (fnmatch on the bundle-relative path; a
+    trailing slash means a directory prefix), so one file scopes a bundle for
+    every tool that reads it.
+    """
+    path = Path(root) / IGNORE_FILE
+    if not path.is_file():
+        return []
+    patterns = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            patterns.append(line)
+    return patterns
+
+
+def effective_excludes(root: Path, excludes=(), use_ignore: bool = True) -> list[str]:
+    merged = list(load_ignore(root)) if use_ignore else []
+    merged.extend(p for p in excludes if p not in merged)
+    return merged
+
+
 def iter_markdown(root: Path, excludes=()) -> list[Path]:
-    """Every .md file under root, hidden directories and excluded paths skipped."""
-    files = []
-    for path in sorted(root.rglob("*.md")):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(root)
-        if any(part.startswith(".") for part in rel.parts[:-1]):
-            continue
-        if is_excluded(rel.as_posix(), excludes):
-            continue
-        files.append(path)
-    return files
+    """Every .md file under root, following directory symlinks once each.
+
+    Hidden directories and excluded paths are skipped. A bundle root such as
+    ~/.asha reaches its directories through symlinks into a dotfiles tree, and
+    Path.rglob does not descend those, so this walks with os.walk(followlinks)
+    and a realpath guard against cycles.
+    """
+    root = Path(root)
+    files: list[Path] = []
+    seen_dirs = {os.path.realpath(root)}
+    for current, dirnames, filenames in os.walk(root, followlinks=True):
+        current_path = Path(current)
+        rel_dir = current_path.relative_to(root)
+        keep = []
+        for name in sorted(dirnames):
+            if name.startswith("."):
+                continue
+            rel = (rel_dir / name).as_posix()
+            if is_excluded(rel, excludes) or is_excluded(rel + "/", excludes):
+                continue
+            real = os.path.realpath(current_path / name)
+            if real in seen_dirs:
+                continue
+            seen_dirs.add(real)
+            keep.append(name)
+        dirnames[:] = keep
+        for name in sorted(filenames):
+            if not name.endswith(".md"):
+                continue
+            path = current_path / name
+            if not path.is_file():
+                continue
+            rel = (rel_dir / name).as_posix()
+            if is_excluded(rel, excludes):
+                continue
+            files.append(path)
+    return sorted(files, key=lambda p: p.relative_to(root).as_posix())

@@ -6,6 +6,8 @@ stakeholder: "all"
 changeTrigger: "Durable user preference or working-pattern change"
 dependencies: []
 type: "human"
+title: "Keeper"
+description: "Who the Keeper is: identity, expertise, working style and response calibration. Hot layer."
 ---
 
 # Keeper Profile

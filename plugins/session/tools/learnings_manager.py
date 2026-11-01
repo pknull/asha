@@ -851,7 +851,7 @@ def _rebuild_index_unlocked(max_bytes: int = ACTIVE_RENDER_MAX_BYTES) -> None:
     # max_bytes shapes only the legacy budgeted index; OKF indexes list every record.
     if _okf_enabled():
         okf_index, _, _ = _okf_tools()
-        okf_index.write_indexes(_learning_root(), title="Learnings")
+        okf_index.write_indexes(_learning_root())
         return
     content = _render_active_index(_list_state_unlocked("active"), max_bytes)
     _atomic(_secure_learning_child("active/index.md", create_parents=True), content)

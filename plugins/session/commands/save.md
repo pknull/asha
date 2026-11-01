@@ -117,7 +117,7 @@ compare-and-swap and no Git seam; see `docs/session-hub.md`.
    if [[ -f "$LEARNINGS/.okf-0.2.json" ]]; then
      python3 "$ASHA_ROOT/plugins/okf/tools/okf_validate.py" "$LEARNINGS" --strict \
        || echo "learnings bundle gate failed (rc=$?)" >&2
-     python3 "$ASHA_ROOT/plugins/okf/tools/okf_index.py" "$LEARNINGS" --check --title Learnings \
+     python3 "$ASHA_ROOT/plugins/okf/tools/okf_index.py" "$LEARNINGS" --check \
        || echo "learnings indexes are stale (a derived write failed earlier); the next learning save rebuilds them" >&2
    fi
    ```

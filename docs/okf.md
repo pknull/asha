@@ -31,7 +31,7 @@ vendored pin.
 `plugins/okf/tools/` holds the pinned upstream validator and visualizer (header
 and digests in the plugin README), the gate `okf_validate.py` (exclude list,
 expected file count, three Asha lints, exit 2 never a pass), the indexer
-`okf_index.py` (generated indexes; `--check --title T` for drift, with the title the writer used), the log writer
+`okf_index.py` (generated indexes; `--check` for drift), the log writer
 `okf_log.py` (newest first), and `okf_viz.py` (inline JSON made script-safe).
 The `okf-bundle` skill teaches index-first reading. Indexes and logs are
 generated, never hand-written.
@@ -108,13 +108,33 @@ format only and accepts `status: draft`, so a stale candidate is review
 information, never a lint. A test pins that so a re-vendor cannot change it
 silently.
 
+## The ~/.asha bundle (phase one-b)
+
+`~/.asha` is the second bundle: the root identity and operation files (the hot
+`soul.md`, `voice.md` and `keeper.md`, plus `keeper-voice.md`, `operation.md`
+and `agent-coordination.md`), the cold corpus under `reference/` and the
+learnings store. A file reachable by two paths (`keeper-voice.md` at the root
+links to `reference/keeper-voice.md`) is two concepts and is listed twice. Each carries `type`,
+`title` and a `description` written for a reader deciding whether to open it;
+the generated `index.md` files list them, and the `asha-reference` skill walks
+the indexes instead of a hand-maintained table. `okf_version` is declared once,
+at `~/.asha/index.md`; the learnings index declares none.
+
+The files live in the dotfiles stow module and reach `~/.asha` through
+symlinks, which the walker follows. Runtime trees beside them (`cache/`,
+`chair/`, `chat/`, `state/`, `workspaces/`, `session-state/`, backups) are not
+concepts: `~/.asha/.okfignore` scopes them out for every tool, and a pass is
+reported for the admitted set only (a concept linked solely from an excluded
+file lints as an orphan; a link into an excluded file is not broken).
+
+`asha doctor` is this bundle's gate: once the root index exists it runs the
+strict validator and the index drift check and fails on either. Regenerate
+with `okf_index.py ~/.asha` after editing a described file. Two writers share
+the learnings subtree (the learnings manager on every save, the bundle indexer
+on request) and agree only because they see the same files: never scope
+anything under `learnings/` from the root `.okfignore`.
+
 ## Later bundles
 
-Phase one-b declares `~/.asha` a bundle (identity, operation, reference corpus,
-learnings) with `okf_version` at `~/.asha/index.md`; the learnings index
-declares none, so no nested declaration conflict arises. Harness-owned files
-(`SKILL.md`, generated agents) and state directories are excluded through the
-gate's exclude list, and a pass is reported for the admitted set only: a
-concept linked solely from an excluded file lints as an orphan, and a link
-into an excluded file is not broken. Canon vaults
-follow, with wikilinks converted to standard links first.
+Harness-owned files (`SKILL.md`, generated agents) stay outside bundles.
+Canon vaults follow, with wikilinks converted to standard links first.

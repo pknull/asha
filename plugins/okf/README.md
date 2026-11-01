@@ -1,6 +1,6 @@
 # OKF
 
-**Version**: 0.1.0
+**Version**: 0.2.0
 
 Asha's layer for the Open Knowledge Format (OKF): pinned upstream tooling, a
 dependency-free indexer and log writer, a gate that refuses a validator pass it
@@ -22,10 +22,10 @@ argument.
 |---|---|
 | `skills/bundle/SKILL.md` | `okf-bundle`: validate, reindex, log, query, visualize |
 | `tools/okf_validate.py` | Gate over the vendored validator: exclude list, expected file count, three Asha lints, exit 2 never a pass |
-| `tools/okf_index.py` | Generates every directory's `index.md` from concept descriptions and owns every `index.md` it finds (exclude hand-maintained ones); `--check --title T` reports drift |
+| `tools/okf_index.py` | Generates every directory's `index.md` from concept descriptions and owns every `index.md` it finds (exclude hand-maintained ones); `--check` reports drift |
 | `tools/okf_log.py` | Appends newest-first, date-grouped `log.md` entries; exports the ordering lint |
 | `tools/okf_viz.py` | Runs the vendored visualizer with `</` escaped in its inline JSON |
-| `tools/okf_io.py` | Shared atomic write, exclude matching and dependency-free frontmatter scalars |
+| `tools/okf_io.py` | Shared atomic write, the symlink-following walker, `.okfignore` loading, exclude matching and dependency-free frontmatter scalars |
 | `tools/okf_common.py`, `tools/validate.py`, `tools/visualize.py` | Vendored upstream, unchanged below the header |
 
 The learnings writer (`plugins/session/tools/learnings_manager.py`) imports the
@@ -56,6 +56,19 @@ a vendored body; put Asha behaviour in the wrapper modules. The upstream test
 suite is pytest-style and is not vendored; this repository's unittest cases
 cover the wrappers and the pinned behaviour the learnings store relies on
 (stale_after is format-checked only; `status: draft` is accepted).
+
+## Scope and symlinks
+
+A bundle root may hold runtime state beside its concepts (`~/.asha` holds
+caches, chair work trees and Control state beside identity files). A
+`.okfignore` at the root, one pattern per line in the `--exclude` syntax (a
+trailing slash is a directory prefix, globs allowed), scopes every tool that
+reads the bundle; `okf_validate.py` prints the excluded set with its verdict
+and `--no-ignore` reads the raw tree. The walker follows directory symlinks
+once each (a dotfiles layout reaches `reference/` and `learnings/` through
+links, which `Path.rglob` would skip) and never descends hidden directories.
+The indexer keeps the root heading and `okf_version` across bare reruns and
+declares a version with `--okf-version`.
 
 ## Conformance and lints
 
