@@ -1,3 +1,10 @@
+---
+title: "Third-party Agent Skill discovery and import"
+description: "Discovering third-party Agent Skills, inspecting their pinned upstream bytes and importing Keeper-approved ones into Asha's user skill store"
+type: guide
+status: stable
+---
+
 # Third-party Agent Skill discovery and import
 
 `find-skills` fills one narrow gap: discover a reusable Agent Skill, inspect its

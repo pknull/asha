@@ -1,3 +1,10 @@
+---
+title: "Managed sessions"
+description: "The structured session backend: how session owners start, admission, structured utilities and their delivery semantics"
+type: guide
+status: stable
+---
+
 # Managed sessions
 
 This guide covers the structured backend and how its session owners start. The default [session dashboard](session-hub.md) launches plain

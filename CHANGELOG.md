@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — panel 5.1.0, docs bundle: repository docs and panel decisions are OKF concepts (phase three)
+
+- `docs/` is an OKF v0.2 bundle. Every guide carries `title`, `description`,
+  `type: guide`, `status: stable`; every proposal carries `type` (proposal,
+  study or audit) and `status: deprecated`, delivered proposals being
+  historical records; the five that already had frontmatter keep their old
+  free-text status as a quoted `outcome`, and the five that had none get an
+  `outcome` from their body's Status line. `docs/index.md` declares `okf_version`; the two indexes are
+  generated and committed; `docs/log.md` opens the record. validate-plugins
+  Test 6 runs the strict gate and `okf_index.py --check` over the committed
+  tree, so a document without a description or a stale index fails CI. The
+  one broken link (the retired `control-contracts.md`) now points at
+  `control.md`. `CLAUDE.md` sends readers to the index first.
+- Panel decisions are concepts: `decision.md` opens with `title`,
+  `description` (the verdict), `type: panel-decision`, `status: draft`,
+  `generated` and `sources`; the new `--ratify <id> ["ruling"]` verb records
+  the Keeper's ruling as `status: stable` plus a `verified` entry
+  (`human:keeper`) and an optional ruling section, never at completion and
+  never derived. A project whose `Work/panels/index.md` declares
+  `okf_version` gets `okf_update.py --plugin panel` after each decision and
+  ratification.
+
 ## Unreleased — rp 0.5.6: the RP readers walk the Lore indexes first
 
 - The GM brief carries a canon index: the entries of the vault's generated OKF

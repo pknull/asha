@@ -1,3 +1,10 @@
+---
+title: "Harness Enforcement and Memory Delivery"
+description: "The per-capability matrix of what each harness enforces, how primitives mount, live-test findings and caveats; the single source of truth for enforcement status"
+type: guide
+status: stable
+---
+
 # Harness Enforcement and Memory Delivery
 
 Asha installs one source corpus into four harness-native surfaces. The shared

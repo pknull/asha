@@ -1,9 +1,11 @@
 ---
 title: Overnight issue-to-merge loop
+description: "Overnight issue-to-merge loop: triage, one worker per safe issue in a worktree, cold review, draft PRs only; delivered in v2.5.0"
 type: proposal
-status: delivered — shipped in v2.5.0 (code plugin v1.5.0: `/code:issue-loop`, `engines/issue-loop.js`, preflight + publish rails)
+status: deprecated
+outcome: "delivered — shipped in v2.5.0 (code plugin v1.5.0: `/code:issue-loop`, `engines/issue-loop.js`, preflight + publish rails)"
 date: 2026-08-04
-origin: /insights on_the_horizon #3; deferral ruled by Keeper 2026-08-04
+origin: "/insights on_the_horizon #3; deferral ruled by Keeper 2026-08-04"
 ---
 
 # Overnight issue-to-merge loop — design spec

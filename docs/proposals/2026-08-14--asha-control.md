@@ -1,9 +1,11 @@
 ---
 title: Asha Control
+description: "Asha Control: the session supervisor, state store and TUI designed after Workmux, ccsessionctl and FleetView; six increments delivered"
 type: proposal
-status: delivered — all six increments completed 2026-08-15
+status: deprecated
+outcome: "delivered — all six increments completed 2026-08-15"
 date: 2026-08-14
-origin: Keeper design session after evaluating Workmux, ccsessionctl, and FleetView
+origin: "Keeper design session after evaluating Workmux, ccsessionctl, and FleetView"
 ---
 
 # Asha Control: terminal-native task supervision with tmux and jj

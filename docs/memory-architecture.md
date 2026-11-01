@@ -1,3 +1,10 @@
+---
+title: "Memory System v2"
+description: "Memory v2: the authority order, deliberate publication versus bounded crash recovery, planes and workspace visibility"
+type: guide
+status: stable
+---
+
 # Memory System v2
 
 Memory v2 separates deliberate semantic publication from bounded mechanical

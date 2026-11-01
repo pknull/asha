@@ -1,3 +1,10 @@
+---
+title: "Secret Management in Asha"
+description: "Where the environment variables Asha's authenticated skills read come from: dotenv with wrapper-scoped sourcing"
+type: guide
+status: stable
+---
+
 # Secret Management in Asha
 
 Asha skills that talk to authenticated APIs (Todoist, Bookstack, Gemini, etc.) read their tokens from environment variables. This document explains where those env vars come from and why the loading happens where it does.

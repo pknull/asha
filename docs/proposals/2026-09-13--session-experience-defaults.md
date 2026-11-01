@@ -1,3 +1,11 @@
+---
+title: "Session experience: automatic defaults and a working loop"
+description: "Automatic defaults and a working loop for session experience capture; retired 2026-10-07 with its parent proposal"
+type: proposal
+status: deprecated
+outcome: "worker-ready amendment, not implementation or deployment. Prepared 2026-09-13 by the chair against master `1d1cda2` (dormant session experience learning) and the live working copy. Amends `docs/proposals/2026-09-12--session-experience-learning.md`; where the two conflict, this document wins. Revalidate every cited line before editing. No commit, push, installation, live policy change, or paid native probe is authorized by this document."
+---
+
 # Session experience: automatic defaults and a working loop
 
 > **Historical record — retired.** Session experience capture, review and

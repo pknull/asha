@@ -1,3 +1,10 @@
+---
+title: "Standalone reuse"
+description: "Which Asha components can be used without Asha, how they are exported with immutable provenance and validated from any directory"
+type: guide
+status: stable
+---
+
 # Standalone reuse
 
 A small, opt-in set of Asha components can be used without Asha: no dispatcher,

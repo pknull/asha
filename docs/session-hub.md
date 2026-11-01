@@ -1,3 +1,10 @@
+---
+title: "Project sessions"
+description: "Project sessions: the conversational chair, plain workers, Rooms, structured utilities, the session dashboard and delivery semantics"
+type: guide
+status: stable
+---
+
 # Project sessions
 
 `asha codex` or `asha claude` opens Asha's conversational chair. Give it work,

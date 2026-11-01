@@ -1,3 +1,11 @@
+---
+title: "Donmai runtime study for Asha"
+description: "Source study of the Donmai runtime against Asha's managed sessions; a comparison, not an adoption proposal"
+type: study
+status: deprecated
+outcome: "source study, not an adoption proposal or implementation approval."
+---
+
 # Donmai runtime study for Asha
 
 Status: source study, not an adoption proposal or implementation approval.

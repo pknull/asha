@@ -1,10 +1,12 @@
 ---
 title: Asha Orchestration
+description: "Asha Orchestration: initiatives, coordinators, plans, gates and staged results on top of Control; the engine was retired on 2026-10-05"
 type: proposal
-status: Core (Increments 1-3) delivered 2026-08-18; Increments 4-7 in progress from 2026-08-22; the coordinator is the operator's Asha session claiming each initiative (Keeper ruling 2026-08-22), not a controller-launched agent; retired 2026-10-05 (subtraction step L-b), its evidence is read through docs/control.md
+status: deprecated
+outcome: "Core (Increments 1-3) delivered 2026-08-18; Increments 4-7 in progress from 2026-08-22; the coordinator is the operator's Asha session claiming each initiative (Keeper ruling 2026-08-22), not a controller-launched agent; retired 2026-10-05 (subtraction step L-b), its evidence is read through docs/control.md"
 date: 2026-08-15
 depends_on: docs/proposals/2026-08-14--asha-control.md
-origin: Keeper design session after comparing Asha Control with persistent multi-agent supervisors
+origin: "Keeper design session after comparing Asha Control with persistent multi-agent supervisors"
 ---
 
 # Asha Orchestration: initiative-scoped coordination over Asha Control
@@ -18,7 +20,7 @@ origin: Keeper design session after comparing Asha Control with persistent multi
 > and its defects were fixed in Control; the required create-by-id amendment
 > shipped as `asha task start --task-id` (see `docs/control.md`, "Idempotent
 > creation"); the contracts Core binds to are frozen in
-> [`docs/control-contracts.md`](../control-contracts.md). Re-read those live
+> [`docs/control-contracts.md`](../control.md). Re-read those live
 > surfaces, not this document's predictions, before Increment 1.
 
 ## Status and dependency

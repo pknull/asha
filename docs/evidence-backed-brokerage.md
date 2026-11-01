@@ -1,3 +1,10 @@
+---
+title: "Process and capability brokerage"
+description: "The opt-in advisory broker surfaces: process routing and capability matching with harness support, approvals and fallback"
+type: guide
+status: stable
+---
+
 # Process and capability brokerage
 
 The remaining broker surfaces are opt-in and advisory:
