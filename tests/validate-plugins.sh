@@ -553,6 +553,39 @@ else
     FAILED=$((FAILED + 1))
 fi
 
+# Test 6: The repository docs are an OKF bundle (phase three): every guide and
+# proposal carries the v0.2 fields, the generated indexes are current, and the
+# strict gate passes over the committed tree. A stale index or a doc without a
+# description fails here, not at the next reader.
+echo -n "Test 6: docs/ is a clean OKF bundle with current indexes... "
+DOCS_ERRORS=()
+docs_rc=0
+if [[ ! -d "$REPO_ROOT/docs" ]]; then
+    # A plugin-only tree (the skill-creator init test copies plugins, harnesses, lib and fixtures) has no docs
+    # bundle to gate; the full repository always has one, so this branch never runs there.
+    echo -e "${YELLOW:-}SKIP${NC} (no docs/ in this tree)"
+else
+docs_out="$(python3 "$OKF_GATE" "$REPO_ROOT/docs" --strict 2>&1)" || docs_rc=$?
+if [[ $docs_rc -ne 0 ]]; then
+    DOCS_ERRORS+=("docs gate rc=$docs_rc (2 means validator unavailable, never a pass)")
+    # grep exits 1 when nothing matches (rc 2 output, a traceback); never let pipefail abort the suite here
+    DOCS_ERRORS+=("$(printf '%s' "$docs_out" | grep -E '^(ERROR|LINT)|asha:|^error|okf_validate:' | head -8 || true)")
+fi
+index_rc=0
+index_out="$(python3 "$REPO_ROOT/plugins/okf/tools/okf_index.py" "$REPO_ROOT/docs" --check 2>&1)" || index_rc=$?
+if [[ $index_rc -ne 0 ]]; then
+    DOCS_ERRORS+=("docs indexes are stale; run okf_index.py docs in place (never delete docs/index.md first: its okf_version and heading live there) and commit: $(printf '%s' "$index_out" | head -3 | tr '\n' ' ' || true)")
+fi
+if [[ ${#DOCS_ERRORS[@]} -eq 0 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    printf '  %s\n' "${DOCS_ERRORS[@]}"
+    FAILED=$((FAILED + 1))
+fi
+fi
+
 echo ""
 echo "=== Test Summary ==="
 echo -e "Passed: ${GREEN}$PASSED${NC}"

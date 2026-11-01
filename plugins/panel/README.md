@@ -1,6 +1,6 @@
 # Panel Plugin
 
-**Version**: 5.0.0
+**Version**: 5.1.0
 
 Recorded multi-perspective analysis with decomposition, clarification,
 specialist recruitment, adversarial examination, and decision synthesis.
@@ -80,6 +80,15 @@ Ordinary users should invoke `/panel-system:panel`; it chooses the required agen
 agent use is appropriate when only that phase is wanted.
 
 ## Outputs and authority
+
+Every `decision.md` is an OKF v0.2 concept: `title`, `description` (the
+verdict in one line), `type: panel-decision`, `status` (`draft` until the
+Keeper rules, `stable` after `--ratify`, `deprecated` when superseded),
+`generated` and `sources`; `verified` records the Keeper's ruling only. A
+project that keeps `Work/panels/` as a bundle (a root `index.md` declaring
+`okf_version`) gets its indexes, log and strict gate run by the okf plugin
+after each decision or ratification, so past decisions are found by walking
+`Work/panels/index.md`.
 
 - A fabricated agent is written to the panel workspace and is not installed automatically.
 - Panel recommendations are recorded analysis, not execution permission.

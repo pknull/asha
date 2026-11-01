@@ -1,3 +1,10 @@
+---
+title: "Explicit Memory v2 Save Pipeline"
+description: "The manual fallback for an explicit Memory v2 save when the rendered session-save workflow is unavailable; never called by hooks"
+type: guide
+status: stable
+---
+
 # Explicit Memory v2 Save Pipeline
 
 This page is the manual fallback when the rendered `session-save` workflow is

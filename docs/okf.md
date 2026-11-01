@@ -1,3 +1,10 @@
+---
+title: "OKF in Asha"
+description: "Mechanism reference for OKF bundles in Asha: the bundle contract, the okf plugin, the learnings store, ~/.asha, canon vaults, their writers and readers, and this repository's docs"
+type: guide
+status: stable
+---
+
 # OKF in Asha
 
 Asha stores knowledge as Open Knowledge Format (OKF) bundles: directories of
@@ -182,6 +189,30 @@ before any glob. The bundle is the register's `canon_index` row, else the
 nearest marked directory above the entity globs. Index-first reading is the
 payoff of the descriptions: one small file per directory says what each note
 is and what it settles.
+
+## Repository docs and panel outputs (phase three)
+
+`docs/` is a bundle: every guide carries `title`, a one-line `description`,
+`type: guide` and `status: stable`; every proposal under `docs/proposals/`
+carries `type: proposal` (or `study`, `audit`) and `status: deprecated`, since
+delivered proposals are historical records and not current operating
+authority (the free-text status they carried before lives on as `outcome`).
+`docs/index.md` declares `okf_version` and the indexes are generated; the
+codebase-bundle pattern is that the gate runs in CI over the committed tree
+(`tests/validate-plugins.sh` Test 6: strict validate plus `okf_index.py
+--check`), so a document without a description or a stale index fails the
+build, not the next reader. Reading starts at the index, as `CLAUDE.md` says.
+
+Panel decisions (`Work/panels/<id>/decision.md`, local to each project) are
+concepts too: `type: panel-decision`, `status: draft` when the panel completes,
+`stable` once `/panel-system:panel --ratify <id>` records the Keeper's ruling
+as a `verified` entry (`human:keeper`), `deprecated` when superseded. A project
+whose `Work/panels/index.md` declares `okf_version` gets the record step
+(`okf_update.py --plugin panel`) after each decision and ratification; panel
+directories hold working files beside the decision (briefs, positions,
+evidence), which a `.okfignore` at `Work/panels/` keeps out of the bundle, and
+a new working file the ignore does not name fails the next record step by
+name rather than slipping in.
 
 ## Later bundles
 

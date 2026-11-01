@@ -1,3 +1,10 @@
+---
+title: "Agent frontmatter schema"
+description: "Source schema for the YAML frontmatter every plugins/*/agents/*.md begins with; validate-plugins enforces it"
+type: guide
+status: stable
+---
+
 # Agent frontmatter schema
 
 Agent sources under `plugins/*/agents/*.md` begin with one YAML frontmatter

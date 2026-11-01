@@ -1,3 +1,11 @@
+---
+title: "Session experience capture and reviewed learning"
+description: "Session experience capture and reviewed learning; retired 2026-10-07 (subtraction N2) and kept as a record"
+type: proposal
+status: deprecated
+outcome: "worker-ready implementation plan, not implementation or deployment."
+---
+
 # Session experience capture and reviewed learning
 
 > **Historical record — retired.** Session experience capture, review and

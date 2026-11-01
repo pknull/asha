@@ -1,3 +1,11 @@
+---
+title: "Managed-session implementation and rollout audit"
+description: "Audit of the managed-session implementation and rollout against its plan: storage, migration, native acceptance and the live cutover"
+type: audit
+status: deprecated
+outcome: "audit accompanying the authorized Git landing; implementation, native acceptance, live SQLite cutover and final verification were complete (no Status line in the document)"
+---
+
 # Managed-session implementation and rollout audit
 
 Audited against [the original plan](2026-09-07--managed-agent-sessions.md).

@@ -1,3 +1,10 @@
+---
+title: "Asha Control: Rooms, state and retired initiative evidence"
+description: "The retained Room surface, Control's doctor, the cockpit, Control's state layout, and the read-only evidence of the retired initiative engine"
+type: guide
+status: stable
+---
+
 # Asha Control: Rooms, state and retired initiative evidence
 
 The default session launcher and dashboard are described in

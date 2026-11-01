@@ -1,3 +1,10 @@
+---
+title: "Copilot-Native Plugin Distribution"
+description: "Packaging asha's plugins for GitHub Copilot CLI's native plugin system for org-scale rollout, additive to the personal symlink install"
+type: guide
+status: stable
+---
+
 # Copilot-Native Plugin Distribution
 
 How to package asha's plugins for GitHub Copilot CLI and distribute them to a

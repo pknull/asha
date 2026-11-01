@@ -242,6 +242,13 @@ Run suites in a scrubbed environment. Each item below has cost a full run:
 
 ## Focused documentation
 
+`docs/` is an OKF bundle: start at [docs/index.md](docs/index.md), whose one
+line per document says what each settles; the indexes are generated
+(`okf_index.py docs`) and gated with the docs in validate-plugins, so a new
+document carries `title`, `description` and `type` (the gate refuses a document
+without them) and `status` by this repository's convention (`stable` for a
+guide, `deprecated` for a proposal), and is indexed before it lands.
+
 - [Root orientation and plugin map](README.md)
 - [Installer and launcher model](INSTALLER.md)
 - [Harness enforcement](docs/harness-enforcement.md)

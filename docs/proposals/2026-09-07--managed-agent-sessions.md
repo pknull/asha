@@ -1,3 +1,11 @@
+---
+title: "Managed agent sessions and reliable delivery"
+description: "Implementation plan for managed agent sessions and reliable delivery, drawn from the Donmai study and the reference implementations"
+type: proposal
+status: deprecated
+outcome: "proposed implementation plan. This document authorizes no launches or deployment. Prepared from the current Asha source and the reference implementations below; provider compatibility still requires local contract tests."
+---
+
 # Managed agent sessions and reliable delivery
 
 Status: proposed implementation plan. This document authorizes no launches or
