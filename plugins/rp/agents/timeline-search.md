@@ -46,6 +46,8 @@ Paths come from `Memory/canon-layout.md` (`session_curated`, plus any project-sp
 | Curated Sessions | `session_curated` → `Lore/TTRPG/Notes/*.md` | Promoted/edited sessions |
 | Fiction References | `Lore/Books/**/*.md` | Canonical story events |
 
+These live in the canon vault, an OKF bundle when its root `index.md` declares `okf_version`: read the directory's generated `index.md` (`- [Title](./Note.md): description`) first and open only the notes whose entry fits the query, as world-lookup does. The primary sources under `Work/rp/` carry no indexes; search them as below.
+
 ## Search Protocol
 
 ### 1. Parse Query Intent
