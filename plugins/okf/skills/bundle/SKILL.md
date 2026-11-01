@@ -31,14 +31,16 @@ the upstream set: every concept reachable from the root `index.md`, `log.md`
 dates newest first, and no `verified` entry that is not a mapping.
 
 Exclude harness-owned files (`SKILL.md`, generated agent files) and runtime
-state directories; say what was excluded when reporting a result, because a
-pass covers the admitted set only.
+state directories, preferably through a `.okfignore` at the bundle root (one
+`--exclude` pattern per line) so every tool scopes the bundle the same way;
+the gate prints the excluded set with its verdict, because a pass covers the
+admitted set only. Directory symlinks are followed; hidden directories are not.
 
 ## Reindex
 
 ```bash
-python3 "$TOOLS/okf_index.py" BUNDLE [--title TEXT] [--exclude ...]   # write
-python3 "$TOOLS/okf_index.py" BUNDLE --check [--title TEXT]           # drift: exit 1; pass the writer's title
+python3 "$TOOLS/okf_index.py" BUNDLE [--title TEXT] [--okf-version 0.2]   # write
+python3 "$TOOLS/okf_index.py" BUNDLE --check                              # drift: exit 1
 ```
 
 Indexes are generated, never hand-written. Each directory with concepts gets an
@@ -46,8 +48,9 @@ Indexes are generated, never hand-written. Each directory with concepts gets an
 and every `index.md` already in the bundle is treated as generated and
 rewritten, so exclude a directory whose index someone maintains by hand.
 Descriptions come from each concept's `description` field; write that field for
-a reader deciding whether to open the concept. The root index keeps an
-existing `okf_version` block and never adds one.
+a reader deciding whether to open the concept. The root index keeps its heading
+and its `okf_version` block across reruns; `--okf-version` declares one when
+the root has none, and `--title` renames.
 
 ## Log
 

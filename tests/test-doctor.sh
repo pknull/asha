@@ -700,5 +700,48 @@ then ok "U8 read-only doctor preserves foreign bytes, parsed trust, modes and ar
 else fail "U8 read-only doctor preserves foreign bytes, parsed trust, modes and artifacts"
 fi
 
+# ---------------------------------------------------------------------------
+echo "--- test 9: doctor gates the ~/.asha OKF bundle once its root index exists ---"
+okf_doctor() {
+  env -i HOME="$SANDBOX" PATH="$PATH" USER="${USER:-test}" bash "$REPO_ROOT/bin/asha" doctor copilot 2>&1
+}
+out="$(okf_doctor)" || true
+grep -q 'INFO  .*not an OKF bundle yet' <<<"$out" \
+  && ok "doctor reports an undeclared ~/.asha bundle as INFO, not failure" \
+  || fail "doctor reports an undeclared ~/.asha bundle as INFO, not failure"
+mkdir -p "$SANDBOX/.asha/state/control" "$SANDBOX/.asha/reference"
+printf -- '---\ntype: Reference\ntitle: Runtime\ndescription: not a concept\n---\n# Runtime\n' > "$SANDBOX/.asha/state/control/record.md"
+# The installer seeds soul/voice/keeper on first run; the bundle describes all three.
+printf -- '---\ntype: persona\ntitle: Soul\ndescription: who Asha is\n---\n# Soul\n' > "$SANDBOX/.asha/soul.md"
+printf -- '---\ntype: persona\ntitle: Voice\ndescription: how Asha speaks\n---\n# Voice\n' > "$SANDBOX/.asha/voice.md"
+printf -- '---\ntype: human\ntitle: Keeper\ndescription: who the Keeper is\n---\n# Keeper\n' > "$SANDBOX/.asha/keeper.md"
+printf -- '---\ntype: persona\ntitle: Soul reference\ndescription: the cold corpus\n---\n# Soul reference\n' > "$SANDBOX/.asha/reference/soul-reference.md"
+printf 'state/\n' > "$SANDBOX/.asha/.okfignore"
+python3 "$REPO_ROOT/plugins/okf/tools/okf_index.py" "$SANDBOX/.asha" --title Asha --okf-version 0.2 >/dev/null
+if out="$(okf_doctor)"; then
+  ok "doctor exits 0 with a clean ~/.asha bundle"
+else
+  fail "doctor exits 0 with a clean ~/.asha bundle (output: $(grep FAIL <<<"$out" | head -3))"
+fi
+grep -q 'PASS  pass; 6 file(s) validated, 0 error(s), 0 lint(s)' <<<"$out" \
+  && ok "doctor runs the strict OKF gate over the admitted set (state/ excluded)" \
+  || fail "doctor runs the strict OKF gate over the admitted set (state/ excluded)"
+grep -q 'PASS  bundle indexes are current' <<<"$out" \
+  && ok "doctor checks the bundle indexes" \
+  || fail "doctor checks the bundle indexes"
+printf -- '---\ntype: persona\ntitle: Orphan\ndescription: nobody indexed me\n---\n# Orphan\n' > "$SANDBOX/.asha/reference/orphan.md"
+if out="$(okf_doctor)"; then
+  fail "doctor fails on a stale bundle index and an orphan concept"
+else
+  grep -q 'FAIL  failed;' <<<"$out" && grep -q 'FAIL  bundle indexes are stale' <<<"$out" \
+    && ok "doctor fails on a stale bundle index and an orphan concept" \
+    || fail "doctor fails on a stale bundle index and an orphan concept (output: $(grep -E 'FAIL|PASS  (pass|bundle)' <<<"$out" | head -4))"
+fi
+python3 "$REPO_ROOT/plugins/okf/tools/okf_index.py" "$SANDBOX/.asha" >/dev/null
+okf_doctor >/dev/null && ok "regenerating the indexes clears the gate" || fail "regenerating the indexes clears the gate"
+# Leave the sandbox as the later tests expect it: the bundle files go to a scratch dir.
+mkdir -p "$SANDBOX/okf-test-9-done"
+mv "$SANDBOX/.asha/soul.md" "$SANDBOX/.asha/voice.md" "$SANDBOX/.asha/keeper.md" "$SANDBOX/.asha/reference" "$SANDBOX/.asha/index.md" "$SANDBOX/.asha/.okfignore" "$SANDBOX/.asha/state/control/record.md" "$SANDBOX/okf-test-9-done/"
+
 echo "test-doctor: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — okf 0.2.0, asha 3.1.3: ~/.asha becomes one OKF bundle (phase one-b)
+
+- The okf walker follows directory symlinks once each and skips hidden
+  directories; `Path.rglob` skipped `~/.asha/reference` and `~/.asha/learnings`
+  entirely (a validator run from `~/.asha` saw 182 files and none of the 121
+  learnings). A `.okfignore` at the bundle root, one `--exclude` pattern per
+  line, scopes every tool; trailing-slash patterns may carry a glob (the first
+  draft matched them literally and wrote indexes into the learnings backup,
+  repaired and verified against a pre-migration copy). `okf_validate.py` prints
+  the excluded set with its verdict and takes `--no-ignore`. The indexer keeps
+  the root heading and `okf_version` across bare reruns and declares a version
+  with `--okf-version`.
+- `~/.asha` is declared a bundle: `title` and `description` frontmatter on the
+  six hot identity files and the five reference files (hot identity 15,681 of
+  24,576 bytes; operation.md 3,066 of 4,000), `.okfignore` for the runtime
+  trees, generated `index.md` at the root and under `reference/`; the module
+  validates strict at 138 files, 0 lints. `asha doctor` gains the "OKF bundle
+  (~/.asha)" section: strict validate plus index drift, FAIL on either, INFO
+  while the root index is not linked yet.
+- `asha-reference` walks `~/.asha/index.md` and `reference/index.md` and reads
+  one file by its description instead of a hand-maintained table.
+
 ## Unreleased — okf 0.1.0, session 3.0.0: the learnings store becomes an OKF v0.2 bundle
 
 Decided in the OKF Room and its panel (2026-10-31,

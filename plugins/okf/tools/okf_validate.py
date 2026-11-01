@@ -29,11 +29,11 @@ from pathlib import Path
 
 try:
     import validate as upstream
-    from okf_io import RESERVED, iter_markdown, read_scalars, split_frontmatter
+    from okf_io import RESERVED, effective_excludes, iter_markdown, read_scalars, split_frontmatter
 except ImportError:  # run as a script from another cwd
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import validate as upstream
-    from okf_io import RESERVED, iter_markdown, read_scalars, split_frontmatter
+    from okf_io import RESERVED, effective_excludes, iter_markdown, read_scalars, split_frontmatter
 
 SUMMARY_RE = re.compile(r"^(\d+) file\(s\), (\d+) error\(s\)(?:, (\d+) lint\(s\))?$")
 
@@ -94,8 +94,10 @@ def _asha_lints(root: Path, files: list[Path]) -> list[tuple[str, str]]:
     return lints
 
 
-def run(bundle: str, strict: bool = False, excludes=(), allow_empty: bool = False) -> dict:
+def run(bundle: str, strict: bool = False, excludes=(), allow_empty: bool = False, use_ignore: bool = True) -> dict:
     root = Path(bundle)
+    if root.is_dir():
+        excludes = effective_excludes(root, excludes, use_ignore)
     result = {"bundle": str(root), "strict": strict, "excludes": list(excludes),
               "files": None, "errors": None, "lints": None, "asha_lints": [], "rc": 2,
               "status": "validator unavailable", "output": ""}
@@ -145,9 +147,10 @@ def main(argv=None) -> int:
     parser.add_argument("--strict", action="store_true")
     parser.add_argument("--exclude", action="append", default=[], help="bundle-relative glob or dir/ prefix to skip")
     parser.add_argument("--allow-empty", action="store_true", help="accept a bundle with no markdown files")
+    parser.add_argument("--no-ignore", action="store_true", help="do not read the bundle's .okfignore")
     parser.add_argument("--json", action="store_true", help="print a JSON summary instead of text")
     args = parser.parse_args(argv)
-    result = run(args.bundle, args.strict, args.exclude, args.allow_empty)
+    result = run(args.bundle, args.strict, args.exclude, args.allow_empty, not args.no_ignore)
     if args.json:
         print(json.dumps(result, indent=2))
         return result["rc"]
@@ -156,6 +159,8 @@ def main(argv=None) -> int:
         print(f"LINT   {line}")
     for line in result.get("count_problems", []):
         print(f"ERROR  .: {line}")
+    if result["excludes"]:
+        print(f"okf_validate: excluded {', '.join(result['excludes'])}; the verdict covers the admitted set")
     if result["rc"] == 2:
         print("okf_validate: validator unavailable (exit 2); this is not a pass")
     else:

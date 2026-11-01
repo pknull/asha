@@ -80,8 +80,49 @@ EOF
   _asha_doctor_codex_daemon_section "$target" || daemon_rc=$?
   local budget_rc=0
   _asha_doctor_operational_budget_section || budget_rc=$?
+  local okf_rc=0
+  _asha_doctor_okf_bundle_section || okf_rc=$?
   [[ $drift_rc -eq 0 && $ws_rc -eq 0 && $imported_rc -eq 0 && $daemon_rc -eq 0 \
-     && $budget_rc -eq 0 ]]
+     && $budget_rc -eq 0 && $okf_rc -eq 0 ]]
+}
+
+# ~/.asha is an OKF bundle once its root index.md exists (Keeper, 2026-10-31):
+# the strict gate for the identity, reference and learnings concepts, scoped by
+# the bundle's .okfignore. Doctor is that bundle's gate, so lints fail here.
+# Exit 2 from the validator (PyYAML absent) is "validator unavailable", a FAIL.
+_asha_doctor_okf_bundle_section() {
+  local asha_home="${ASHA_HOME:-$HOME/.asha}"
+  local gate="$MARKET_ROOT/plugins/okf/tools/okf_validate.py"
+  local indexer="$MARKET_ROOT/plugins/okf/tools/okf_index.py"
+  echo ""
+  echo "── OKF bundle (~/.asha) ──"
+  if [[ ! -f "$asha_home/index.md" ]]; then
+    echo "INFO  $asha_home is not an OKF bundle yet (no root index.md); see docs/okf.md"
+    return 0
+  fi
+  command -v python3 >/dev/null 2>&1 || { echo "FAIL  python3 missing; the OKF gate cannot run"; return 1; }
+  [[ -f "$gate" && -f "$indexer" ]] || { echo "FAIL  okf plugin tools missing under $MARKET_ROOT/plugins/okf/tools"; return 1; }
+  local out rc=0
+  out="$(python3 "$gate" "$asha_home" --strict 2>&1)" || rc=$?
+  local summary
+  summary="$(printf '%s\n' "$out" | grep -E '^okf_validate: (pass|failed)' | tail -1)"
+  if [[ $rc -eq 0 ]]; then
+    echo "PASS  ${summary#okf_validate: }"
+  elif [[ $rc -eq 2 ]]; then
+    echo "FAIL  OKF validator unavailable (exit 2: PyYAML missing or bad path); this is not a pass"
+    printf '%s\n' "$out" | grep -E '^error' | head -3 | sed 's/^/      /'
+  else
+    echo "FAIL  ${summary#okf_validate: }"
+    printf '%s\n' "$out" | grep -E '^(ERROR|LINT)' | head -8 | sed 's/^/      /'
+  fi
+  local stale_rc=0
+  python3 "$indexer" "$asha_home" --check >/dev/null 2>&1 || stale_rc=$?
+  if [[ $stale_rc -eq 0 ]]; then
+    echo "PASS  bundle indexes are current"
+  else
+    echo "FAIL  bundle indexes are stale; run: python3 $indexer $asha_home"
+  fi
+  [[ $rc -eq 0 && $stale_rc -eq 0 ]]
 }
 
 # Every harness receives operation.md through one byte budget; anything past it

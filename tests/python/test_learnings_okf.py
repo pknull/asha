@@ -349,10 +349,10 @@ class WriterTests(FixtureCase):
         self.assertEqual([], lm.list_state("candidate"))
         index = (self.bundle / "candidate/index.md").read_text()
         self.assertNotIn("](./", index)
-        self.assertIn("- [candidate/](./candidate/index.md): 0 concepts", (self.bundle / "index.md").read_text())
+        self.assertIn("- [candidate/](./candidate/index.md)", (self.bundle / "index.md").read_text())
         self.assertEqual(0, self.validate().returncode, self.validate().stdout)
         okf_index, _, _ = lm._okf_tools()
-        self.assertEqual([], okf_index.check_indexes(self.bundle, title="Learnings"))
+        self.assertEqual([], okf_index.check_indexes(self.bundle))
 
     def test_verify_and_extend_need_the_migrated_store(self):
         with self.assertRaisesRegex(ValueError, "needs the OKF-migrated store"):
@@ -379,6 +379,22 @@ class WriterTests(FixtureCase):
         self.assertIn("**Fix** `c-old` recover: active", (self.bundle / "log.md").read_text())
         self.assertIn("c-old", lm.render_active())
         self.assertEqual(0, self.validate().returncode)
+
+    def test_a_learning_save_inside_the_asha_bundle_keeps_every_index_current(self):
+        # ~/.asha as the enclosing bundle: its root index and the learnings
+        # indexes must agree after a save, or doctor fails after every session.
+        self.migrate()
+        okf_index, _, _ = lm._okf_tools()
+        (self.home / "soul.md").write_text("---\ntype: persona\ntitle: Soul\ndescription: who\n---\n# Soul\n")
+        (self.home / ".okfignore").write_text("state/\nlearnings.pre-okf-*/\n")  # as the real ~/.asha/.okfignore
+        okf_index.write_indexes(self.home, title="Asha", okf_version="0.2")
+        self.assertEqual([], okf_index.check_indexes(self.home))
+        lm.propose("bundle-save", "Trigger", "a", project_dir=self.project, session_id="s1", reason="r")
+        lm.retire("c-old", "ruled", project_dir=self.project)
+        self.assertEqual([], okf_index.check_indexes(self.home), "the learnings writer must leave the enclosing bundle current")
+        self.assertEqual([], okf_index.check_indexes(self.bundle))
+        self.assertEqual("# learnings", (self.bundle / "index.md").read_text().splitlines()[0])
+        self.assertEqual(0, self.validate(self.home).returncode, self.validate(self.home).stdout)
 
     def test_okf_tools_resolve_from_the_checkout_and_the_version_matches_the_readme(self):
         okf_index, okf_log, okf_common = lm._okf_tools()

@@ -8,18 +8,28 @@ description: "Load Asha's cold identity and Keeper calibration references only w
 The hot files already in the system prompt govern ordinary work. Use the cold
 corpus only to answer a task-specific question the hot layer cannot answer.
 
-## Select one source
+## Walk the index, then read one source
 
-| Need | Read |
-|---|---|
-| Asha iconography, phenomenology, cognitive profile, or full identity history | `~/.asha/reference/soul-reference.md` |
-| Full vocabulary rules, optional extradimensional/composite registers, or voice calibration history | `~/.asha/reference/voice-reference.md` |
-| Keeper biography, family, interests, politics, philosophy, symbolism, or visual identity | `~/.asha/reference/keeper-reference.md` |
-| Generate or edit prose in PK's personal writing voice | `~/.asha/reference/keeper-voice.md` |
+`~/.asha` is an OKF bundle: every identity file carries a `description` written
+for a reader deciding whether to open it, and the generated indexes list them.
+Read in this order and stop as soon as the need is met:
 
-Read one source first. Read another only when the task crosses those boundaries.
-If a reference path is absent, report that the cold reference is unavailable;
-do not reconstruct it from memory or search unrelated directories.
+1. `~/.asha/index.md`: the hot files and the `reference/` directory.
+2. `~/.asha/reference/index.md`: the cold corpus, one line per file.
+3. Exactly one reference file whose description answers the need. Read a
+   second only when the task crosses that file's boundary.
+
+The cold corpus today: `soul-reference.md` (iconography, phenomenology,
+cognitive profile, identity history), `voice-reference.md` (vocabulary palette,
+optional registers, calibration history), `keeper-reference.md` (biography,
+family, interests, politics, philosophy, symbolism, visual identity) and
+`keeper-voice.md` (PK's writing voice, for prose as him). The index is the
+authority when the two disagree.
+
+If `~/.asha/index.md` is absent the bundle is not linked yet: fall back to the
+paths above under `~/.asha/reference/`. If a reference file is absent, report
+that the cold reference is unavailable; do not reconstruct it from memory or
+search unrelated directories. Never run a broad scan to find it.
 
 ## Authority and privacy
 

@@ -247,6 +247,117 @@ def concept_bytes(path: Path) -> bytes:
     return path.read_bytes()
 
 
+class BundleScopeTests(unittest.TestCase):
+    """A bundle root like ~/.asha: directories reached through symlinks, scoped by .okfignore."""
+
+    def make_home(self, tmp: Path) -> Path:
+        dotfiles = tmp / "dotfiles"
+        home = tmp / "home"
+        home.mkdir()
+        concept(dotfiles / "soul.md", "Soul")
+        concept(dotfiles / "reference/deep.md", "Deep")
+        concept(dotfiles / "cycle/loop.md", "Loop")
+        (dotfiles / "cycle/back").symlink_to(dotfiles / "cycle", target_is_directory=True)  # a true cycle
+        concept(home / "state/control/record.md", "State")  # runtime, not knowledge
+        concept(home / "chat/notes.md", "Chat")
+        (home / "soul.md").symlink_to(dotfiles / "soul.md")
+        (home / "reference").symlink_to(dotfiles / "reference", target_is_directory=True)
+        (home / "cycle").symlink_to(dotfiles / "cycle", target_is_directory=True)
+        (home / "self").symlink_to(home, target_is_directory=True)  # a link back to the root
+        (home / ".hidden").mkdir()
+        concept(home / ".hidden/secret.md", "Hidden")
+        (home / ".okfignore").write_text("# scope\nstate/\nchat/\nlearnings.pre-okf-*/\n")
+        concept(home / "learnings.pre-okf-v02-20261031/old.md", "Backup")
+        return home
+
+    def test_walker_follows_directory_symlinks_once_and_honours_the_ignore_file(self):
+        import okf_io
+        with tempfile.TemporaryDirectory() as tmp:
+            home = self.make_home(Path(tmp))
+            rels = [p.relative_to(home).as_posix() for p in okf_io.iter_markdown(home, okf_io.effective_excludes(home))]
+            self.assertEqual(["cycle/loop.md", "reference/deep.md", "soul.md"], rels)
+            unscoped = [p.relative_to(home).as_posix() for p in okf_io.iter_markdown(home)]
+            self.assertIn("state/control/record.md", unscoped)
+            self.assertIn("learnings.pre-okf-v02-20261031/old.md", unscoped)
+            self.assertNotIn(".hidden/secret.md", unscoped)
+            self.assertFalse(any(r.startswith("cycle/back/") for r in unscoped), unscoped)
+            self.assertFalse(any(r.startswith("self/") for r in unscoped), unscoped)
+
+    def test_indexer_and_gate_scope_the_bundle_the_same_way(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = self.make_home(Path(tmp))
+            written = okf_index.write_indexes(home, title="Asha", okf_version="0.2")
+            self.assertEqual({home / "index.md", home / "reference/index.md", home / "cycle/index.md"}, set(written))
+            self.assertFalse((home / "state/index.md").exists())
+            self.assertFalse((home / "learnings.pre-okf-v02-20261031/index.md").exists())
+            root = (home / "index.md").read_text()
+            self.assertTrue(root.startswith('---\nokf_version: "0.2"\n---\n# Asha'), root)
+            self.assertIn("- [reference/](./reference/index.md)", root)
+            self.assertNotIn("self/", root)
+            result = okf_validate.run(str(home), strict=True)
+            self.assertEqual(0, result["rc"], result["output"])
+            self.assertEqual(6, result["files"])
+            self.assertEqual(["state/", "chat/", "learnings.pre-okf-*/"], result["excludes"])
+            printed = run(TOOLS / "okf_validate.py", home, "--strict").stdout
+            self.assertIn("excluded state/, chat/, learnings.pre-okf-*/; the verdict covers the admitted set", printed)
+            unscoped = okf_validate.run(str(home), strict=True, use_ignore=False)
+            self.assertEqual(1, unscoped["rc"])
+            self.assertIn("state/control/record.md", unscoped["output"])
+
+    def test_root_title_and_okf_version_survive_a_bare_rerun(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = self.make_home(Path(tmp))
+            okf_index.write_indexes(home, title="Asha", okf_version="0.2")
+            first = (home / "index.md").read_text()
+            self.assertEqual([], okf_index.write_indexes(home))
+            self.assertEqual(first, (home / "index.md").read_text())
+            self.assertEqual([], okf_index.check_indexes(home))
+            self.assertEqual(0, run(TOOLS / "okf_index.py", home, "--check").returncode)
+            okf_index.write_indexes(home, title="Renamed")
+            self.assertIn("# Renamed", (home / "index.md").read_text())
+            self.assertIn('okf_version: "0.2"', (home / "index.md").read_text())
+
+    def test_a_symlinked_index_is_written_through_not_replaced(self):
+        import okf_io
+        with tempfile.TemporaryDirectory() as tmp:
+            dotfiles = Path(tmp) / "dotfiles"
+            home = Path(tmp) / "home"
+            dotfiles.mkdir(); home.mkdir()
+            concept(home / "one.md", "One")
+            (dotfiles / "index.md").write_text("# old\n")
+            (home / "index.md").symlink_to(dotfiles / "index.md")
+            okf_index.write_indexes(home, title="Home")
+            self.assertTrue((home / "index.md").is_symlink(), "the stow link must survive a regeneration")
+            self.assertIn("# Home", (dotfiles / "index.md").read_text())
+            okf_io.atomic_write(home / "index.md", "# again\n")
+            self.assertTrue((home / "index.md").is_symlink())
+            self.assertEqual("# again\n", (dotfiles / "index.md").read_text())
+
+    def test_root_frontmatter_keeps_only_okf_version_and_the_flag_replaces_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            concept(root / "one.md", "One")
+            (root / "index.md").write_text('---\nokf_version: "0.1"\ntitle: hand\n---\n```\n# fenced\n```\n# Real heading\n')
+            okf_index.write_indexes(root)
+            text = (root / "index.md").read_text()
+            self.assertTrue(text.startswith('---\nokf_version: "0.1"\n---\n# Real heading\n'), text)
+            self.assertNotIn("title: hand", text)
+            self.assertEqual(0, okf_validate.run(str(root), strict=True)["rc"])
+            okf_index.write_indexes(root, okf_version="0.2")
+            self.assertTrue((root / "index.md").read_text().startswith('---\nokf_version: "0.2"\n---\n# Real heading\n'))
+            (root / "index.md").write_text("---\nnote: okf_version_history\n---\n# Hand\n")
+            okf_index.write_indexes(root, okf_version="0.2")
+            self.assertTrue((root / "index.md").read_text().startswith('---\nokf_version: "0.2"\n---\n# Hand\n'))
+
+    def test_trailing_slash_patterns_may_carry_a_glob(self):
+        import okf_io
+        self.assertTrue(okf_io.is_excluded("learnings.pre-okf-v02-20261031/active/x.md", ["learnings.pre-okf-*/"]))
+        self.assertTrue(okf_io.is_excluded("learnings.pre-okf-v02-20261031", ["learnings.pre-okf-*/"]))
+        self.assertFalse(okf_io.is_excluded("learnings/active/x.md", ["learnings.pre-okf-*/"]))
+        self.assertTrue(okf_io.is_excluded("state/control/a.md", ["state/"]))
+        self.assertFalse(okf_io.is_excluded("statement.md", ["state/"]))
+
+
 class LogTests(unittest.TestCase):
     def test_entries_are_grouped_newest_first_and_the_lint_sees_disorder(self):
         with tempfile.TemporaryDirectory() as tmp:

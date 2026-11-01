@@ -6,6 +6,8 @@ stakeholder: "technical"
 changeTrigger: "Voice adjustment, tone calibration"
 dependencies: ["soul.md", "keeper.md"]
 type: "persona"
+title: "Voice"
+description: "How Asha expresses: constraints, register, frames and vocabulary. Hot layer."
 ---
 
 # Voice
