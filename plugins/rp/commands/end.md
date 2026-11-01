@@ -16,7 +16,7 @@ Ends an active roleplay session with canon synthesis and state management.
 3. **Stitches the session summary** — Each closed fiction day already has its summary (`/rp:turn` writes it when rotation closes the day); this writes only the open day's part and stitches the rest into a `Work/rp/summaries/` entry
 4. **Updates character states** — With a `run:` block, refreshes the run state file's generated block (no model call); without one, writes `Work/rp/characters/*.md` as before
 5. **Ratifies canon (NEW)** — Per-item Keeper accept/reject/defer via `rp-ratifier` agent against `Memory/invariants.md`
-6. **Synthesizes ratified canon** — Promotes only accepted items to Vault via `canon-writer`
+6. **Synthesizes ratified canon** — Promotes only accepted items to Vault via `canon-writer`, then records the writes in their OKF bundle (indexes, log, strict gate) through `okf_update.py`
 7. **Optional: Git commit** — Commits session artifacts
 
 ## Session End Protocol
@@ -151,6 +151,17 @@ The ratifier returns `accepted_for_canon_writer` — pass that list to canon-wri
 
 **This is the key step.** Like `/session:save` updates Memory, this updates the Vault. **Runs only on items the Keeper accepted in Step 5.**
 
+First resolve the trust actor and the timestamp the writer stamps on new
+concepts (OKF v0.2 `generated`); the actor is `asha/<rp version>`, read from
+this plugin's README, never typed by hand:
+
+```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"
+ACTOR="$(python3 "$ASHA_ROOT/plugins/okf/tools/okf_update.py" --plugin rp --print-actor)"
+NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+echo "ACTOR: $ACTOR"; echo "NOW: $NOW"
+```
+
 Spawn the **canon-writer** agent:
 
 ```yaml
@@ -160,6 +171,8 @@ prompt: |
   SESSION_FILES: <session_files from Step 1>
   FACT_TYPE: "all"
   RATIFIED_ITEMS: <accepted_for_canon_writer list from rp-ratifier>
+  ACTOR: <ACTOR printed above>
+  NOW: <NOW printed above>
 
   Promote ONLY the ratified items. For each:
   - Determine if Vault file exists
@@ -184,6 +197,39 @@ Resolve every destination from `Memory/canon-layout.md` (*Entity paths* table) �
 
 Never invent a destination. If a ratified item has no matching kind in the register, stop and ask the Keeper where it belongs — writing canon to a guessed path scatters the source of truth, and the next lookup will not find it.
 
+**Record the writes in their OKF bundle.** The canon-writer's promotion report
+names every file it created or edited. Hand those exact paths to the okf
+plugin, which finds each file's bundle (the nearest ancestor holding
+`.okfconfig`, `.okfignore` or an `index.md` declaring `okf_version`), rewrites
+that bundle's generated indexes, appends one `log.md` entry naming the
+concepts, and runs the strict gate. Pass the same `--plugin rp` so the log
+entry carries the actor the concepts were stamped with:
+
+```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"
+python3 "$ASHA_ROOT/plugins/okf/tools/okf_update.py" --plugin rp --verb Canon \
+  --message "ratified from session YYYY-MM-DD (<SESSION_FILE>)" --json \
+  "<each file path from canon-writer's promotion report>"
+```
+
+Read the JSON. `bundles[].changed` lists the index and log files the tool
+rewrote (bundle-relative), which Step 7 stages beside the promoted files.
+`unbundled` names promoted files that live in no bundle (a project without
+OKF: nothing to do); `excluded` names files the bundle's `.okfignore` keeps
+out, which is a register error worth telling the Keeper; `other` names files
+under a hidden directory or without `.md`, which are not concepts. Exit 1 with
+`missing` entries means a reported path does not exist and nothing was
+written: the promotion report is wrong, so check it before rerunning. Exit 1
+with a `gate` means a gate failed: the output names the concept and the lint
+(a missing `description`, a `sources` entry that is not a `resource` mapping,
+an unresolvable `[[link]]`, a note two files share by name). The index and log
+are already written, so fix the named concept (the canon-writer may be
+re-spawned for it) and run the same command again; never close the session on
+a failed gate without telling the Keeper which concept failed and why. Exit 2
+means the tool could not do its work: `errors` names a bundle it could not
+write (indexes it wrote before the error stay; rerun after fixing the cause),
+otherwise the validator could not run; report either as is, never as a pass.
+
 ### Step 7: Git Commit (Optional)
 
 If user confirms, commit session artifacts:
@@ -196,6 +242,9 @@ git add Work/rp/
 # to globs under potentially unrelated roots, so no single directory exists to
 # add, and a guessed one silently omits promoted files outside it.
 git add <each file path from canon-writer's promotion report>
+# ...and the bundle files okf_update.py reported under bundles[].changed
+# (its generated index.md files and log.md), each joined to its bundle root.
+git add <each bundle root>/<each changed path>
 git commit -m "Session save: [brief summary from Step 3]"
 ```
 
@@ -237,7 +286,7 @@ Parse {command_args}:
 
 - Empty → Full protocol (all steps)
 - `--quick` → Steps 1-3 only (no canon synthesis)
-- `--canon-only` → Steps 5-6 only (assumes session already saved)
+- `--canon-only` → Steps 5-6 only, the bundle record included (assumes session already saved)
 - `--no-commit` → Skip git commit
 
 ARGUMENTS: {command_args}

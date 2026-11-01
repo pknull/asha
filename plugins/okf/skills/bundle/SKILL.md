@@ -63,6 +63,27 @@ rewrite them. The writer keeps only the title line and the dated groups: a
 hand-written preamble between them is dropped on the first append, so put
 prose in a concept, not in the log.
 
+## Record a writer's changes
+
+```bash
+python3 "$TOOLS/okf_update.py" --plugin rp --verb Canon --message "what changed" --json PATH...
+python3 "$TOOLS/okf_update.py" --plugin rp --print-actor     # asha/<version> from plugins/rp/README.md
+```
+
+After an agent or command has written concepts, hand it the exact paths it
+touched. It finds each file's bundle (the nearest ancestor holding
+`.okfconfig`, `.okfignore`, the learnings marker or an `index.md` declaring
+`okf_version`), rewrites that bundle's indexes, appends one log entry naming
+the concepts, and runs the strict gate; `bundles[].changed` lists the index and
+log files to stage beside the writes. It never edits a concept: a malformed one
+fails the gate by name, so the writer carries `title`, `description` and `type`
+(and `generated` with the actor and `NOW` the caller resolved) itself. Paths in
+no bundle, excluded by `.okfignore`, reserved, or `other` (not `.md`, or under
+a hidden directory) are reported and skipped; a missing path or a malformed
+`--date` refuses the run before anything is written, and an OS error on one
+bundle is reported under `errors` with exit 2. `--actor` names the
+actor directly (`human:keeper` for the Keeper's own edits).
+
 ## Query (index-first)
 
 Start at the root `index.md`. Read descriptions, follow only the links the

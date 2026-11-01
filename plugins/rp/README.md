@@ -1,6 +1,6 @@
 # RP Plugin
 
-**Version**: 0.5.4
+**Version**: 0.5.5
 
 Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification, and world/history lookup. The *verbs* of running a game live here; the *nouns* — canon, character registers, rulesets, the invariants projection — stay in the consuming project.
 
@@ -57,7 +57,7 @@ only accepted items are promoted.
 |---|---|
 | `roleplay-gm` | Panel referee and scene driver: environment, NPC agendas, pacing, spawn discipline. Delegates profiled-NPC voice to character agents; never authors them |
 | `rp-ratifier` | Session-end canon gate — diffs proposed additions against the invariants projection and surfaces each to the Keeper for accept / reject / defer |
-| `canon-writer` | Promotes *ratified* items into project canon, matching existing file patterns |
+| `canon-writer` | Promotes *ratified* items into project canon, matching existing file patterns; every concept it creates carries the OKF fields (`title`, `description`, `type`, `generated`, `sources`) |
 | `timeline-search` | Chronological search across session records and summaries for continuity reference |
 | `world-lookup` | Resolves proper nouns against project canon plus session-pending material |
 | `character-template` | Generic self-sufficient NPC-voice agent; projects copy it per character |
@@ -68,7 +68,7 @@ only accepted items are promoted.
 |---|---|
 | `/rp:start` | Open a session — marker, continuity retrieval, Day Plan, scene state |
 | `/rp:turn` | Run one turn through the continuity gate (draft → lint → review if flagged or consequential → rewrite within the cap → ship or surrender) |
-| `/rp:end` | Close a session — summary, character state, ratification, optional canon promotion |
+| `/rp:end` | Close a session — summary, character state, ratification, optional canon promotion, then the promoted files recorded in their OKF bundle (`okf_update.py`: indexes, log, strict gate) |
 | `/rp:extract-invariants` | Rebuild the invariants projection from canonical sources |
 
 ## Project layout assumed

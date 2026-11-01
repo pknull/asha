@@ -27,7 +27,12 @@ CONTENT: |
 CONTEXT: |
   This session took place in the campaign setting.
   Characters involved: Alder, the Proprietor
+ACTOR: "asha/0.5.5"               # the trust actor for `generated.by`; the command resolves it from the rp README
+NOW: "2026-11-01T03:12:44Z"       # UTC instant for `generated.at`; the command prints it, never guess one
 ```
+
+`ACTOR` and `NOW` come from the command. Without them, write no `generated`
+block and say so in `warnings`.
 
 ## Canon Promotion Protocol
 
@@ -71,6 +76,7 @@ file_path: "Lore/World/Places/the town/Ashfield House.md"
 content: |
   ---
   title: Ashfield House
+  description: "A discreet high-class house on the edge of the town's respectable district, with a concealed back room and a proprietor tied to the Academy"
   type: doc
   status: draft
   universe: <project universe key>
@@ -81,6 +87,11 @@ content: |
     - location/<place-tag>
     - type/doc
   established: "Session 2026-02-03"
+  generated:
+    by: <ACTOR>
+    at: <NOW>
+  sources:
+    - resource: "Work/rp/<campaign>/log/day-0042.md#B4123"
   ---
 
   # Ashfield House
@@ -136,6 +147,7 @@ file_path: "Lore/World/Magic/Artefacts/The Siphon.md"
 content: |
   ---
   title: The Siphon
+  description: "An artifact that drains magical energy from its targets; mechanism and current location still unknown"
   type: doc
   status: draft
   universe: <project universe key>
@@ -147,6 +159,11 @@ content: |
     - magic
     - type/doc
   established: "Session 2026-02-03"
+  generated:
+    by: <ACTOR>
+    at: <NOW>
+  sources:
+    - resource: "Work/rp/<campaign>/log/day-0042.md#B4131"
   ---
 
   # The Siphon
@@ -214,6 +231,9 @@ warnings:
   - "the Rival.md did not exist - created new file"
   - "The Siphon mechanics incomplete - marked for expansion"
 
+descriptions_to_review:
+  - "Lore/World/Characters/the Rival.md: now also the Ashfield House proprietor; the description says only 'Academy rival'"
+
 summary: |
   Promoted 3 canon items from session 2026-02-03:
   - 1 new location (Ashfield House)
@@ -223,11 +243,12 @@ summary: |
 
 ## Frontmatter Standards
 
-All canon files use this schema. Match the project's existing frontmatter first — read a neighbouring canon file and mirror its keys. The schema below is the shape, not a mandate; a project that uses different keys wins.
+All canon files use this schema. Match the project's existing frontmatter first — read a neighbouring canon file and mirror its keys. The schema below is the shape, not a mandate; a project that uses different keys wins. Three fields are not the project's to drop: the vault is an OKF v0.2 bundle, and every concept carries `title`, a one-line `description`, and a non-empty `type` (the project's own type vocabulary, as the neighbours use it).
 
 ```yaml
 ---
 title: "Display Title"
+description: "One line for a reader deciding whether to open this note: what it is and what it settles"
 type: doc
 status: draft|active|canon
 universe: <project universe key>
@@ -238,8 +259,19 @@ tags:
   - type/doc
   - [additional tags]
 established: "Session YYYY-MM-DD"  # For RP-sourced canon
+generated:                         # new files only: who produced the text and when
+  by: <ACTOR>
+  at: <NOW>
+sources:                           # the session files the facts came from, cited by beat
+  - resource: "Work/rp/<campaign>/log/day-NNNN.md#B4123"
 ---
 ```
+
+- **`description`** is written for the index: the generated `index.md` beside the note shows `[title](note): description`, so it says what the note is and what it settles, in one line, no trailing period. On an **edit**, leave the existing description alone (Taxonomy Decision 004: descriptions are the Keeper's to revise) and list the note under `descriptions_to_review` in the return when the addition changes what the note is about.
+- **`generated`** goes on files this agent creates, with the `ACTOR` and `NOW` the command passed. On an edit, do not touch `generated`, and never write or alter `verified`: ratification confirmed the fact, not this rendering of it, and `verified` records only a confirmation a person made of the text itself.
+- **`sources`** cites the session files the facts came from, beat-numbered. Each entry is a mapping with `resource` (OKF v0.2 lints a bare string as `sources[i] should be a mapping`). On an edit, append to an existing `sources` list rather than replacing it.
+
+After this agent returns, the command hands every path in `operations_completed` to `okf_update.py`, which reindexes the bundle, logs the concepts and runs the strict gate. A note without `description` or `type`, or with a `[[link]]` that resolves to nothing, fails that gate by name; write the fields rather than relying on the gate to catch them.
 
 ## Conflict Resolution
 

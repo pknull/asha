@@ -153,6 +153,25 @@ declare it in `.okfconfig` before the first index run. The vault's taxonomy (Dec
 vault's own quality gate (`Tools/validate_repo.py`) and link checker predate
 this and remain; the OKF gate joins them rather than replacing them.
 
+### Writers
+
+The one Asha writer that touches the Lore bundle is the canon-writer agent,
+spawned by `/rp:end` after the Keeper ratifies each item. It writes `title`, a
+one-line `description`, `type`, `generated {by, at}` (actor and instant the
+command resolved: `asha/<rp version>` from the rp README, `date -u`) and
+`sources` (`resource` mappings naming session files by beat) on every concept it creates, leaves
+`description`, `generated` and `verified` alone on an edit (Decision 004:
+descriptions are the Keeper's to revise; ratification confirms a fact, not this
+rendering of it), and reports the paths it touched. The command hands those
+paths to `okf_update.py`, which finds each file's bundle root by marker,
+rewrites the generated indexes, appends one `log.md` entry naming the concepts
+with the same actor, and runs the strict gate; the index and log files it
+changed are staged beside the promoted files. A failed gate names the concept
+and the lint and the session does not close silently on it. Rotation
+(`rp_gate.py rotate`) and the summaries write under `Work/rp/`, outside the
+bundle, so they maintain nothing; `novel-state-updater` writes a book's state
+directory, which the vault's `.okfignore` keeps out of the bundle.
+
 ## Later bundles
 
 Harness-owned files (`SKILL.md`, generated agents) stay outside bundles.
