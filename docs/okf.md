@@ -172,6 +172,17 @@ and the lint and the session does not close silently on it. Rotation
 bundle, so they maintain nothing; `novel-state-updater` writes a book's state
 directory, which the vault's `.okfignore` keeps out of the bundle.
 
+### Readers
+
+The GM brief (`rp_gate.py brief`) reads every generated `index.md` in the canon
+bundle each turn and carries the entries whose titles the Keeper's input or the
+last beats name, with path and description, so the GM opens the note instead of
+spawning a lookup; world-lookup and timeline-search read a directory's index
+before any glob. The bundle is the register's `canon_index` row, else the
+nearest marked directory above the entity globs. Index-first reading is the
+payoff of the descriptions: one small file per directory says what each note
+is and what it settles.
+
 ## Later bundles
 
 Harness-owned files (`SKILL.md`, generated agents) stay outside bundles.

@@ -996,5 +996,189 @@ class ContractTests(unittest.TestCase):
         self.assertIn("briefBytes", readme)
 
 
+
+
+BUNDLE = "Lore"
+
+
+def bundle(p, root=BUNDLE, config=True):
+    """A small OKF vault: generated-shaped indexes under root, concept notes beside them."""
+    base = p.root / root
+    chars = base / "World/Characters"
+    chars.mkdir(parents=True, exist_ok=True)
+    (base / "World/Places").mkdir(parents=True, exist_ok=True)
+    if config:
+        (base / ".okfconfig").write_text('{"links": "obsidian"}', encoding="utf-8")
+    (base / "index.md").write_text("---\nokf_version: \"0.2\"\n---\n# Lore\n\n## Directories\n\n- [World](./World/index.md)\n",
+                                   encoding="utf-8")
+    (base / "World/index.md").write_text("# World\n\n## Concepts\n\n- [Edits](./Edits.md): An editing dashboard\n\n"
+                                         "## Directories\n\n- [Characters](./Characters/index.md)\n- [Places](./Places/index.md)\n",
+                                         encoding="utf-8")
+    (base / "World/Edits.md").write_text("---\ntitle: Edits\ntype: doc\n---\n# Edits\n", encoding="utf-8")
+    (chars / "index.md").write_text("# Characters\n\n## Concepts\n\n"
+                                    "- [Bren](./Bren.md): Bren's role in the Gilt Thorn household and his need to be needed\n"
+                                    "- [Liss](./Liss.md): Liss, the household's forge hand\n"
+                                    "- [Ora](./Ora.md): too short a name to match\n", encoding="utf-8")
+    for name in ("Bren", "Liss", "Ora"):
+        (chars / f"{name}.md").write_text(f"---\ntitle: {name}\ntype: character\n---\n# {name}\n", encoding="utf-8")
+    (base / "World/Places/index.md").write_text("# Places\n\n## Concepts\n\n"
+                                                "- [The Gilt Thorn](./The%20Gilt%20Thorn.md): The household's house on the border road\n",
+                                                encoding="utf-8")
+    (base / "World/Places/The Gilt Thorn.md").write_text("---\ntitle: The Gilt Thorn\ntype: place\n---\n# The Gilt Thorn\n",
+                                                         encoding="utf-8")
+
+
+class CanonIndexTests(unittest.TestCase):
+    def test_the_bundle_is_found_from_the_default_character_glob(self):
+        p = project(self)
+        bundle(p)
+        self.assertEqual(Path(BUNDLE), rp_gate.canon_bundle_root(p.root))
+        entries, indexes = rp_gate.canon_index_entries(p.root, Path(BUNDLE))
+        self.assertEqual(4, indexes)
+        self.assertEqual(["Lore/World/Edits.md", "Lore/World/Characters/Bren.md", "Lore/World/Characters/Liss.md",
+                          "Lore/World/Characters/Ora.md", "Lore/World/Places/The Gilt Thorn.md"], [e["path"] for e in entries])
+        self.assertEqual("The household's house on the border road", entries[-1]["description"])
+
+    def test_no_bundle_means_no_section_and_no_warning(self):
+        p = project(self)
+        text, report = brief(p, keeper="I ask Bren about the gate.")
+        self.assertNotIn("=== Canon index", text)
+        self.assertEqual({"bundle": None, "indexes": 0, "entries": 0, "matched": [], "carried": False}, report["canon"])
+        self.assertFalse([w for w in report["warnings"] if "canon" in w.lower()])
+
+    def test_titles_named_in_the_input_or_the_last_beats_are_carried_with_their_notes(self):
+        p = project(self)
+        bundle(p)
+        text, report = brief(p, keeper="I ask Bren where the gilt thorn keeps its ledger; I never edits anything.")
+        section = text.split("=== Canon index", 1)[1].split("\n=== ", 1)[0]
+        self.assertIn("(3 of 5 entries in Lore, by title", section)
+        self.assertIn("- Bren (Lore/World/Characters/Bren.md; the Keeper's input): Bren's role in the Gilt Thorn household", section)
+        self.assertIn("- The Gilt Thorn (Lore/World/Places/The Gilt Thorn.md; the Keeper's input): The household's house", section)
+        self.assertIn("- Liss (Lore/World/Characters/Liss.md; the last beats): Liss, the household's forge hand", section)
+        self.assertNotIn("Edits", section)  # a single-word title matches only as written
+        self.assertNotIn("Ora", section)  # too short to be a name
+        self.assertLess(section.index("Bren ("), section.index("Liss ("))  # the input's matches first
+        self.assertEqual([("Bren", True, False), ("The Gilt Thorn", True, False), ("Liss", False, True)],
+                         [(m["title"], m["in_input"], m["in_beats"]) for m in report["canon"]["matched"]])
+        self.assertTrue(report["canon"]["carried"])
+        self.assertEqual(5, report["canon"]["entries"])
+        # the section sits after the keyed entries and before the recent beats
+        self.assertLess(text.index("=== Keyed entries"), text.index("=== Canon index"))
+        self.assertLess(text.index("=== Canon index"), text.index("=== Recent beats"))
+
+    def test_the_register_may_name_the_bundle(self):
+        p = project(self)
+        bundle(p, root="Canon")
+        (p.root / "Memory").mkdir(exist_ok=True)
+        (p.root / "Memory/canon-layout.md").write_text("# Canon Layout\n\n| Register | Path |\n|---|---|\n"
+                                                      "| `canon_index` | `Canon/index.md` |\n", encoding="utf-8")
+        self.assertEqual(Path("Canon"), rp_gate.canon_bundle_root(p.root))
+        text, report = brief(p, keeper="Bren.")
+        self.assertIn("entries in Canon, by title", text)
+        self.assertEqual("Canon", report["canon"]["bundle"])
+        (p.root / "Memory/canon-layout.md").write_text("# Canon Layout\n\n| Register | Path |\n|---|---|\n"
+                                                      "| `canon_index` | `Nowhere/index.md` |\n", encoding="utf-8")
+        self.assertIsNone(rp_gate.canon_bundle_root(p.root))
+
+    def test_an_unmarked_tree_is_not_a_bundle(self):
+        p = project(self)
+        bundle(p, config=False)
+        (p.root / BUNDLE / "index.md").write_text("# Lore\n", encoding="utf-8")  # no okf_version, no markers
+        self.assertIsNone(rp_gate.canon_bundle_root(p.root))
+
+    def test_the_canon_index_yields_to_the_budget_before_the_last_beat(self):
+        p = project(self)
+        bundle(p)
+        full, _ = brief(p, keeper="I ask Bren.")
+        beats = full.split("=== Recent beats")[1]
+        must = len(full.encode("utf-8")) - len(beats.encode("utf-8"))
+        text, report = brief(p, keeper="I ask Bren.", budget=must - 2000)
+        self.assertNotIn("=== Canon index", text)
+        self.assertIn("- canon index (2 matched entries)", text.split("=== Not carried ===", 1)[1])
+        self.assertFalse(report["canon"]["carried"])
+        self.assertEqual(["Bren", "Liss"], [m["title"] for m in report["canon"]["matched"]])  # Liss: the last beats
+        self.assertIn("<!-- Beat 4130: ", text)
+
+    def test_a_possessive_names_the_title(self):
+        p = project(self)
+        bundle(p)
+        _text, report = brief(p, keeper="I look for Bren's ledger in the Gilt Thorn's cellar.")
+        self.assertEqual(["Bren", "The Gilt Thorn", "Liss"], [m["title"] for m in report["canon"]["matched"]])
+        self.assertFalse(rp_gate._title_names("Bren", "Brenda left.", "brenda left."))
+        self.assertFalse(rp_gate._title_names("Edits", "I never edits anything", "i never edits anything"))
+        self.assertTrue(rp_gate._title_names("Edits", "Open Edits first", "open edits first"))
+
+    def test_the_okfignore_prunes_the_walk_and_the_entries(self):
+        p = project(self)
+        bundle(p)
+        (p.root / BUNDLE / ".okfignore").write_text("# drafts\nBooks/*/work/\n", encoding="utf-8")
+        work = p.root / BUNDLE / "Books/Tale/work"
+        work.mkdir(parents=True)
+        (work / "index.md").write_text("# work\n\n## Concepts\n\n- [Bren](./Bren.md): a draft about Bren\n", encoding="utf-8")
+        (work / "Bren.md").write_text("---\ntitle: Bren\ntype: draft\n---\n", encoding="utf-8")
+        (p.root / BUNDLE / "World/index.md").write_text((p.root / BUNDLE / "World/index.md").read_text()
+                                                        + "- [Escape](./../../Work/escape.md): outside the bundle\n", encoding="utf-8")
+        entries, indexes = rp_gate.canon_index_entries(p.root, Path(BUNDLE))
+        self.assertEqual(4, indexes)
+        self.assertEqual(1, sum(1 for e in entries if e["title"] == "Bren"))
+        self.assertFalse([e for e in entries if "Escape" in e["title"]])
+
+    def test_the_project_itself_may_be_the_bundle(self):
+        p = project(self)
+        (p.root / "index.md").write_text("---\nokf_version: \"0.2\"\n---\n# Project\n", encoding="utf-8")
+        self.assertEqual(Path("."), rp_gate.canon_bundle_root(p.root))
+        bundle(p, config=False)  # Lore/index.md declares okf_version too: the nearest marked ancestor wins
+        self.assertEqual(Path(BUNDLE), rp_gate.canon_bundle_root(p.root))
+        (p.root / BUNDLE / "index.md").write_text("# Lore\n", encoding="utf-8")
+        self.assertEqual(Path("."), rp_gate.canon_bundle_root(p.root))
+        text, report = brief(p, keeper="Bren.")
+        self.assertEqual(".", report["canon"]["bundle"])
+        self.assertIn("entries in the project root, by title", text)
+
+    def test_a_register_row_naming_no_bundle_warns(self):
+        p = project(self)
+        (p.root / "Memory").mkdir(exist_ok=True)
+        (p.root / "Memory/canon-layout.md").write_text("# Canon Layout\n\n| Register | Path |\n|---|---|\n"
+                                                      "| `canon_index` | `Nowhere/index.md` |\n", encoding="utf-8")
+        _text, report = brief(p, keeper="Bren.")
+        self.assertIsNone(report["canon"]["bundle"])
+        self.assertTrue([w for w in report["warnings"] if "canon_index row names Nowhere/index.md" in w])
+
+    def test_the_canon_index_outranks_the_optional_beats(self):
+        p = project(self)
+        bundle(p)
+        full, _ = brief(p, keeper="I ask Bren.")
+        text, report = brief(p, keeper="I ask Bren.", budget=len(full.encode("utf-8")) - 4000)
+        self.assertTrue(report["canon"]["carried"])
+        self.assertLess(len(report["beats"]["carried"]), 20)  # beats fell first
+        self.assertEqual("4130", report["beats"]["carried"][-1])
+
+    def test_a_relative_project_dir_works(self):
+        p = project(self)
+        bundle(p)
+        cwd = os.getcwd()
+        os.chdir(p.root)
+        try:
+            self.assertEqual(Path(BUNDLE), rp_gate.canon_bundle_root("."))
+            entries, _ = rp_gate.canon_index_entries(".", Path(BUNDLE))
+            self.assertIn("Lore/World/Characters/Bren.md", [e["path"] for e in entries])
+        finally:
+            os.chdir(cwd)
+
+    def test_canon_index_lines_are_not_the_briefs_own_lines(self):
+        p = project(self)
+        bundle(p)
+        # a note whose body line equals its index description: carrying the index must not count as carrying the line
+        note = p.root / "Lore/World/Characters/Liss.md"
+        note.write_text("---\ntitle: Liss\ntype: character\n---\n# Liss\n\nLiss, the household's forge hand\n", encoding="utf-8")
+        text, _report = brief(p, keeper="Liss.")
+        self.assertIn("=== Canon index", text)
+        rp_gate.write_brief(p.root, LEGACY, "Liss.")
+        gave = rp_gate._brief_for(p.root, {"KEEPER_INPUT": "Liss."})
+        self.assertIsNotNone(gave)
+        self.assertNotIn("liss, the household's forge hand", gave["text"].lower())
+        self.assertFalse(any("forge hand" in line for line in gave["lines"]))
+
+
 if __name__ == "__main__":
     unittest.main()

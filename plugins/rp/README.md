@@ -1,6 +1,6 @@
 # RP Plugin
 
-**Version**: 0.5.5
+**Version**: 0.5.6
 
 Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification, and world/history lookup. The *verbs* of running a game live here; the *nouns* — canon, character registers, rulesets, the invariants projection — stay in the consuming project.
 
@@ -312,7 +312,7 @@ beats it does not carry (they bind as canon does; each is cut to its first 400
 bytes, with its line, so a long one is a read away; plural forms, `GM DECISIONS
 / RULINGS`, count; a STATE line does not, being superseded, nor a source record,
 `SOURCED` or `SOURCE_LOG`, which cites rulings); the keyed entries that match;
-and the beats of the continuity read, the last one always, then the two before
+the canon index (below); and the beats of the continuity read, the last one always, then the two before
 it and older ones newest first while the budget lasts. A carried beat leaves its
 STATE lines out (the governing STATE line, under the current state, supersedes
 them: the logs carry a ruling in force forward in each), and a header section
@@ -340,6 +340,28 @@ quote and the Keeper's input never make one. A review of a provisional beat gets
 a brief built the same way from the pending copy, so every path in it names the
 copy; its report is kept beside it, and `ship` and `pending` print its `reads`
 (`review_brief_reads`, `brief_reads`).
+
+**Canon index.** When the canon lives in an OKF bundle (the register's
+`canon_index` row names its root `index.md`; without the row, the nearest
+directory above the entity globs, the project itself included, that holds
+`.okfconfig`, `.okfignore`, the learnings marker `.okf-0.2.json` or an
+`index.md` declaring `okf_version`, `Lore/` by default), the brief reads every
+generated `index.md` in it and carries the entries whose titles the Keeper's
+input or the last three beats name: `- Title (path; where it matched):
+description`, the input's matches first, at most twelve. A multi-word title
+matches whatever its case; a single word matches only as written, so a note
+called Edits does not match every "edits", and a title under four characters
+never matches. The section is optional like a keyed entry: admitted after the
+keyed entries and before the optional beats, so when the budget bites the
+older beats fall first and the index after them, never displacing the last
+beat; dropped, it is listed under Not carried. Its lines are never the brief's
+own for `via: brief`: a description points at a note, it is not one of its
+lines. The walk skips hidden directories and what the bundle's `.okfignore`
+excludes (a book's `work/` drafts stay out), and a `canon_index` row naming no
+bundle is a warning. The GM reads the note the entry names instead
+of spawning world-lookup, which it keeps for a noun the index does not list;
+world-lookup and timeline-search themselves read a directory's index before any
+glob.
 
 **Keyed entries** are the SillyTavern lorebook idea, owned by the project: the
 canon register's `keyed_entries` row (globs), else `keyed-entries.md` beside the

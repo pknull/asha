@@ -51,6 +51,7 @@ import copy
 import datetime
 import difflib
 import errno
+import fnmatch
 import glob
 import hashlib
 import itertools
@@ -62,6 +63,7 @@ import stat
 import sys
 import time
 import unicodedata
+import urllib.parse
 from pathlib import Path
 
 try:
@@ -1840,6 +1842,12 @@ KEYED_DEFAULT = "keyed-entries.md"
 PRICED_DEFAULT = "Lore/TTRPG/canon-sources.md"
 PRICED_FRAGMENT = PRICED_RULE.parent / "canon-priced-stakes.md"
 SCAN_BEATS = 3  # besides the Keeper's input, keys are matched in the last few beats
+CANON_INDEX_MAX = 12  # index entries the brief's Canon index carries at most
+CANON_TITLE_MIN = 4  # a shorter title is a word, not a name
+OKF_MARKERS = (".okfconfig", ".okfignore", ".okf-0.2.json")
+INDEX_ENTRY_RE = re.compile(r"^- \[(.+?)\]\((\./[^)]+)\)(?:: (.*))?$")  # a generated OKF index entry
+ENTITY_KINDS = ("character", "location", "artifact", "faction", "magic", "pc")
+CHARACTER_DEFAULT = "Lore/World/Characters/*.md"
 WHOLE_BEATS = 1  # the last beats every brief carries, whatever the budget; the two before them go in after the keyed
 DECISION_LINE_MAX = 400  # bytes of a GM DECISION or RULING line from a beat not carried; the rest is a read away
 # One Read of the brief on Claude Code is refused past 25,000 tokens, and one with no limit returns only a first
@@ -1873,6 +1881,142 @@ def _register_paths(project: Path, name: str) -> list[str]:
     m = re.search(r"(?ms)^#{2,6}\s+`?%s`?\s*$(.*?)(?=^#{1,6}\s|\Z)" % re.escape(name), text)
     first = next((part for part in re.split(r"\n\s*\n", m.group(1)) if part.strip()), "") if m else ""
     return re.findall(r"`([^`]+)`", first)[:1]
+
+
+def _is_okf_root(directory: Path) -> bool:
+    if any((directory / marker).is_file() for marker in OKF_MARKERS):
+        return True
+    index = directory / "index.md"
+    try:
+        head = index.read_text(encoding="utf-8", errors="replace")[:400] if index.is_file() else ""
+    except OSError:
+        return False
+    return bool(re.search(r"(?m)^okf_version:", head))
+
+
+def canon_bundle_root(project, warnings=None) -> "Path | None":
+    """The OKF bundle the canon lives in, project-relative (Path(".") for the project itself): the register's
+    `canon_index` row (its root index.md or directory; a row naming no bundle is a warning), else the nearest marked
+    ancestor, the project included, of the first entity glob's fixed prefix (the register's character/location/...
+    rows, else the default character glob)."""
+    project = Path(os.path.abspath(project))
+    declared = _register_paths(project, "canon_index")
+    if declared:
+        raw = declared[0]
+        start = Path(raw).parent if raw.endswith("index.md") else Path(raw)
+        path = Path(os.path.abspath(project / start))
+        if (path == project or project in path.parents) and _is_okf_root(path):
+            return path.relative_to(project) if path != project else Path(".")
+        if warnings is not None:
+            warnings.append(f"The canon register's canon_index row names {raw}, which is not an OKF bundle root "
+                            "(no .okfconfig, .okfignore, .okf-0.2.json or index.md declaring okf_version there).")
+        return None
+    first = next((paths[0] for kind in ENTITY_KINDS if (paths := _register_paths(project, kind))), CHARACTER_DEFAULT)
+    prefix = re.split(r"[*?\[]", first, maxsplit=1)[0]
+    current = project / Path(prefix).parent if not prefix.endswith("/") else project / prefix
+    current = Path(os.path.normpath(current))
+    while True:
+        if current != project and project not in current.parents:
+            return None
+        if _is_okf_root(current):
+            return current.relative_to(project) if current != project else Path(".")
+        if current == project:
+            return None
+        current = current.parent
+
+
+def _okf_ignored(root: Path) -> list[str]:
+    """The bundle's .okfignore patterns (one per line, # comments), the okf plugin's syntax: fnmatch on the
+    bundle-relative path; a trailing slash is a directory prefix."""
+    path = root / ".okfignore"
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines() if path.is_file() else []
+    except OSError:
+        return []
+    return [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
+
+
+def _okf_excluded(rel: str, patterns: list[str]) -> bool:
+    rel = rel.rstrip("/")
+    for pattern in patterns:
+        base = pattern.rstrip("/")
+        if fnmatch.fnmatch(rel, base) or fnmatch.fnmatch(rel, base + "/*"):
+            return True
+    return False
+
+
+def canon_index_entries(project, bundle) -> tuple[list[dict], int]:
+    """Every concept entry of the bundle's generated indexes ({title, path, description}, path project-relative,
+    in index order) and the number of indexes read. Directory symlinks are followed once each, as the generator
+    walks; hidden directories and those the bundle's .okfignore excludes are not walked; an entry pointing outside
+    the bundle is skipped."""
+    project = Path(os.path.abspath(project))
+    root = Path(os.path.normpath(project / bundle))
+    ignored = _okf_ignored(root)
+    entries, seen, count = [], set(), 0
+    visited = set()
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):  # as the generator walks
+        here = Path(dirpath)
+        real = os.path.realpath(dirpath)
+        if real in visited:
+            dirnames[:] = []
+            continue
+        visited.add(real)
+        dirnames[:] = sorted(d for d in dirnames if not d.startswith(".")
+                             and not _okf_excluded((here / d).relative_to(root).as_posix(), ignored))
+        if "index.md" not in filenames:
+            continue
+        index = here / "index.md"
+        try:
+            text = index.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        count += 1
+        for line in text.splitlines():
+            m = INDEX_ENTRY_RE.match(line)
+            if not m:
+                continue
+            target = urllib.parse.unquote(m.group(2))
+            if target.endswith("/index.md") or not target.endswith(".md"):
+                continue
+            path = Path(os.path.normpath(index.parent / target))
+            if path != root and root not in path.parents:
+                continue  # a target outside the bundle is not one of its concepts
+            if _okf_excluded(path.relative_to(root).as_posix(), ignored):
+                continue
+            rel = path.relative_to(project).as_posix()
+            if rel in seen:
+                continue
+            seen.add(rel)
+            entries.append({"title": m.group(1).strip(), "path": rel, "description": (m.group(3) or "").strip()})
+    return entries, count
+
+
+def _title_names(title: str, text: str, lowered: str) -> bool:
+    """Whether the text names the title as a whole phrase (the keyed matcher's word boundaries, so a possessive
+    "Bren's" names Bren): case-insensitive for a multi-word title (an article's case follows the sentence), as
+    written for a single word (so a note called Edits does not match every 'edits'). A title under
+    CANON_TITLE_MIN characters is a word, not a name, and never matches."""
+    if len(title) < CANON_TITLE_MIN:
+        return False
+    multi = " " in title
+    if (title.lower() not in lowered) if multi else (title not in text):
+        return False  # the cheap check first: a regex per title per turn is what the live brief cannot afford
+    return re.search(r"(?<!\w)" + re.escape(title) + r"(?!\w)", text, re.IGNORECASE if multi else 0) is not None
+
+
+def canon_index_matches(entries: list[dict], keeper_input: str, scan: str) -> list[dict]:
+    """Entries whose title names something in the Keeper's input (first) or the last beats, best first, at most
+    CANON_INDEX_MAX; each with where it matched."""
+    ranked = []
+    input_low, scan_low = keeper_input.lower(), scan.lower()
+    for order, entry in enumerate(entries):
+        in_input = _title_names(entry["title"], keeper_input, input_low)
+        in_beats = _title_names(entry["title"], scan, scan_low)
+        if in_input or in_beats:
+            ranked.append(((2 if in_input else 0) + (1 if in_beats else 0), -order, entry, in_input, in_beats))
+    ranked.sort(key=lambda r: r[:2], reverse=True)
+    return [{**entry, "in_input": in_input, "in_beats": in_beats} for _s, _o, entry, in_input, in_beats in ranked[:CANON_INDEX_MAX]]
 
 
 def keyed_tables(project, data: dict, warnings=None) -> list[str]:
@@ -2207,6 +2351,26 @@ def build_brief(project, session_file, keeper_input: str, *, config=None, budget
     report["keyed"] = {"tables": tables, "entries": len(entries), "matched": [], "dropped": [],
                        "unverified": [k["id"] for k in keyed if any(not q["verified"] for q in k["quotes"])]}
 
+    # The canon index: the OKF bundle's generated index entries whose titles the input or the last beats name, so
+    # the GM reads the note instead of searching for it (and spawns world-lookup only for a noun not here).
+    bundle = canon_bundle_root(project, warnings)
+    canon_entries, canon_indexes = canon_index_entries(project, bundle) if bundle is not None else ([], 0)
+    bundle_name = ("the project root" if bundle is not None and bundle.as_posix() == "." else
+                   bundle.as_posix() if bundle is not None else None)
+    canon = canon_index_matches(canon_entries, keeper_input, scan) if canon_entries else []
+    canon_text = ""
+    if canon:
+        rows = []
+        for c in canon:
+            where = "; ".join((["the Keeper's input"] if c["in_input"] else []) + (["the last beats"] if c["in_beats"] else []))
+            rows.append(f"- {c['title']} ({c['path']}; {where})" + (f": {c['description']}" if c["description"] else ""))
+        canon_text = (f"=== Canon index ({len(canon)} of {len(canon_entries)} entries in {bundle_name}, by title; "
+                      "read the note before inventing about it; spawn world-lookup only for a noun not here) ===\n"
+                      + "\n".join(rows))
+    report["canon"] = {"bundle": bundle.as_posix() if bundle is not None else None, "indexes": canon_indexes,
+                       "entries": len(canon_entries), "matched": [{k: c[k] for k in ("title", "path", "in_input", "in_beats")}
+                                                                 for c in canon], "carried": False}
+
     # The budget: what must go in (the last beat, and the GM decisions and rulings of beats not carried), then the
     # keyed entries, best first, then the beats before the last, newest first; then exact, dropping the last
     # optional piece added until the whole brief fits. A carried beat leaves its STATE lines out: the governing
@@ -2234,6 +2398,7 @@ def build_brief(project, session_file, keeper_input: str, *, config=None, budget
     cost = lambda t: len(t.encode("utf-8")) + 2  # noqa: E731
     chosen = [k for k in keyed if k["priced"]]
     carried_beats = list(always)
+    canon_in = []  # [canon_text] once the budget admits the canon index
 
     def assemble():
         parts = list(must)
@@ -2246,10 +2411,13 @@ def build_brief(project, session_file, keeper_input: str, *, config=None, budget
             parts.append(f"=== Keyed entries ({len(chosen)} of {len(entries)} in {', '.join(tables) or 'no table'}"
                          f"{'; the priced-stakes rule' if priced else ''}) ===\n" + "\n\n".join(
                              k["text"] for k in keyed if id(k) in ids))
+        parts.extend(canon_in)
         parts.append(f"=== Recent beats ({len(carried_beats)} of the {len(beats)} the continuity read holds, oldest "
                      "first) ===\n" + "\n\n".join(beat_text(b) for b in carried_beats))
         left = [f"- Beat {b['beat']}: {b['path']} lines {b['start']}-{b['end']}" for b in dropped]
         left += [f"- keyed entry {k['id']}" for k in keyed if k not in chosen]
+        if canon and not canon_in:
+            left.append(f"- canon index ({len(canon)} matched entries)")
         parts.append("=== Not carried ===\n" + ("\n".join(left) if left else
                                                  "- nothing in the continuity read was left out"))
         return "\n\n".join(parts) + "\n", dropped
@@ -2261,6 +2429,10 @@ def build_brief(project, session_file, keeper_input: str, *, config=None, budget
             chosen.append(k)
             added.append(("keyed", k))
             used += cost(k["text"])
+    if canon_text and used + cost(canon_text) <= budget:
+        canon_in.append(canon_text)
+        added.append(("canon", canon_text))
+        used += cost(canon_text)
     for b in reversed(rest):
         extra = cost(beat_text(b)) - sum(cost(decision_line(b, x)) for x in decisions[id(b)])
         if used + extra > budget:
@@ -2271,8 +2443,9 @@ def build_brief(project, session_file, keeper_input: str, *, config=None, budget
     text, dropped = assemble()
     while len(text.encode("utf-8")) > budget and added:
         kind, piece = added.pop()
-        (chosen if kind == "keyed" else carried_beats).remove(piece)
+        {"keyed": chosen, "canon": canon_in, "beat": carried_beats}[kind].remove(piece)
         text, dropped = assemble()
+    report["canon"]["carried"] = bool(canon_in)
     report["keyed"]["matched"] = [{key: k[key] for key in ("id", "table", "source", "in_input", "in_beats", "quotes")}
                                   for k in keyed if k in chosen]
     report["keyed"]["dropped"] = [k["id"] for k in keyed if k not in chosen]
@@ -2314,13 +2487,15 @@ def _brief_for(project: Path, turn: dict):
     lines = _read_lines(project / str(report.get("session") or "")) or []
     if _shipped_of("\n".join(lines[:2001])) != report.get("shipped"):
         return None  # built before a later beat shipped: another turn's brief with the same input
-    keyed, carried, own, keeper = {}, set(), [], None
+    keyed, carried, own, keeper, canon = {}, set(), [], None, False
     for raw in text.splitlines():
         if keeper is None and raw == "KEEPER_INPUT:":
             keeper = True  # the Keeper's input carries nothing: its lines are not the brief's
         elif keeper and raw.startswith("LIVE_STATE:"):
             keeper = False
-        if not keeper:
+        if raw.startswith("=== "):
+            canon = raw.startswith("=== Canon index")  # index descriptions point at a note; they are not its lines
+        if not keeper and not canon:
             own.append(raw)
             m = BRIEF_KEYED_RE.match(raw)
             if m:

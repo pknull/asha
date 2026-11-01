@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased — rp 0.5.6: the RP readers walk the Lore indexes first
+
+- The GM brief carries a canon index: the entries of the vault's generated OKF
+  `index.md` files whose titles the Keeper's input or the last three beats
+  name, each with its note's path and one-line description, the input's
+  matches first, at most twelve. The bundle is the register's `canon_index`
+  row (its root `index.md`), else the nearest directory above the entity
+  globs holding `.okfconfig`, `.okfignore`, `.okf-0.2.json` or an `index.md`
+  declaring `okf_version` (`Lore/` by default; the live AAS register has no entity rows,
+  so discovery is what runs there). A multi-word title matches in any case; a
+  single word only as written (a possessive, "Bren's", names Bren); under four
+  characters never. The section is an optional piece like a keyed entry,
+  admitted after them and before the optional beats, so the older beats fall
+  to the budget first and the index after them, never the last beat; dropped,
+  it is listed under Not carried. The walk skips hidden directories and the
+  bundle's `.okfignore` exclusions, and an entry pointing outside the bundle;
+  a `canon_index` row naming no bundle warns; a bundle at the project root
+  works. Its lines are left out of the brief's own lines for `via: brief`, so
+  a description equal to a note's body line never counts as the GM having
+  opened the note. Report: `canon` (`bundle`, `indexes`, `entries`, `matched`,
+  `carried`). On a project without a bundle nothing changes. Cost on the live
+  vault: the walk and parse of 85 indexes plus matching 1,200 titles against
+  the input and three beats adds about 200 ms to a 270 ms brief, a substring
+  check running before any regex.
+- The GM reads the note a canon index entry names instead of spawning
+  world-lookup, which it keeps for a noun the index does not list.
+  world-lookup reads each register directory's `index.md` (titles, then
+  descriptions, child indexes whose names fit) before any Glob or Grep and
+  names the indexes it read in `searched`; timeline-search does the same for
+  its vault-side secondary sources (its `Work/rp/` primary sources carry no
+  indexes). The canon-layout template gains the optional `canon_index` row.
+
 ## Unreleased — okf 0.4.0, rp 0.5.5: the RP writers keep the Lore bundle indexed, logged and gated
 
 - `okf_update.py`: a writer hands over the exact paths it created or edited.

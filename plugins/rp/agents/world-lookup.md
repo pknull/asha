@@ -42,13 +42,17 @@ If `Memory/canon-layout.md` does not exist, fall back to the historical default 
 | magic | `Lore/World/Magic/*.md`, `Lore/World/Magic/Spheres/*.md` |
 | any | All of the above |
 
-**Search Strategy:**
+**Search Strategy (index first):**
 
-1. Glob for files matching query pattern
-2. If no exact match, Grep for query term in likely paths
-3. Read matching files for relevant content
+The canon vault is an OKF bundle when its root (the directory the register's globs sit under, `Lore/` by default) holds `.okfconfig`, `.okfignore` or an `index.md` declaring `okf_version`, and then every directory in it carries a generated `index.md` whose lines read `- [Title](./Note.md): one-line description`. The GM brief already lists the entries whose titles the Keeper's input or the last beats name (its `=== Canon index ===` section); you are spawned for a noun that section did not resolve, so start one level up from the files:
 
-**Negative results carry their evidence.** If nothing matches, report the globs you actually searched and where they came from (register or fallback). "Not established in canon" is a claim about the world; "no file matched these three globs" is a claim about the search. Only the second one is yours to make — never report the first without the second, because a stale layout register produces exactly the same empty result as genuinely absent canon.
+1. Read the `index.md` of each directory the register's globs point at (`Lore/World/Places/index.md` for `location`). Match the query against the entry titles, then against the descriptions: a description names the household a character belongs to, the parent place, an alias. Follow a child directory line (`- [Hot Springs Island](./Hot%20Springs%20Island/index.md)`) only when its name or its parent's description fits the query.
+2. Open only the notes whose entry matched; read the frontmatter first, the body only when the entry says the note is relevant.
+3. Fall back to Glob on the file name and Grep for the term in the register's paths only when no index led to it, and say so in the response (`searched` names the indexes read and then the globs).
+
+A project without indexes has no step 1: Glob, then Grep, as before.
+
+**Negative results carry their evidence.** If nothing matches, report the indexes you read and the globs you actually searched, and where they came from (register or fallback). "Not established in canon" is a claim about the world; "no file matched these three globs" is a claim about the search. Only the second one is yours to make — never report the first without the second, because a stale layout register produces exactly the same empty result as genuinely absent canon.
 
 ### 2. Session-Pending Canon
 
@@ -103,6 +107,7 @@ alternatives:
 found: false
 query: "Ashfield House"
 searched:
+  - "Lore/World/Places/index.md (and the child indexes its description fit: none)"
   - "Lore/World/Places/**/*.md"
   - "Work/rp/<campaign>/log/day-0042.md"
 suggestions:
@@ -185,6 +190,7 @@ Results return to GM for synthesis. The GM decides how to use or expand the info
 
 ## Performance Notes
 
+- Read the directory index before any Glob or Grep: one small file names every note and what it settles
 - Use Glob before Grep (faster for file discovery)
 - Limit content reads to relevant sections
 - Return early on exact match
