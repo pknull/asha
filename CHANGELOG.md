@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased — okf 0.4.0, rp 0.5.5: the RP writers keep the Lore bundle indexed, logged and gated
+
+- `okf_update.py`: a writer hands over the exact paths it created or edited.
+  Each path's bundle is the nearest ancestor holding `.okfconfig`, `.okfignore`,
+  the learnings marker or an `index.md` that declares `okf_version` (a nested
+  directory's generated index marks nothing). Per bundle the tool rewrites the
+  generated indexes, appends one `log.md` entry naming the concepts, and runs
+  the strict gate; `--json` reports `bundles[].changed` (the index and log
+  files to stage), `unbundled`, `excluded`, `reserved`, `other` (attachments
+  and notes under hidden directories, which the walker never visits),
+  `missing` and `errors`. A missing path, a directory or a malformed `--date`
+  refuses the run before anything is written; a malformed concept fails the
+  gate by name after the index and log are written, so the record reflects
+  what is on disk; an OS or decode error while writing one bundle is reported
+  under `errors` with exit 2 and the other bundles still run (indexes written
+  before the error stay; a rerun repairs the rest). `--plugin NAME` derives the `asha/<version>` actor from that
+  plugin's README (the sole version authority); `--print-actor` exposes it to
+  commands.
+- `/rp:end` Step 6 resolves `ACTOR` and `NOW` before spawning the canon-writer,
+  passes them in the prompt, and hands the promotion report's paths to
+  `okf_update.py --plugin rp --verb Canon`; Step 7 stages the changed index and
+  log files beside the promoted ones. `--canon-only` includes the record.
+- The canon-writer writes `title`, `description`, `type`, `generated {by, at}`
+  and `sources` (entries are `resource` mappings, the v0.2 shape) on every
+  concept it creates, leaves `description`, `generated`
+  and `verified` alone on an edit (ratification confirms a fact, not the
+  agent's rendering of it; descriptions are the Keeper's to revise under
+  Taxonomy Decision 004), and returns `descriptions_to_review` for notes whose
+  subject an edit widened.
+- Rotation and the summaries write under `Work/rp/`, outside the Lore bundle,
+  and `novel-state-updater` writes a book's excluded state directory; neither
+  changes. The `okf-bundle` skill gains a "Record a writer's changes" section.
+
 ## Unreleased — okf 0.3.0: Obsidian link grammar for vault bundles (phase two tooling)
 
 - `okf_links.py` resolves links in two grammars: standard markdown with

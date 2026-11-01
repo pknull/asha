@@ -1,6 +1,7 @@
 """The okf plugin: pinned vendored tooling and Asha's wrappers over it."""
 
 import hashlib
+import json
 import os
 import random
 import re
@@ -17,6 +18,7 @@ sys.path.insert(0, str(TOOLS))
 
 import okf_index  # noqa: E402
 import okf_log  # noqa: E402
+import okf_update  # noqa: E402
 import okf_validate  # noqa: E402
 
 VENDORED = ("okf_common.py", "validate.py", "visualize.py")
@@ -51,7 +53,7 @@ class VendoredPinTests(unittest.TestCase):
             self.assertEqual(digest, hashlib.sha256(body).hexdigest(), f"{name} body differs from its pinned digest")
 
     def test_vendored_tools_load_with_their_shared_parser(self):
-        for tool in ("validate.py", "visualize.py", "okf_validate.py", "okf_index.py", "okf_log.py", "okf_viz.py"):
+        for tool in ("validate.py", "visualize.py", "okf_validate.py", "okf_index.py", "okf_log.py", "okf_viz.py", "okf_update.py"):
             result = run(TOOLS / tool, "--help")
             self.assertEqual(0, result.returncode, f"{tool}: {result.stderr}")
             self.assertNotIn("ModuleNotFoundError", result.stderr)
@@ -645,6 +647,275 @@ class VizTests(unittest.TestCase):
             html = (root / "viz.html").read_text()
             self.assertNotIn(payload, html)
             self.assertIn("<\\/script><img", html)
+
+
+class UpdateTests(unittest.TestCase):
+    """okf_update.py: a writer hands over the paths it touched; the bundle is reindexed, logged and gated."""
+
+    def bundle(self, root: Path, **config):
+        concept(root / "a.md", "A", "[B](./b.md)")
+        concept(root / "b.md", "B")
+        if config:
+            (root / ".okfconfig").write_text(json.dumps(config))
+        okf_index.write_indexes(root, okf_version="0.2")
+        okf_log.append_entry(root, "**Creation** bundle", actor="asha/test", day="2026-10-01")
+
+    def test_the_nearest_marked_ancestor_is_the_bundle_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outer = Path(tmp) / "outer"
+            self.bundle(outer)
+            inner = outer / "inner"
+            inner.mkdir()
+            (inner / ".okfconfig").write_text("{}")
+            marked = outer / "store"
+            marked.mkdir()
+            (marked / ".okf-0.2.json").write_text("{}")
+            self.assertEqual(inner, okf_update.find_bundle_root(inner / "note.md"))
+            self.assertEqual(marked, okf_update.find_bundle_root(marked / "note.md"))
+            self.assertEqual(outer, okf_update.find_bundle_root(outer / "deep" / "er" / "note.md"))
+            self.assertIsNone(okf_update.find_bundle_root(Path(tmp) / "elsewhere" / "note.md"))
+            # an index.md without okf_version marks nothing: nested directories carry generated indexes
+            (outer / "deep").mkdir()
+            (outer / "deep" / "index.md").write_text("# Deep\n")
+            self.assertEqual(outer, okf_update.find_bundle_root(outer / "deep" / "note.md"))
+
+    def test_a_new_concept_is_indexed_logged_and_gated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "lore"
+            self.bundle(root, links="obsidian")  # a vault: space-named notes, wikilinks
+            concept(root / "World" / "Places" / "Ashfield House.md", "Ashfield House", "[[A]]")
+            result = run(TOOLS / "okf_update.py", root / "World/Places/Ashfield House.md",
+                         "--actor", "asha/0.5.5", "--message", "canon from session 2026-11-01", "--verb", "Canon",
+                         "--date", "2026-11-01", "--json")
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            data = json.loads(result.stdout)
+            [bundle] = data["bundles"]
+            self.assertEqual(str(root), bundle["root"])
+            self.assertEqual(["World/Places/Ashfield House"], bundle["concepts"])
+            self.assertEqual(0, bundle["gate"]["rc"])
+            self.assertEqual(7, bundle["gate"]["files"])  # a, b, the new note, three indexes, the log
+            changed = set(bundle["changed"])
+            self.assertEqual({"index.md", "World/index.md", "World/Places/index.md", "log.md"}, changed)
+            self.assertIn("(./Ashfield%20House.md)", (root / "World/Places/index.md").read_text())
+            log = (root / "log.md").read_text()
+            self.assertEqual(["## 2026-11-01", "## 2026-10-01"], re.findall(r"^## .*$", log, re.M))
+            self.assertIn("- **Canon** `World/Places/Ashfield House`: canon from session 2026-11-01 (asha/0.5.5)", log)
+            self.assertEqual([], data["unbundled"])
+            self.assertEqual([], okf_index.check_indexes(root))
+
+    def test_a_malformed_concept_fails_the_gate_but_is_still_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "lore"
+            self.bundle(root)
+            (root / "c.md").write_text("---\ntype: Reference\ntitle: C\n---\n# C\n[A](./a.md)\n")
+            result = run(TOOLS / "okf_update.py", root / "c.md", "--actor", "asha/test", "--message", "m",
+                         "--date", "2026-11-01", "--json")
+            self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+            [bundle] = json.loads(result.stdout)["bundles"]
+            self.assertEqual(1, bundle["gate"]["rc"])
+            self.assertIn("description", bundle["gate"]["output"])
+            self.assertIn("c.md", (root / "index.md").read_text())
+            self.assertIn("`c`", (root / "log.md").read_text())
+
+    def test_paths_outside_excluded_or_reserved_are_reported_not_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "lore"
+            self.bundle(root)
+            (root / ".okfignore").write_text("drafts/\n")
+            concept(root / "drafts" / "d.md", "D")
+            loose = Path(tmp) / "Work" / "note.md"
+            concept(loose, "Loose")
+            before = (root / "log.md").read_text()
+            result = run(TOOLS / "okf_update.py", loose, root / "drafts/d.md", root / "index.md",
+                         "--actor", "asha/test", "--message", "m", "--json")
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual([], data["bundles"])
+            self.assertEqual([str(loose)], data["unbundled"])
+            self.assertEqual([str(root / "drafts/d.md")], data["excluded"])
+            self.assertEqual([str(root / "index.md")], data["reserved"])
+            self.assertEqual(before, (root / "log.md").read_text())
+            self.assertFalse((root / "drafts" / "index.md").exists())
+
+    def test_a_missing_path_fails_before_anything_is_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "lore"
+            self.bundle(root)
+            concept(root / "c.md", "C", "[A](./a.md)")
+            before = (root / "log.md").read_text()
+            result = run(TOOLS / "okf_update.py", root / "c.md", root / "ghost.md",
+                         "--actor", "asha/test", "--message", "m", "--json")
+            self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual([str(root / "ghost.md")], data["missing"])
+            self.assertEqual([], data["bundles"])
+            self.assertEqual(before, (root / "log.md").read_text())
+            self.assertNotIn("c.md", (root / "index.md").read_text())
+
+    def test_the_plugin_actor_comes_from_the_readme_version(self):
+        version = re.search(r"^\*\*Version\*\*: (\d+\.\d+\.\d+)$", (ROOT / "plugins/rp/README.md").read_text(), re.M).group(1)
+        result = run(TOOLS / "okf_update.py", "--plugin", "rp", "--print-actor")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(f"asha/{version}", result.stdout.strip())
+        self.assertEqual(2, run(TOOLS / "okf_update.py", "--plugin", "no-such-plugin", "--print-actor").returncode)
+        self.assertEqual(2, run(TOOLS / "okf_update.py", "--plugin", "rp", "--actor", "x", "--print-actor").returncode)
+
+    def test_a_bad_date_or_an_attachment_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "lore"
+            self.bundle(root)
+            concept(root / "c.md", "C", "[A](./a.md)")
+            (root / "map.png").write_bytes(b"\x89PNG")
+            before = (root / "log.md").read_text()
+            result = run(TOOLS / "okf_update.py", root / "c.md", "--actor", "asha/test", "--message", "m",
+                         "--date", "yesterday", "--json")
+            self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+            self.assertEqual(before, (root / "log.md").read_text())
+            self.assertNotIn("c.md", (root / "index.md").read_text())
+            result = run(TOOLS / "okf_update.py", root / "map.png", "--actor", "asha/test", "--message", "m", "--json")
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual([str(root / "map.png")], data["other"])
+            self.assertEqual([], data["bundles"])
+            self.assertEqual(before, (root / "log.md").read_text())
+
+    def test_hidden_paths_are_not_concepts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "lore"
+            self.bundle(root)
+            concept(root / ".trash" / "Old Note.md", "Old")
+            before = (root / "log.md").read_text()
+            result = run(TOOLS / "okf_update.py", root / ".trash/Old Note.md", "--actor", "asha/test", "--message", "m", "--json")
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual([str(root / ".trash/Old Note.md")], data["other"])
+            self.assertEqual([], data["bundles"])
+            self.assertEqual(before, (root / "log.md").read_text())
+
+    def test_a_dot_named_note_in_a_visible_directory_is_recorded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "lore"
+            self.bundle(root)
+            concept(root / ".draft.md", "Draft", "[A](./a.md)")  # the walker filters files by suffix only
+            result = run(TOOLS / "okf_update.py", root / ".draft.md", "--actor", "asha/test", "--message", "m", "--json")
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual([], data["other"])
+            self.assertEqual([".draft"], data["bundles"][0]["concepts"])
+            self.assertEqual([], okf_index.check_indexes(root))
+
+    def test_two_bundles_record_independently_and_the_worst_gate_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            good, bad = Path(tmp) / "good", Path(tmp) / "bad"
+            self.bundle(good)
+            self.bundle(bad)
+            concept(good / "c.md", "C", "[A](./a.md)")
+            (bad / "c.md").write_text("---\ntype: Reference\ntitle: C\n---\n# C\n[A](./a.md)\n")
+            result = run(TOOLS / "okf_update.py", good / "c.md", bad / "c.md", "--actor", "asha/test", "--message", "m",
+                         "--date", "2026-11-01", "--json")
+            self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+            bundles = {b["root"]: b for b in json.loads(result.stdout)["bundles"]}
+            self.assertEqual(0, bundles[str(good)]["gate"]["rc"])
+            self.assertEqual(1, bundles[str(bad)]["gate"]["rc"])
+            for root in (good, bad):
+                self.assertIn("`c`", (root / "log.md").read_text())
+                self.assertIn("c.md", (root / "index.md").read_text())
+
+    def test_no_gate_records_without_a_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "lore"
+            self.bundle(root)
+            (root / "c.md").write_text("---\ntype: Reference\ntitle: C\n---\n# C\n")  # would fail the gate
+            result = run(TOOLS / "okf_update.py", root / "c.md", "--actor", "asha/test", "--message", "m", "--no-gate", "--json")
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            [bundle] = json.loads(result.stdout)["bundles"]
+            self.assertIsNone(bundle["gate"])
+            self.assertIn("c.md", (root / "index.md").read_text())
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores directory modes")
+    def test_an_unwritable_bundle_is_an_error_not_a_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "lore"
+            self.bundle(root)
+            concept(root / "sub" / "c.md", "C", "[A](../a.md)")
+            before = (root / "log.md").read_text()
+            os.chmod(root / "sub", 0o555)
+            try:
+                result = run(TOOLS / "okf_update.py", root / "sub/c.md", "--actor", "asha/test", "--message", "m", "--json")
+            finally:
+                os.chmod(root / "sub", 0o755)
+            self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(1, len(data["errors"]))
+            self.assertIn(str(root), data["errors"][0])
+            self.assertEqual([], data["bundles"])
+            self.assertEqual(before, (root / "log.md").read_text())
+
+    def test_a_message_is_required_to_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "lore"
+            self.bundle(root)
+            concept(root / "c.md", "C", "[A](./a.md)")
+            self.assertEqual(2, run(TOOLS / "okf_update.py", root / "c.md", "--actor", "asha/test").returncode)
+            self.assertEqual(2, run(TOOLS / "okf_update.py", root / "c.md", "--message", "m").returncode)
+
+
+class WriterContractTests(unittest.TestCase):
+    """The RP writers hand their paths to okf_update.py and write OKF fields."""
+
+    def read(self, rel: str) -> str:
+        return (ROOT / rel).read_text(encoding="utf-8")
+
+    def test_rp_end_records_promoted_canon_in_its_bundle(self):
+        end = self.read("plugins/rp/commands/end.md")
+        step = end.split("### Step 6", 1)[1].split("### Step 7", 1)[0]
+        self.assertIn("okf_update.py", step)
+        self.assertIn("--plugin rp", step)
+        self.assertIn("--print-actor", step)
+        self.assertIn("ACTOR:", step)
+        self.assertIn("NOW:", step)
+        stage = end.split("### Step 7", 1)[1]
+        self.assertIn("changed", stage)
+        self.assertIn("--canon-only", end.split("## Arguments", 1)[1])
+
+    def test_canon_writer_writes_the_okf_fields(self):
+        agent = self.read("plugins/rp/agents/canon-writer.md")
+        self.assertIn("ACTOR:", agent)
+        self.assertIn("NOW:", agent)
+        for field in ("description:", "generated:", "sources:"):
+            self.assertIn(field, agent)
+        self.assertIn("okf_update.py", agent)
+        self.assertNotIn("verified:", agent.split("## Frontmatter Standards", 1)[1].split("```", 2)[1])
+
+    def test_every_canon_writer_template_passes_the_gate_it_is_handed_to(self):
+        """The shapes the agent copies must be OKF v0.2 clean, or every promotion fails its own record step."""
+        agent = self.read("plugins/rp/agents/canon-writer.md")
+        fences = re.findall(r"^( *)---\n(.*?)\n\1---\n", agent, re.S | re.M)
+        frontmatters = []
+        for indent, block in fences:
+            lines = [line[len(indent):] if line.startswith(indent) else line for line in block.split("\n")]
+            text = "\n".join(lines)
+            if "title:" in text and "type:" in text:
+                frontmatters.append(text)
+        self.assertGreaterEqual(len(frontmatters), 3, "expected the two example operations and the standards fence")
+        for i, block in enumerate(frontmatters):
+            block = block.replace("<ACTOR>", "asha/0.5.5").replace("<NOW>", "2026-11-01T03:12:44Z")
+            block = re.sub(r"[ \t]{2,}#[^\"'\n]*$", "", block, flags=re.M)  # trailing comments, never a '#' inside a quote
+            block = block.replace("draft|active|canon", "draft").replace("players|keeper|public", "players")
+            block = block.replace("General|Teen|Mature", "Teen").replace("- [additional tags]", "- extra")
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp) / "lore"
+                concept(root / "a.md", "A")
+                (root / ".okfconfig").write_text(json.dumps({"links": "obsidian", "waive": ["status"]}))
+                (root / f"Note {i}.md").write_text(f"---\n{block}\n---\n# Note\n\n[[A]]\n", encoding="utf-8")
+                okf_index.write_indexes(root, okf_version="0.2")
+                verdict = okf_validate.run(str(root), strict=True)
+                self.assertEqual(0, verdict["rc"], f"template {i}:\n{block}\n{verdict['output']}\n{verdict['asha_lints']}")
+
+    def test_the_skill_teaches_the_record_step(self):
+        skill = self.read("plugins/okf/skills/bundle/SKILL.md")
+        self.assertIn("okf_update.py", skill)
+        self.assertIn("## Record", skill)
 
 
 if __name__ == "__main__":
