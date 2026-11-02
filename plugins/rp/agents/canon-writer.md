@@ -267,7 +267,7 @@ sources:                           # the session files the facts came from, cite
 ---
 ```
 
-- **`description`** is written for the index: the generated `index.md` beside the note shows `[title](note): description`, so it says what the note is and what it settles, in one line, no trailing period. On an **edit**, leave the existing description alone (Taxonomy Decision 004: descriptions are the Keeper's to revise) and list the note under `descriptions_to_review` in the return when the addition changes what the note is about.
+- **`description`** is written for the index: the generated `index.md` beside the note shows `[title](note): description`, so it says what the note is and what it settles, in one line, no trailing period. On an **edit**, leave the existing description alone (descriptions are the Keeper's to revise) and list the note under `descriptions_to_review` in the return when the addition changes what the note is about.
 - **`generated`** goes on files this agent creates, with the `ACTOR` and `NOW` the command passed. On an edit, do not touch `generated`, and never write or alter `verified`: ratification confirmed the fact, not this rendering of it, and `verified` records only a confirmation a person made of the text itself.
 - **`sources`** cites the session files the facts came from, beat-numbered. Each entry is a mapping with `resource` (OKF v0.2 lints a bare string as `sources[i] should be a mapping`). On an edit, append to an existing `sources` list rather than replacing it.
 

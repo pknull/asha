@@ -143,11 +143,12 @@ anything under `learnings/` from the root `.okfignore`.
 
 ## Canon vaults (phase two)
 
-Ruled 2026-10-31 on measured facts (about 1,100 of 1,643 Lore notes and some
-45 directories carry spaces or punctuation in their names, which the spec's
-link grammar cannot address): vaults keep their names and their
-`[[wikilinks]]`; Asha owns the link lints. The vault root (`~/Obsidian/AAS/Lore`, the Obsidian vault, not the
-repository) gets `.okfconfig` with `{"links": "obsidian"}` (in the phase-two vault change) so `okf_validate`
+Ruled 2026-10-31 on measured facts (in a working canon vault, about two thirds
+of the notes and dozens of directories carry spaces or punctuation in their
+names, which the spec's link grammar cannot address): vaults keep their names
+and their `[[wikilinks]]`; Asha owns the link lints. A canon vault's root (the
+Obsidian vault folder, not the repository that holds it) carries `.okfconfig`
+with `{"links": "obsidian"}` so `okf_validate`
 runs its own strict set over `okf_links`, which resolves wikilinks the way
 Obsidian does (basename, partial path, case-insensitive; attachments by a
 known extension set skipped; two notes sharing a name reported as ambiguous
@@ -155,21 +156,21 @@ unless one is in the linking note's own directory, which is Asha's tie-break,
 not a documented Obsidian rule). Links resolve against every note on disk, so
 a path into an excluded note is not broken, while only admitted notes are
 concepts. Generated indexes percent-encode their targets under this grammar;
-declare it in `.okfconfig` before the first index run. The vault's taxonomy (Decision
-002) owns `status` with its own ladder, so the bundle waives that lint. The
-vault's own quality gate (`Tools/validate_repo.py`) and link checker predate
-this and remain; the OKF gate joins them rather than replacing them.
+declare it in `.okfconfig` before the first index run. A vault whose own
+taxonomy owns `status` with its own ladder waives that lint
+(`"waive": ["status"]` in `.okfconfig`). A vault's existing quality gate and
+link checker remain; the OKF gate joins them rather than replacing them.
 
 ### Writers
 
-The one Asha writer that touches the Lore bundle is the canon-writer agent,
+The one Asha writer that touches a canon bundle is the canon-writer agent,
 spawned by `/rp:end` after the Keeper ratifies each item. It writes `title`, a
 one-line `description`, `type`, `generated {by, at}` (actor and instant the
 command resolved: `asha/<rp version>` from the rp README, `date -u`) and
 `sources` (`resource` mappings naming session files by beat) on every concept it creates, leaves
-`description`, `generated` and `verified` alone on an edit (Decision 004:
-descriptions are the Keeper's to revise; ratification confirms a fact, not this
-rendering of it), and reports the paths it touched. The command hands those
+`description`, `generated` and `verified` alone on an edit (descriptions are
+the Keeper's to revise; ratification confirms a fact, not this rendering of
+it), and reports the paths it touched. The command hands those
 paths to `okf_update.py`, which finds each file's bundle root by marker,
 rewrites the generated indexes, appends one `log.md` entry naming the concepts
 with the same actor, and runs the strict gate; the index and log files it
