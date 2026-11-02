@@ -89,3 +89,22 @@ asha_codex_launch_args() {
     ASHA_CODEX_LAUNCH_ARGS=(--no-daemon "$@")
   fi
 }
+
+# Only persona-enabled native TUI launches use the private voice relay. The
+# caller owns persona/worker exclusion; option values and -- retain native grammar.
+asha_codex_voice_candidate() {
+  local kind arg
+  kind="$(asha_codex_launch_kind "$@")"
+  [[ "$kind" == tui || "$kind" == resume ]] || return 1
+  while [[ $# -gt 0 ]]; do
+    arg="$1"; shift
+    case "$arg" in
+      --) break ;;
+      --help|-h|--version|-V) return 1 ;;
+      -i|--image) while [[ $# -gt 0 && "$1" != -* ]]; do shift; done ;;
+      --*=*) ;;
+      -*) [[ "$ASHA_CODEX_VALUE_OPTIONS" != *" $arg "* || $# -eq 0 ]] || shift ;;
+    esac
+  done
+  return 0
+}

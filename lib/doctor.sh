@@ -78,12 +78,14 @@ EOF
   _asha_doctor_session_profile_section "$target"
   local daemon_rc=0
   _asha_doctor_codex_daemon_section "$target" || daemon_rc=$?
+  local voice_rc=0
+  _asha_doctor_codex_voice_section "$target" || voice_rc=$?
   local budget_rc=0
   _asha_doctor_operational_budget_section || budget_rc=$?
   local okf_rc=0
   _asha_doctor_okf_bundle_section || okf_rc=$?
   [[ $drift_rc -eq 0 && $ws_rc -eq 0 && $imported_rc -eq 0 && $daemon_rc -eq 0 \
-     && $budget_rc -eq 0 && $okf_rc -eq 0 ]]
+     && $voice_rc -eq 0 && $budget_rc -eq 0 && $okf_rc -eq 0 ]]
 }
 
 # ~/.asha is an OKF bundle once its root index.md exists (Keeper, 2026-10-31):
@@ -148,6 +150,37 @@ _asha_doctor_codex_daemon_section() {
   echo "── Codex shared app-server daemon (#100) ──"
   (cd "$MARKET_ROOT" && python3 -m lib.control.codex_daemon "$MARKET_ROOT" "$(command -v "$codex")" \
     "${ASHA_HOME:-$HOME/.asha}/state/control/hub-rejected-events.jsonl")
+}
+
+# Offline capability probe only: no provider request, audio capture or daemon.
+# A native version without the startup contract keeps its ordinary launch;
+# missing/broken Asha tooling is a failure rather than an apparent clean skip.
+_asha_doctor_codex_voice_section() {
+  [[ "${1:-all}" == codex || "${1:-all}" == all ]] || return 0
+  echo ""
+  echo "── Codex voice startup ──"
+  local helper="$MARKET_ROOT/lib/codex_voice.py" codex out rc=0
+  [[ -f "$helper" ]] || { echo "FAIL  Codex voice helper missing: $helper"; return 1; }
+  command -v python3 >/dev/null 2>&1 || { echo "FAIL  python3 missing for Codex voice check"; return 1; }
+  command -v jq >/dev/null 2>&1 || { echo "FAIL  jq missing for Codex voice check"; return 1; }
+  codex="$(asha_harness_executable codex)"
+  codex="$(command -v "$codex")" || { echo "INFO  Codex executable unavailable; voice capability not checked"; return 0; }
+  out="$(python3 "$helper" --check "$codex" 2>/dev/null)" || rc=$?
+  if ! printf '%s' "$out" | jq -e -s 'length == 1 and (.[0] | type == "object" and (.supported | type == "boolean") and (.reason | type == "string"))' >/dev/null 2>&1; then
+    echo "FAIL  Codex voice capability check returned an invalid result"
+    return 1
+  fi
+  local supported reason
+  supported="$(printf '%s' "$out" | jq -r .supported)"
+  reason="$(printf '%s' "$out" | jq -r .reason)"
+  if [[ "$supported" == true && $rc -eq 0 ]]; then
+    echo "PASS  Codex voice startup contract available: $reason"
+  elif [[ "$supported" == false && $rc -eq 1 ]]; then
+    echo "WARN  Asha voice unavailable: $reason; ordinary native launch retained"
+  else
+    echo "FAIL  Codex voice capability check failed (exit $rc)"
+    return 1
+  fi
 }
 
 # What each harness actually does with ASHA_SESSION_PROFILE, read from the
