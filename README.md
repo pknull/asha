@@ -160,6 +160,36 @@ and Keeper material under `~/.asha/reference/` remains cold until the
 `asha-reference` skill selects a task-relevant file. Cold reference material is
 private and is never copied into project or workspace Memory.
 
+**Codex voice receives the same hot identity at each `/voice` start.** On a
+compatible native CLI, persona-enabled TUI launches use a private app-server
+and an authenticated loopback relay. The relay appends the base identity as a
+developer `initialItems` message, preserving Codex's frontend prompt, startup
+context and client delegation. It has no test prefix and does not record RPC
+payloads or audio. The operational layer and chair brief remain in the text
+agent's instructions. The private server retains the launching Room's hook
+environment and stops with the TUI; it does not join the shared daemon or
+restore remote-control publication.
+
+Voice-enabled sessions stay in the launch directory. In-session resume and fork
+targets are checked through the native server before switching; a target from
+another directory is refused with guidance to launch there. Native session
+pickers receive the same directory filter. The relay owns each auxiliary
+connection separately. Codex's remote reconnect URL expires when this private
+session exits; the wrapper reports that its backend has stopped.
+
+`asha doctor codex` checks the native startup capability without contacting a
+provider. Older CLIs and launch options whose local semantics cannot be carried
+over, including profiles, worktrees, extra workspace roots, local providers,
+cross-directory `--cd`, and ambiguous permission overrides on resume,
+keep the ordinary native launch with an explicit voice-unavailable warning.
+Startup resume/fork uses voice only with an explicit same-directory `--cd` and
+a direct session selector or `--last`; startup pickers keep the native launch.
+Workers, persona-disabled launches, explicit remote connections and non-TUI
+commands bypass the relay. Voice requires realtime v3; an unsupported protocol
+or startup-item budget overflow rejects that voice start while leaving text
+available. Native permissions still govern tools; identity delivery is not an
+enforcement boundary.
+
 **The operational layer reaches all four.** `~/.asha/operation.md` plus a
 capped rendering of active `~/.asha/learnings/` records load at session start.
 Candidates and retired records are never injected as instructions. Claude receives the layer through SessionStart, Codex through

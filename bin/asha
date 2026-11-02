@@ -459,6 +459,10 @@ launch() {
         fi
         [[ -z "${op_tmp:-}" ]] || rm -f "$op_tmp"
         if instr_arg="$(codex_instructions_arg "$instr")"; then
+          if asha_codex_voice_candidate "$@"; then
+            exec python3 "$ASHA_ROOT/lib/codex_voice.py" --identity "$base" -- \
+              "$executable" -c "$instr_arg" "${trust_args[@]}" "$@"
+          fi
           exec "$executable" -c "$instr_arg" "${trust_args[@]}" "$@"
         fi
         exec "$executable" "${trust_args[@]}" "$@"

@@ -793,6 +793,20 @@ _codex_migrate_legacy() {
 codex_install() (
   command -v python3 >/dev/null 2>&1 || die "python3 required for Codex install (TOML + frontmatter parsing)" 3
 
+  # The installed launcher resolves this helper from the source checkout. Check
+  # its packaged bytes before publishing hooks; do not execute it or probe a
+  # provider during installation. Older native CLIs retain the text fallback.
+  python3 - "$MARKET_ROOT/lib/codex_voice.py" <<'PYEOF' || return 3
+from pathlib import Path
+import sys
+try:
+    source = Path(sys.argv[1])
+    compile(source.read_bytes(), str(source), "exec")
+except (OSError, SyntaxError) as exc:
+    print(f"ERROR: Codex voice helper unavailable: {exc}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+
   : "${ABS_MARKET_ROOT:=$(resolve_path "$MARKET_ROOT")}"
 
   local content TMPDIR ASHA_ARTIFACT_HARNESS ASHA_ARTIFACT_STAGE
