@@ -174,8 +174,12 @@ Voice-enabled sessions stay in the launch directory. In-session resume and fork
 targets are checked through the native server before switching; a target from
 another directory is refused with guidance to launch there. Native session
 pickers receive the same directory filter. The relay owns each auxiliary
-connection separately. Codex's remote reconnect URL expires when this private
-session exits; the wrapper reports that its backend has stopped.
+connection separately and passes messages up to the native remote client's
+128 MiB limit. The first connection defines the session: once it ends, the
+relay refuses Codex's automatic reconnect rather than start a backend that
+would contend for the open thread, stops the TUI, restores the terminal and
+names the failure class in one line. Codex's remote reconnect URL expires when
+this private session exits; the wrapper reports that its backend has stopped.
 
 `asha doctor codex` checks the native startup capability without contacting a
 provider. Older CLIs and launch options whose local semantics cannot be carried

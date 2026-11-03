@@ -8,6 +8,7 @@ import socket
 import struct
 import subprocess
 import sys
+import time
 from urllib.parse import urlsplit
 
 args = sys.argv[1:]
@@ -19,13 +20,18 @@ def save(name, value):
 
 
 def exact(sock, size):
-    data = b""
+    data = bytearray()
     while len(data) < size:
-        part = sock.recv(size - len(data))
+        part = sock.recv(min(size - len(data), 1 << 20))
         if not part:
             raise EOFError
         data += part
-    return data
+    return bytes(data)
+
+
+def masked(payload, mask):
+    key = (mask * (len(payload) // 4 + 1))[:len(payload)]
+    return (int.from_bytes(payload, "little") ^ int.from_bytes(key, "little")).to_bytes(len(payload), "little")
 
 
 def send(sock, payload, opcode=1, final=True):
@@ -38,7 +44,7 @@ def send(sock, payload, opcode=1, final=True):
         head += b"\xfe" + struct.pack("!H", length)
     else:
         head += b"\xff" + struct.pack("!Q", length)
-    sock.sendall(head + mask + bytes(c ^ mask[i % 4] for i, c in enumerate(payload)))
+    sock.sendall(head + mask + masked(payload, mask))
 
 
 def receive(sock):
@@ -68,6 +74,8 @@ if "generate-json-schema" in args:
 if "app-server" in args:
     save("backend.json", {"args": args, "pid": os.getpid(), "session":os.getenv("ASHA_HUB_SESSION_ID"),
                           "token_present":any(k.startswith("ASHA_VOICE_TOKEN_") for k in os.environ)})
+    with (folder / "backends.log").open("a") as starts:
+        starts.write(f"{os.getpid()}\n")
     held_reads = []
     with (folder / "wire.jsonl").open("ab", buffering=0) as capture:
         for wire in sys.stdin.buffer:
@@ -99,6 +107,15 @@ if "app-server" in args:
                     sys.stdout.buffer.write(json.dumps(result).encode() + b"\n")
                 held_reads.clear()
                 sys.stdout.buffer.write(json.dumps({"id":message["id"],"result":{}}).encode() + b"\n")
+            elif message.get("method") == "fixture/large":
+                # One response line of exactly params.bytes bytes, excluding its newline.
+                head = b'{"id":' + json.dumps(message["id"]).encode() + b',"result":{"blob":"PAYLOAD-MARKER'
+                tail = b'"}}'
+                padding = message["params"]["bytes"] - len(head) - len(tail)
+                sys.stdout.buffer.write(head + b"x" * padding + tail + b"\n")
+            elif message.get("method") == "fixture/size":
+                result = {"id": message["id"], "result": {"bytes": len(wire.rstrip(b"\n"))}}
+                sys.stdout.buffer.write(json.dumps(result).encode() + b"\n")
             elif message.get("method") == "fixture/approval":
                 sys.stdout.buffer.write(b'{ "id": "native-approval", "method": "item/commandExecution/requestApproval", "params": {"command":"fixture"} }\n')
             elif message.get("method") == "fixture/hang":
@@ -109,22 +126,42 @@ if "app-server" in args:
                 result = {"id": message["id"], "result": {"echo": message.get("params"), "answer":message.get("result")}}
                 sys.stdout.buffer.write(json.dumps(result).encode() + b"\n")
             sys.stdout.buffer.flush()
+    if (folder / "farewell").exists():
+        # Native output can still arrive after the frontend closed and stdin reached EOF.
+        sys.stdout.buffer.write(b'{"method":"fixture/farewell","params":{}}\n')
+        sys.stdout.buffer.flush()
     raise SystemExit
 save("frontend.json", {"args":args,"pid":os.getpid()})
 if "--remote" not in args:
     raise SystemExit(0)
 url = urlsplit(args[args.index("--remote") + 1])
 token = os.environ[args[args.index("--remote-auth-token-env") + 1]]
-sock = socket.create_connection((url.hostname, url.port), timeout=8)
-request = (f"GET / HTTP/1.1\r\nHost: {url.netloc}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
-           f"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {base64.b64encode(b'0123456789abcdef').decode()}\r\n"
-           f"Authorization: Bearer {token}\r\n\r\n")
-sock.sendall(request.encode())
-response = b""
-while not response.endswith(b"\r\n\r\n"):
-    response += exact(sock, 1)
-assert b"101 Switching" in response, response
+terminal = None
+if (folder / "tty-modes").exists():
+    # Stand-in for the native TUI's raw mode, alternate screen, mouse and keyboard modes.
+    import termios
+    import tty
+    terminal = termios.tcgetattr(0)
+    tty.setraw(0)
+    os.write(1, b"\x1b[?1049h\x1b[>7u\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?2004h\x1b[?1004h")
+
+
+def connect():
+    sock = socket.create_connection((url.hostname, url.port), timeout=8)
+    request = (f"GET / HTTP/1.1\r\nHost: {url.netloc}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+               f"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: {base64.b64encode(b'0123456789abcdef').decode()}\r\n"
+               f"Authorization: Bearer {token}\r\n\r\n")
+    sock.sendall(request.encode())
+    response = b""
+    while not response.endswith(b"\r\n\r\n"):
+        response += exact(sock, 1)
+    return sock, int(response.split(b" ", 2)[1])
+
+
+sock, status = connect()
+assert status == 101, status
 results = []
+dropped = False
 try:
     for frame in json.loads((folder / "scenario.json").read_text()):
         wire = frame.encode()
@@ -139,7 +176,20 @@ try:
         results.append(data.decode())
         save("results.json", results)
 except EOFError:
-    pass
+    dropped = True
 finally:
     sock.close()
+if dropped and (folder / "reconnect").exists():
+    # Native reconnect.rs: a fresh connection after the server side dropped the primary.
+    try:
+        retry, status = connect()
+        retry.close()
+    except (OSError, EOFError):
+        status = None
+    save("reconnect.json", status)
+if (folder / "hang").exists():
+    time.sleep(30)  # Native reconnect keeps the TUI alive while it retries.
+if terminal is not None:
+    os.write(1, b"FRONTEND-CLEAN-EXIT")
+    termios.tcsetattr(0, termios.TCSANOW, terminal)
 raise SystemExit(int((folder / "exit").read_text()) if (folder / "exit").exists() else 0)

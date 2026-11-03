@@ -1,9 +1,12 @@
 """Voice bootstrap contract: real local pipes/WebSockets, no provider or audio."""
 import base64
+import fcntl
 import json
 import os
 from pathlib import Path
 import signal
+import termios
+import threading
 import time
 import socket
 import struct
@@ -11,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -292,23 +296,53 @@ class NativeLaunchTests(unittest.TestCase):
 
     @staticmethod
     def socket_exact(sock, length):
-        result = b""
+        result = bytearray()
         while len(result) < length:
-            part = sock.recv(length - len(result))
+            part = sock.recv(min(length - len(result), 1 << 20))
             if not part:
                 raise EOFError
             result += part
-        return result
+        return bytes(result)
 
     def send_rpc(self, sock, frame):
-        wire = json.dumps(frame).encode()
+        self.send_wire(sock, json.dumps(frame).encode())
+
+    @staticmethod
+    def send_wire(sock, wire):
         head = b"\x81"
         if len(wire) < 126:
             head += bytes([128 | len(wire)])
-        else:
+        elif len(wire) < 65536:
             head += b"\xfe" + struct.pack("!H", len(wire))
+        else:
+            head += b"\xff" + struct.pack("!Q", len(wire))
         mask = b"test"
-        sock.sendall(head + mask + bytes(c ^ mask[i % 4] for i, c in enumerate(wire)))
+        key = (mask * (len(wire) // 4 + 1))[:len(wire)]
+        body = (int.from_bytes(wire, "little") ^ int.from_bytes(key, "little")).to_bytes(len(wire), "little")
+        sock.sendall(head + mask + body)
+
+    def handshake_status(self, bridge):
+        """Authenticated upgrade attempt; returns the HTTP status without asserting success."""
+        sock = socket.create_connection(("127.0.0.1", bridge.server.server_port), timeout=3)
+        self.addCleanup(sock.close)
+        sock.sendall(("GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                      "Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: MDEyMzQ1Njc4OWFiY2RlZg==\r\n"
+                      "Authorization: Bearer " + bridge.token + "\r\n\r\n").encode())
+        response = b""
+        while not response.endswith(b"\r\n\r\n"):
+            response += self.socket_exact(sock, 1)
+        return int(response.split(b" ", 2)[1])
+
+    def backend_starts(self):
+        path = self.home / "backends.log"
+        return path.read_text().split() if path.exists() else []
+
+    def wait_until(self, predicate, message, timeout=3):
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            if time.monotonic() > deadline:
+                self.fail(message)
+            time.sleep(0.01)
 
     def receive_rpc(self, sock):
         return json.loads(self.receive_wire(sock))
@@ -645,6 +679,191 @@ class NativeLaunchTests(unittest.TestCase):
         for pid in (primary_pid, picker_pid, another_pid):
             with self.assertRaises(ProcessLookupError):
                 os.kill(pid, 0)
+
+    # Issue #131: native plugin/list answers of 27,367,260 bytes were dropped by a 16 MiB cap.
+    def test_backend_line_larger_than_16_mib_reaches_frontend_as_one_frame(self):
+        bridge = voice.VoiceBridge(self.env["ASHA_CODEX_CMD"], "identity",
+            voice.LaunchPlan([], [], str(self.home)), self.env)
+        self.addCleanup(bridge.close)
+        sock = self.connect_bridge(bridge)
+        self.send_rpc(sock, {"id":1,"method":"fixture/large","params":{"bytes":27_367_260}})
+        wire = self.receive_wire(sock)  # asserts a single final text frame
+        self.assertEqual(len(wire), 27_367_260)
+        self.assertEqual(json.loads(wire)["id"], 1)
+        self.send_rpc(sock, {"id":2,"method":"turn/start","params":{"threadId":"still-alive"}})
+        self.assertEqual(self.receive_rpc(sock)["result"]["echo"], {"threadId":"still-alive"})
+        self.assertFalse(bridge.failed.is_set())
+        self.assertIsNone(bridge.failure)
+        self.assertEqual(voice.MAX_MESSAGE, 128 << 20, "relay must match the native remote client limit")
+
+    # The limit bounds the message, not message plus newline; overflow is a named failure.
+    def test_backend_limit_is_inclusive_and_overflow_is_a_named_failure(self):
+        with mock.patch.object(voice, "MAX_MESSAGE", 4096):
+            bridge = voice.VoiceBridge(self.env["ASHA_CODEX_CMD"], "identity",
+                voice.LaunchPlan([], [], str(self.home)), self.env)
+            self.addCleanup(bridge.close)
+            sock = self.connect_bridge(bridge)
+            self.send_rpc(sock, {"id":1,"method":"fixture/large","params":{"bytes":4096}})
+            self.assertEqual(len(self.receive_wire(sock)), 4096)
+            self.send_rpc(sock, {"id":2,"method":"fixture/large","params":{"bytes":4097}})
+            with self.assertRaises(EOFError):
+                self.receive_wire(sock)
+            self.assertTrue(bridge.ended)
+            self.assertEqual(bridge.failure, "backend-message-limit")
+            self.assertTrue(bridge.failed.is_set())
+
+    # Native stdio reads requests without a length limit; the relay must not cap them at 16 MiB.
+    def test_frontend_message_larger_than_16_mib_reaches_backend(self):
+        bridge = voice.VoiceBridge(self.env["ASHA_CODEX_CMD"], "identity",
+            voice.LaunchPlan([], [], str(self.home)), self.env)
+        self.addCleanup(bridge.close)
+        sock = self.connect_bridge(bridge)
+        wire = json.dumps({"id":1,"method":"fixture/size","params":{"blob":"y" * (17 << 20)}}).encode()
+        self.send_wire(sock, wire)
+        self.assertEqual(self.receive_rpc(sock)["result"]["bytes"], len(wire))
+        self.assertIsNone(bridge.failure)
+        with mock.patch.object(voice, "MAX_MESSAGE", 4096):
+            exact = json.dumps({"id":2,"method":"fixture/size","params":{"pad":""}}, separators=(",", ":")).encode()
+            exact = exact.replace(b'"pad":""', b'"pad":"' + b"z" * (4096 - len(exact)) + b'"')
+            self.assertEqual(len(exact), 4096)
+            self.send_wire(sock, exact)
+            self.assertEqual(self.receive_rpc(sock)["result"]["bytes"], 4096)
+            self.send_wire(sock, exact[:-1] + b' }')
+            with self.assertRaises(EOFError):
+                self.receive_wire(sock)
+            self.assertEqual(bridge.failure, "frontend-message-limit")
+            self.assertTrue(bridge.ended)
+
+    # Issue #131 trace: the post-failure reconnect got a fresh backend that resumed the
+    # primary's thread ("already has an active writer").
+    def test_reconnect_after_relay_failure_is_refused_without_a_backend(self):
+        with mock.patch.object(voice, "MAX_MESSAGE", 4096):
+            bridge = voice.VoiceBridge(self.env["ASHA_CODEX_CMD"], "identity",
+                voice.LaunchPlan([], [], str(self.home)), self.env)
+            self.addCleanup(bridge.close)
+            primary = self.connect_bridge(bridge)
+            self.wait_until(lambda: len(self.backend_starts()) == 1, "primary backend never started")
+            picker = self.connect_bridge(bridge)  # a /resume picker while the primary is alive
+            self.wait_until(lambda: len(self.backend_starts()) == 2, "picker backend never started")
+            self.send_rpc(primary, {"id":1,"method":"fixture/large","params":{"bytes":5000}})
+            with self.assertRaises(EOFError):
+                self.receive_wire(primary)
+            self.assertEqual(self.handshake_status(bridge), 503)
+            time.sleep(0.2)
+            self.assertEqual(len(self.backend_starts()), 2, "reconnect started a contending backend")
+            self.assertEqual(bridge.failure, "backend-message-limit")
+            self.send_rpc(picker, {"id":3,"method":"thread/list","params":{}})
+            self.assertEqual(self.receive_rpc(picker)["id"], 3)
+
+    # Native reconnect drops its stream before reconnecting; the claim can run before the
+    # relay thread has read that EOF.
+    def test_reconnect_racing_an_unread_primary_close_is_refused(self):
+        original = voice.read_frame
+        observed, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+
+        def delayed(sock):
+            try:
+                return original(sock)
+            except EOFError:
+                observed.set()
+                release.wait(5)
+                raise
+
+        with mock.patch.object(voice, "read_frame", delayed):
+            bridge = voice.VoiceBridge(self.env["ASHA_CODEX_CMD"], "identity",
+                voice.LaunchPlan([], [], str(self.home)), self.env)
+            self.addCleanup(bridge.close)
+            primary = self.connect_bridge(bridge)
+            self.wait_until(lambda: len(self.backend_starts()) == 1, "primary backend never started")
+            primary.close()
+            self.assertTrue(observed.wait(3))
+            self.assertFalse(bridge.disconnected.is_set(), "EOF was not held back")
+            self.assertEqual(self.handshake_status(bridge), 503)
+            release.set()
+            self.wait_until(lambda: bridge.disconnected.is_set(), "primary never ended")
+            time.sleep(0.2)
+            self.assertEqual(len(self.backend_starts()), 1, "reconnect started a contending backend")
+            self.assertTrue(bridge.ended)
+
+    # Silent failure: the crash must be named once, and the native exit code kept.
+    def test_backend_crash_is_propagated_with_one_failure_line(self):
+        (self.home / "scenario.json").write_text('["{\\"id\\":1,\\"method\\":\\"fixture/crash\\"}"]')
+        result = self.launch()
+        self.assertEqual(result.returncode, 42, result.stderr)
+        failures = [line for line in result.stderr.splitlines() if "voice relay failed" in line]
+        self.assertEqual(len(failures), 1, result.stderr)
+        self.assertIn("(backend-exited)", failures[0])
+        self.assertNotIn("reconnect URL has expired", result.stderr)
+
+    # Output after a clean close is teardown, not a relay failure.
+    def test_clean_exit_with_backend_output_after_close_reports_success(self):
+        (self.home / "farewell").touch()
+        (self.home / "scenario.json").write_text(json.dumps(['{"id":1,"method":"turn/start","params":{}}']))
+        for _ in range(3):
+            result = self.launch()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn("voice relay failed", result.stderr)
+            self.assertIn("reconnect URL has expired", result.stderr)
+
+    def run_under_pty(self, limit):
+        """Run the relay's real run() on a controlling pty with a patched message limit."""
+        identity = self.home / "identity.md"
+        identity.write_text("identity")
+        runner = ("import sys; sys.path.insert(0, sys.argv[1]); from lib import codex_voice as voice; "
+                  "voice.MAX_MESSAGE = int(sys.argv[2]); raise SystemExit(voice.main(sys.argv[3:]))")
+        master, slave = os.openpty()
+        self.addCleanup(os.close, master)
+        self.addCleanup(os.close, slave)
+        original = termios.tcgetattr(slave)
+        process = subprocess.Popen(
+            [sys.executable, "-c", runner, str(ROOT), str(limit), "--identity", str(identity),
+             "--", self.env["ASHA_CODEX_CMD"]],
+            stdin=slave, stdout=slave, stderr=subprocess.PIPE, env=self.env, cwd=self.home,
+            start_new_session=True, preexec_fn=lambda: fcntl.ioctl(0, termios.TIOCSCTTY, 0))
+        self.addCleanup(lambda: process.poll() is None and process.kill())
+        _, stderr = process.communicate(timeout=20)
+        os.set_blocking(master, False)
+        output = b""
+        try:
+            while chunk := os.read(master, 65536):
+                output += chunk
+        except (BlockingIOError, OSError):
+            pass
+        return process.returncode, stderr.decode(), output, termios.tcgetattr(slave) == original
+
+    # Issue #131: teardown left the alternate screen, mouse and raw modes on, with no cause.
+    def test_failure_path_restores_terminal_and_names_failure_class(self):
+        for marker in ("tty-modes", "reconnect", "hang"):
+            (self.home / marker).touch()
+        (self.home / "scenario.json").write_text(json.dumps(
+            ['{"id":1,"method":"fixture/large","params":{"bytes":5000}}']))
+        code, stderr, output, termios_restored = self.run_under_pty(4096)
+        self.assertEqual(code, 1, stderr)
+        self.assertEqual(self.load("reconnect.json"), 503)
+        self.assertEqual(len(self.backend_starts()), 1, "reconnect started a contending backend")
+        lines = stderr.splitlines()
+        self.assertEqual(len(lines), 2, stderr)
+        self.assertIn("scoped to the launch directory", lines[0])
+        self.assertIn("voice relay failed (backend-message-limit)", lines[1])
+        for secret in ("ws://", "127.0.0.1", "Bearer", "ASHA_VOICE_TOKEN", "PAYLOAD-MARKER", "fixture/large"):
+            self.assertNotIn(secret, stderr)
+        self.assertNotIn(b"FRONTEND-CLEAN-EXIT", output, "fixture frontend exited instead of being stopped")
+        entered = output.index(b"\x1b[?1049h")
+        for sequence in (b"\x1b[?1000l", b"\x1b[?1002l", b"\x1b[?1003l", b"\x1b[?1006l", b"\x1b[<1u",
+                         b"\x1b[>4;0m", b"\x1b[?1049l", b"\x1b[?2004l", b"\x1b[?1004l", b"\x1b[?25h"):
+            self.assertGreater(output.rfind(sequence), entered, sequence)
+        self.assertTrue(termios_restored, "raw mode was left on the terminal")
+
+    # A clean native exit restores its own terminal; a second ?1049l would move the cursor.
+    def test_clean_exit_leaves_terminal_to_the_native_tui(self):
+        (self.home / "tty-modes").touch()
+        code, stderr, output, termios_restored = self.run_under_pty(4096)
+        self.assertEqual(code, 0, stderr)
+        self.assertIn(b"FRONTEND-CLEAN-EXIT", output)
+        self.assertNotIn(b"\x1b[?1049l", output)
+        self.assertTrue(termios_restored)
+        self.assertNotIn("voice relay failed", stderr)
 
     # An authenticated endpoint must reject foreign and malformed tokens before claiming its one client.
     def test_authentication_rejects_foreign_clients_and_invalid_handshake(self):

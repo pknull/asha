@@ -17,17 +17,53 @@ import json
 import os
 from pathlib import Path
 import secrets
+import select
 import signal
 import socket
 import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import threading
 import time
 import tomllib
 
-MAX_MESSAGE = 16 * 1024 * 1024
+# Native rust-v0.162.1 limits. The TUI's --remote client accepts frames and messages up to
+# 128 MiB (app-server-client/src/remote.rs REMOTE_APP_SERVER_MAX_WEBSOCKET_MESSAGE_SIZE);
+# the stdio app-server reads and writes lines without a length limit
+# (app-server-transport/src/transport/stdio.rs). Each backend line is relayed as one frame,
+# so the client limit binds. The native client writes each message as one unfragmented frame,
+# and the native WebSocket listener accepts 64 MiB, so the same bound is no stricter upstream.
+MAX_MESSAGE = 128 << 20
+
+# Classes only: failure lines never carry payloads, tokens, or endpoints.
+FAILURES = {
+    "backend-message-limit": "a native app-server message exceeded the 128 MiB remote client limit",
+    "frontend-message-limit": "a native TUI message exceeded the 128 MiB relay limit",
+    "frontend-protocol": "the native TUI sent invalid WebSocket framing",
+    "frontend-connection": "the native TUI connection failed",
+    "frontend-disconnected": "the native TUI disconnected and did not exit",
+    "backend-exited": "the native app-server exited",
+    "backend-pipe": "the native app-server pipe failed",
+}
+
+# Inverse of the native TUI's terminal setup, in its restore_after_exit order
+# (tui/src/tui.rs, tui/src/tui/alternate_screen.rs, tui/src/tui/keyboard_modes.rs):
+# mouse reporting, alternate-screen keyboard flags, alternate scroll, the screen itself,
+# main keyboard stack and modifyOtherKeys, bracketed paste, focus events, cursor.
+TERMINAL_RESTORE = (b"\x1b[?1006l\x1b[?1015l\x1b[?1003l\x1b[?1002l\x1b[?1000l"
+                    b"\x1b[<1u\x1b[?1007l\x1b[?1049l"
+                    b"\x1b[<1u\x1b[<u\x1b[>4;0m"
+                    b"\x1b[?2004l\x1b[?1004l\x1b[0 q\x1b[?25h")
+
+
+class RelayFailure(Exception):
+    """A relay failure, identified by its class name in FAILURES."""
+
+    def __init__(self, failure: str):
+        super().__init__(failure)
+        self.failure = failure
 
 
 class UnsupportedLaunch(ValueError):
@@ -267,28 +303,36 @@ def check_capability(executable: str) -> dict:
 
 
 def read_exact(sock: socket.socket, size: int) -> bytes:
-    parts = bytearray()
-    while len(parts) < size:
-        data = sock.recv(size - len(parts))
-        if not data:
+    buffer = bytearray(size)
+    view, received = memoryview(buffer), 0
+    while received < size:
+        count = sock.recv_into(view[received:])
+        if not count:
             raise EOFError
-        parts.extend(data)
-    return bytes(parts)
+        received += count
+    return bytes(buffer)
+
+
+def unmask(payload: bytes, mask: bytes) -> bytes:
+    key = (mask * (len(payload) // 4 + 1))[:len(payload)]
+    return (int.from_bytes(payload, "little") ^ int.from_bytes(key, "little")).to_bytes(len(payload), "little")
 
 
 def read_frame(sock: socket.socket) -> tuple[bool, int, bytes]:
     first, second = read_exact(sock, 2)
     final, opcode, size = bool(first & 128), first & 15, second & 127
     if first & 0x70 or not second & 128:
-        raise ValueError("unsupported WebSocket framing")
+        raise RelayFailure("frontend-protocol")
     if size == 126:
         size = struct.unpack("!H", read_exact(sock, 2))[0]
     elif size == 127:
         size = struct.unpack("!Q", read_exact(sock, 8))[0]
-    if size > MAX_MESSAGE or opcode >= 8 and (not final or size > 125):
-        raise ValueError("invalid WebSocket frame size")
+    if opcode >= 8 and (not final or size > 125):
+        raise RelayFailure("frontend-protocol")
+    if size > MAX_MESSAGE:
+        raise RelayFailure("frontend-message-limit")
     mask = read_exact(sock, 4)
-    return final, opcode, bytes(c ^ mask[i % 4] for i, c in enumerate(read_exact(sock, size)))
+    return final, opcode, unmask(read_exact(sock, size), mask)
 
 
 def send_frame(sock: socket.socket, lock: threading.Lock, payload: bytes, opcode: int = 1):
@@ -301,7 +345,42 @@ def send_frame(sock: socket.socket, lock: threading.Lock, payload: bytes, opcode
     else:
         head += bytes([127]) + struct.pack("!Q", size)
     with lock:
-        sock.sendall(head + payload)
+        sock.sendall(head)
+        sock.sendall(payload)
+
+
+def capture_terminal():
+    """Save the input terminal's attributes before the native TUI switches it to raw mode."""
+    try:
+        return termios.tcgetattr(0) if os.isatty(0) else None
+    except (OSError, termios.error):
+        return None
+
+
+def in_foreground(fd: int) -> bool:
+    try:
+        return os.tcgetpgrp(fd) == os.getpgrp()
+    except OSError:
+        return True  # Not a controlling terminal: no job-control stop applies.
+
+
+def restore_terminal(saved):
+    """Undo the native TUI's terminal modes after it died by a signal.
+
+    The native TUI installs no SIGTERM/SIGHUP handler, so a stopped frontend never runs
+    its restore_after_exit. A hung-up or background terminal is left alone.
+    """
+    try:
+        if os.isatty(1) and in_foreground(1):
+            os.write(1, TERMINAL_RESTORE)
+    except OSError:
+        pass
+    if saved is not None:
+        try:
+            if in_foreground(0):
+                termios.tcsetattr(0, termios.TCSANOW, saved)
+        except (OSError, termios.error):
+            pass
 
 
 def stop_process(process: subprocess.Popen, *, group: bool = False):
@@ -331,6 +410,7 @@ class _VoiceClient:
     socket: socket.socket | None = None
     disconnected: threading.Event = field(default_factory=threading.Event)
     failed: threading.Event = field(default_factory=threading.Event)
+    failure: str | None = None
     close_lock: threading.Lock = field(default_factory=threading.Lock)
     closed: bool = False
 
@@ -363,6 +443,9 @@ class VoiceBridge:
         self.connected = False
         self.claim_lock = threading.Lock()
         self.closing = False
+        # The primary connection defines the session. Once it has ended, later connections
+        # are native reconnects: their backend would contend for the primary's thread writer.
+        self.ended = False
         self.connection = None
         self.disconnected = threading.Event()
         self.failed = threading.Event()
@@ -394,13 +477,19 @@ class VoiceBridge:
                     self.send_error(400)
                     return
                 with owner.claim_lock:
-                    if owner.closing:
+                    if owner.closing or owner.ended:
                         self.send_error(503)
                         return
                     if not owner.connected:
                         owner.connected = True
                         owner.connection = self.connection
                         client = owner.primary
+                    elif not owner.primary_open():
+                        # Native reconnect drops its stream first; the relay thread may not
+                        # have read that EOF yet. End the session; start no backend.
+                        owner.ended = True
+                        self.send_error(503)
+                        return
                     else:
                         # Native /resume starts a separate picker app-server. Its
                         # requests must have their own streams and no startup
@@ -441,25 +530,71 @@ class VoiceBridge:
         return subprocess.Popen(self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=None, env=self.backend_env, cwd=self.plan.cwd, start_new_session=True)
 
+    @property
+    def failure(self) -> str | None:
+        return self.primary.failure
+
+    def finish(self, client: _VoiceClient, failure: str | None = None):
+        """Record how a connection ended; the first failure wins.
+
+        Callers finish before shutting the socket, so the primary's end is recorded before
+        the native frontend can observe the close and reconnect.
+        """
+        with self.claim_lock:
+            if failure and client.failure is None:
+                client.failure = failure
+            if client is self.primary:
+                self.ended = True
+        if failure:
+            client.failed.set()
+
+    def primary_open(self) -> bool:
+        """Whether the primary socket is still open, without consuming its input."""
+        sock = self.primary.socket
+        if sock is None:
+            return False
+        try:
+            poller = select.poll()
+            poller.register(sock, select.POLLIN)
+            if not poller.poll(0):
+                return True
+            return bool(sock.recv(1, socket.MSG_PEEK))
+        except (OSError, ValueError, TypeError):
+            return False
+
     def relay(self, client: _VoiceClient):
         sock, backend = client.socket, client.backend
         write_lock = threading.Lock()
         backend_lock = threading.Lock()
         scope_lock = threading.Lock()
         scope_pending = {}
+        # Set before backend stdin closes: later backend output or exit is teardown.
+        frontend_done = threading.Event()
+
+        def send(payload, opcode=1):
+            try:
+                send_frame(sock, write_lock, payload, opcode)
+            except OSError as error:
+                raise RelayFailure("frontend-connection") from error
 
         def write_backend(wire):
             # Both frontend requests and completed scope checks write this pipe.
             if b"\n" in wire or b"\r" in wire:
-                wire = json.dumps(json.loads(wire), ensure_ascii=False).encode()
-            with backend_lock:
-                backend.stdin.write(wire + b"\n")
-                backend.stdin.flush()
+                try:
+                    wire = json.dumps(json.loads(wire), ensure_ascii=False).encode()
+                except ValueError as error:  # A raw line break would split the stdio message.
+                    raise RelayFailure("frontend-protocol") from error
+            try:
+                with backend_lock:
+                    backend.stdin.write(wire + b"\n")
+                    backend.stdin.flush()
+            except (OSError, ValueError) as error:
+                raise RelayFailure("backend-pipe") from error
 
         def send_adapted(wire):
             wire, error = adapt_request(wire, self.identity, client.plan)
             if error is not None:
-                send_frame(sock, write_lock, error)
+                send(error)
             else:
                 write_backend(wire)
 
@@ -482,16 +617,21 @@ class VoiceBridge:
             if (not isinstance(params, dict) or not isinstance(params.get("threadId"), str)
                     or not params["threadId"] or params.get("path") or params.get("history") is not None
                     or params.get("cwd") is not None and not same_directory(params["cwd"], client.plan.cwd)):
-                return send_frame(sock, write_lock, request_error(message, scope_reason))
+                return send(request_error(message, scope_reason))
             lookup_id = "asha-voice-scope-" + secrets.token_hex(24)
             with scope_lock:
                 if len(scope_pending) >= 128:
-                    return send_frame(sock, write_lock, request_error(message, "Too many pending directory checks; text remains available."))
+                    return send(request_error(message, "Too many pending directory checks; text remains available."))
                 scope_pending[lookup_id] = (wire, message)
             write_backend(json.dumps({"id":lookup_id,"method":"thread/read",
                 "params":{"threadId":params["threadId"],"includeTurns":False}}).encode())
 
         def scope_response(line):
+            # Checks are registered before their read is written, so an empty table means no
+            # line can answer one: skip parsing large native results such as plugin/list.
+            with scope_lock:
+                if not scope_pending:
+                    return False
             try:
                 message = json.loads(line)
             except (ValueError, UnicodeError):
@@ -508,25 +648,31 @@ class VoiceBridge:
             if isinstance(thread, dict) and same_directory(thread.get("cwd"), client.plan.cwd):
                 send_adapted(wire)
             elif isinstance(message.get("error"), dict):
-                send_frame(sock, write_lock, json.dumps({"id":original.get("id"),"error":message["error"]}).encode())
+                send(json.dumps({"id":original.get("id"),"error":message["error"]}).encode())
             else:
-                send_frame(sock, write_lock, request_error(original, scope_reason))
+                send(request_error(original, scope_reason))
             return True
 
         def from_backend():
+            failure = None
             try:
                 while True:
-                    line = backend.stdout.readline(MAX_MESSAGE + 1)
+                    try:
+                        line = backend.stdout.readline(MAX_MESSAGE + 1)
+                    except (OSError, ValueError) as error:
+                        raise RelayFailure("backend-pipe") from error
                     if not line:
-                        break
-                    if len(line) > MAX_MESSAGE:
-                        raise ValueError("oversized backend message")
-                    if scope_response(line):
-                        continue
-                    send_frame(sock, write_lock, line.removesuffix(b"\n"))
-            except (OSError, ValueError):
-                client.failed.set()
+                        raise RelayFailure("backend-exited")
+                    if line.endswith(b"\n"):
+                        line = line[:-1]
+                    elif len(line) > MAX_MESSAGE:
+                        raise RelayFailure("backend-message-limit")
+                    if not scope_response(line):
+                        send(line)
+            except RelayFailure as error:
+                failure = error.failure
             finally:
+                self.finish(client, None if frontend_done.is_set() else failure)
                 try:
                     sock.shutdown(socket.SHUT_RDWR)
                 except OSError:
@@ -535,24 +681,25 @@ class VoiceBridge:
         reader = threading.Thread(target=from_backend, daemon=True)
         reader.start()
         pending = None
+        failure = None
         try:
             while True:
                 final, opcode, data = read_frame(sock)
                 if opcode == 8:
-                    send_frame(sock, write_lock, data, 8)
+                    send(data, 8)
                     break
                 if opcode == 9:
-                    send_frame(sock, write_lock, data, 10)
+                    send(data, 10)
                     continue
                 if opcode == 10:
                     continue
                 if opcode == 1 and pending is None:
                     pending = bytearray()
                 elif opcode != 0 or pending is None:
-                    raise ValueError("invalid fragmented text message")
+                    raise RelayFailure("frontend-protocol")
                 pending.extend(data)
                 if len(pending) > MAX_MESSAGE:
-                    raise ValueError("oversized protocol message")
+                    raise RelayFailure("frontend-message-limit")
                 if not final:
                     continue
                 wire = bytes(pending)
@@ -560,9 +707,18 @@ class VoiceBridge:
                 from_frontend(wire)
         except EOFError:
             pass
-        except (OSError, ValueError):
-            client.failed.set()
+        except RelayFailure as error:
+            failure = error.failure
+        except OSError:
+            failure = "frontend-connection"
         finally:
+            frontend_done.set()
+            self.finish(client, failure)
+            if failure:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
             try:
                 backend.stdin.close()
             except (OSError, ValueError):
@@ -603,6 +759,8 @@ def run(executable: str, args: list[str], identity: str) -> int:
     frontend = None
     interrupted = []
     previous_handlers = {}
+    failure = None
+    terminal = capture_terminal()
 
     def terminate(signum, frame):
         interrupted.append(signum)
@@ -621,27 +779,50 @@ def run(executable: str, args: list[str], identity: str) -> int:
         cwd_args = [] if plan.explicit_cwd else ["--cd", plan.cwd]
         frontend = subprocess.Popen([executable, "--remote", bridge.url, "--remote-auth-token-env", token_env,
                                      *cwd_args, *plan.frontend], env=frontend_env, cwd=plan.cwd)
+        stopped = backend_first = False
         while frontend.poll() is None and not interrupted:
-            if bridge.backend.poll() is not None or bridge.failed.is_set() or bridge.disconnected.is_set():
-                # A normal TUI exit closes the socket just before the process exits.
+            if (bridge.ended or bridge.backend.poll() is not None
+                    or bridge.failed.is_set() or bridge.disconnected.is_set()):
+                backend_first = not bridge.ended and bridge.backend.poll() is not None
+                # A normal TUI exit closes the socket just before the process exits. A native
+                # reconnect loop never exits: the relay refuses reconnects, so stop it.
                 try:
                     frontend.wait(timeout=1)
                 except subprocess.TimeoutExpired:
                     stop_process(frontend)
+                    stopped = True
                 break
             time.sleep(0.05)
         if interrupted:
             stop_process(frontend)
             return 128 + interrupted[0]
+        # Classify before teardown: closing backends must not rewrite the cause.
+        failure = bridge.failure or ("backend-exited" if backend_first else None)
+        if failure is None and stopped:
+            failure = "frontend-disconnected"
+        if failure == "backend-exited":
+            try:
+                bridge.backend.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
         backend_code = bridge.backend.poll()
         if backend_code not in (None, 0):
             return normalized_exit(backend_code)
-        return normalized_exit(frontend.returncode) or (1 if bridge.failed.is_set() else 0)
+        code = normalized_exit(frontend.returncode)
+        if failure:
+            return code if code and not stopped else 1
+        return code
     finally:
         if frontend is not None and frontend.poll() is None:
             stop_process(frontend)
+        if frontend is not None and frontend.returncode is not None and frontend.returncode < 0:
+            restore_terminal(terminal)
         bridge.close()
-        print("asha: private voice backends stopped; the native reconnect URL has expired.", file=sys.stderr)
+        if failure:
+            print(f"asha: voice relay failed ({failure}): {FAILURES[failure]}; "
+                  "private voice backends stopped.", file=sys.stderr)
+        else:
+            print("asha: private voice backends stopped; the native reconnect URL has expired.", file=sys.stderr)
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
 
