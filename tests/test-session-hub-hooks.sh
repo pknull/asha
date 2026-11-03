@@ -297,7 +297,7 @@ else
   fail "a pending close request is returned on Stop as the harness's block decision ($OUT)"
 fi
 
-for pair in "PostToolUse" "SessionEnd" "UserPromptSubmit"; do
+for pair in "PostToolUse" "SessionEnd" "UserPromptSubmit" "PermissionRequest"; do
   OUT="$(run_control "$pair" '' ASHA_HUB_SESSION_ID="$HUB_ID" CONTROL_STUB_OUTPUT="$CLOSE_DECISION")"
   [[ "$OUT" == '{}' ]] || fail "close decision leaked through $pair ($OUT)"
 done

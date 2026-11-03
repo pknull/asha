@@ -885,7 +885,7 @@ if jq -e '[.hooks.SessionStart[], .hooks.UserPromptSubmit[], .hooks.PostToolUse[
     | ._asha_harnesses == ["claude", "codex"]' "$HOOKS" >/dev/null 2>&1 \
   && jq -e '.hooks.PermissionRequest[]
     | select(any(.hooks[]?; (.command // "") | contains("control-event.sh")))
-    | ._asha_harnesses == ["codex"]' "$HOOKS" >/dev/null 2>&1 \
+    | ._asha_harnesses == ["claude", "codex"]' "$HOOKS" >/dev/null 2>&1 \
   && jq -e '.hooks.SessionEnd[]
     | select(any(.hooks[]?; (.command // "") | contains("control-event.sh")))
     | ._asha_harnesses == ["claude"]' "$HOOKS" >/dev/null 2>&1; then

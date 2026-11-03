@@ -119,7 +119,7 @@
     ],
     "PermissionRequest": [
       {
-        "_asha_harnesses": ["codex"],
+        "_asha_harnesses": ["claude", "codex"],
         "hooks": [
           {
             "type": "command",
