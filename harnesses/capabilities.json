@@ -71,10 +71,12 @@
         },
         "control-status": {
           "support": "partial",
-          "surface": "SessionStart -> session-start; UserPromptSubmit -> prompt-submitted; PostToolUse -> tool-completed; PostToolUseFailure -> tool-completed; Stop -> turn-stopped; SessionEnd -> session-ended",
+          "surface": "SessionStart -> session-start; UserPromptSubmit -> prompt-submitted; PostToolUse -> tool-completed; PostToolUseFailure -> tool-completed; PermissionRequest -> permission-requested; Stop -> turn-stopped; SessionEnd -> session-ended",
           "verifier": "control doctor:hooks + tests:test-session-hub-hooks",
           "limitations": [
-            "permission-requested is not claimed; Notification is multi-purpose and its payload is unverified"
+            "The native PermissionRequest event is live-observed on Claude Code 2.1.317: a logging probe saw it fire while a Bash permission dialog was still unanswered, carrying tool_name and tool_input",
+            "Routing to control-event.sh, its inert {} output and the permission-requested hub mapping are covered by automated tests (tests:test-install/test-hooks/test-session-hub-hooks); end-to-end native delivery into Control is not live-verified",
+            "No native event marks the answer: an approved tool reads needs-input until its PostToolUse, and a denial (which interrupts the turn without a Stop) until the next prompt"
           ]
         },
         "persona": {
@@ -99,7 +101,7 @@
           "verifier": "tests:test-session-profiles + tests:test-session-hub-hooks",
           "limitations": [
             "Installed Asha skills, commands and agents stay discoverable in a worker; only the automatic context injection is removed",
-            "Hub session activity is observed through control-event.sh on SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop and SessionEnd; permission-requested is not claimed for Claude",
+            "Hub session activity is observed through control-event.sh on SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PermissionRequest, Stop and SessionEnd",
             "SessionStart forwards its payload source: only clear (/clear), or a start after the bound conversation's SessionEnd, rebinds a hub session's native conversation, so a nested claude -p (startup) is refused",
             "The observation bridge is bounded and fail-open, so a missing observation leaves activity unknown rather than gating the session"
           ]

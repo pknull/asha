@@ -46,7 +46,8 @@ class DoctorVerdictTests(DoctorOkFixture):
         claude.mkdir()
         codex.mkdir()
         handler = Path(__file__).resolve().parents[2] / "plugins/session/hooks/handlers/control-event.sh"
-        events = ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "SessionEnd")
+        events = ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
+                  "PermissionRequest", "Stop", "SessionEnd")
         (claude / "settings.json").write_text(json.dumps({"hooks": {
             event: [{"hooks": [{"type": "command", "command": f"{handler} {event}"}]}] for event in events}}))
         (codex / "config.toml").write_text("broken = [")
@@ -171,7 +172,8 @@ class DoctorSupportedConfigurationTests(DoctorOkFixture):
                 "hooks": [{"type": "command", "command": f"{handler} {event}"}],
             }]
             for event in (
-                "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "SessionEnd",
+                "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
+                "PermissionRequest", "Stop", "SessionEnd",
             )
         }
         claude_home = self.home / ".claude"
@@ -192,6 +194,22 @@ class DoctorSupportedConfigurationTests(DoctorOkFixture):
         self.assertEqual(result["probes"][0]["outcome"], "match")
         self.assertIn("Claude", result["probes"][0]["detail"])
         self.assertNotIn("Codex", result["probes"][0]["detail"])
+
+    def test_hooks_probe_requires_the_claude_permission_request_bridge(self) -> None:
+        # #129: without it a Claude terminal prompt reads working, question null.
+        self._write_claude_hooks()
+        settings = self.home / ".claude" / "settings.json"
+        value = json.loads(settings.read_text(encoding="utf-8"))
+        del value["hooks"]["PermissionRequest"]
+        settings.write_text(json.dumps(value), encoding="utf-8")
+
+        result = run_doctor(
+            self.config, probes={"hooks": DEFAULT_PROBES["hooks"]},
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["probes"][0]["outcome"], "missing")
+        self.assertIn("claude:PermissionRequest", result["probes"][0]["detail"])
 
     def test_hooks_probe_does_not_ignore_a_malformed_present_config(self) -> None:
         codex_config = self.home / ".codex" / "config.toml"

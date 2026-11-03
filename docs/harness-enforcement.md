@@ -55,7 +55,7 @@ claimed:
 | `session-start` | Wired from `SessionStart` | Wired from `SessionStart` |
 | `prompt-submitted` | Wired from `UserPromptSubmit` | Wired from `UserPromptSubmit` |
 | `tool-completed` | Wired from `PostToolUse` | Wired from `PostToolUse`; interception is known incomplete for `unified_exec` |
-| `permission-requested` | Not claimed. `Notification` is multi-purpose and its payload is unverified. | Wired from `PermissionRequest`; delivery before the operator answers is live-proven on Codex 0.147.0. |
+| `permission-requested` | Wired from `PermissionRequest`. The native event and its payload are live-observed on Claude Code 2.1.317: a logging probe saw it fire before the operator answered a Bash "variable can't be checked" dialog, carrying `tool_name` and `tool_input`. Routing to `control-event.sh`, its inert `{}` output and the hub mapping are covered by automated tests; end-to-end native delivery into Control is not live-verified. `Notification` stays unused: it is multi-purpose, and its `permission_prompt` arrived about 6 s later. | Wired from `PermissionRequest`; delivery before the operator answers is live-proven on Codex 0.147.0. |
 | `turn-stopped` | Wired from `Stop` | Wired from `Stop`; live-proven on Codex 0.147.0. Delivery remains subject to Codex's hash-bound interactive hook trust. |
 | `turn-stopped` return channel | The Stop hook can return one fail-open `block` wake decision per new coordinator journal cursor; a hub session's pending graceful-close request rides the same channel once per request (`docs/session-hub.md`). | not claimed; requires a live probe. Hub close requests for Codex are therefore queued-only. |
 | `session-ended` | Wired from `SessionEnd` | Codex has no equivalent event. |
@@ -132,8 +132,10 @@ prunes; it does not summarize, commit, or push.
 ### Claude Code
 
 `plugins/session/hooks/hooks.json` is the source of truth. It registers
-SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, and SessionEnd
-handlers, plus a Codex-only `PermissionRequest` handler.
+SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure,
+PermissionRequest, Stop, and SessionEnd handlers. The `PermissionRequest`
+handler is the Control bridge only; it answers `{}`, so Claude's own dialog
+still decides.
 
 ### OpenAI Codex
 

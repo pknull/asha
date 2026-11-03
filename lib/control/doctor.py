@@ -312,7 +312,7 @@ def _hooks_probe(config, *, required_harnesses=None) -> Probe:
         )
     expected_claude = {
         "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
-        "Stop", "SessionEnd",
+        "PermissionRequest", "Stop", "SessionEnd",
     }
     codex_probe = None
     missing: list[str] = []

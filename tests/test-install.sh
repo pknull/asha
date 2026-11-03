@@ -550,7 +550,14 @@ event_count="$(asha_hook_event_count)"
 [[ "$hook_count" -ge 7 ]] \
   && ok "at least 7 asha-tagged hook entries registered ($hook_count)" \
   || fail "at least 7 asha-tagged hook entries registered (got $hook_count)"
-assert_eq "asha hooks span all seven registered events" "7" "$event_count"
+assert_eq "asha hooks span all eight registered events" "8" "$event_count"
+# #129: a Claude terminal prompt must reach Control as needs-input, as on Codex.
+jq -e '.hooks.PermissionRequest[]?.hooks[]?
+    | select((.source // "") | startswith("asha:"))
+    | select((.command // "") | endswith("control-event.sh PermissionRequest"))' \
+    "$SANDBOX/.claude/settings.json" >/dev/null \
+  && ok "Claude permission prompts reach the Control bridge" \
+  || fail "Claude permission prompts reach the Control bridge"
 jq -e '.hooks.PostToolUseFailure[]?.hooks[]?
     | select((.source // "") | startswith("asha:"))
     | select((.command // "") | endswith("control-event.sh PostToolUseFailure"))' \
