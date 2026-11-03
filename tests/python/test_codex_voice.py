@@ -20,8 +20,40 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from lib import codex_voice as voice
 
+# thread/realtime/start exactly as the native 0.162.1 TUI sent it through the relay on the
+# live ChatGPT route (issue #132 capture); only the thread id and WebRTC SDP offer are redacted.
+CAPTURED_TUI_START = ROOT / "tests" / "fixtures" / "codex-tui-realtime-start-0.162.1.json"
+
 
 class VoiceItemsTests(unittest.TestCase):
+    # Issue #132: the live route ignores the session prompt and adopted the identity document
+    # alone only intermittently (5 of 8 answers); a closing directive answered as Asha 12 of 12.
+    def test_captured_tui_start_gets_identity_then_closing_voice_directive(self):
+        wire = CAPTURED_TUI_START.read_bytes().rstrip(b"\n")
+        native = json.loads(wire)
+        self.assertIsNone(native["params"]["initialItems"])
+        self.assertNotIn("prompt", native["params"])
+        identity = "# Identity\nYou are Asha — γνώση.\n"
+        adapted, error = voice.inject_start(wire, identity)
+        self.assertIsNone(error)
+        adapted = json.loads(adapted)
+        items = adapted["params"].pop("initialItems")
+        self.assertEqual(len(items), 2, "identity must be followed by the voice identity directive")
+        self.assertEqual(items[0], {"role": "developer", "text": identity})
+        self.assertEqual(items[1]["role"], "developer")
+        for name in ("Asha", "ChatGPT", "Codex"):
+            self.assertIn(name, items[1]["text"])
+        native["params"].pop("initialItems")
+        self.assertEqual(adapted, native)  # every other captured native field is unchanged
+        self.assertNotIn("prompt", adapted["params"])
+
+    # The directive needs its own slot: dropping it at 127 items would silently weaken identity.
+    def test_identity_pair_must_fit_the_item_limit(self):
+        wire, error = voice.inject_start(json.dumps({"id": 9, "method": "thread/realtime/start",
+            "params": {"version": "v3", "initialItems": [{"role":"user","text":"x"}] * 127}}).encode(), "identity")
+        self.assertIsNone(wire)
+        self.assertEqual(json.loads(error)["error"]["code"], -32602)
+
     # Removing the voice mutation must lose the developer identity.
     def test_appends_exact_unicode_identity_preserving_native_startup_fields(self):
         request = {"id": "start-α", "method": "thread/realtime/start", "params": {
@@ -32,18 +64,20 @@ class VoiceItemsTests(unittest.TestCase):
         identity = "# Identity\nI am Asha — γνώση.\n"
         wire, error = voice.inject_start(json.dumps(request).encode(), identity)
         expected = json.loads(json.dumps(request))
-        expected["params"]["initialItems"].append({"role": "developer", "text": identity})
+        expected["params"]["initialItems"] += [{"role": "developer", "text": identity},
+                                               {"role": "developer", "text": voice.VOICE_IDENTITY_DIRECTIVE}]
         self.assertEqual(json.loads(wire), expected)
         self.assertIsNone(error)
         self.assertEqual(len(request["params"]["initialItems"]), 1)
 
     # Deduplicating starts by thread would omit identity after the first restart.
-    def test_each_start_gets_one_item_without_accumulating_across_restarts(self):
+    def test_each_start_gets_one_identity_pair_without_accumulating_across_restarts(self):
         for rpc_id in (1, 2, 3):
             wire, error = voice.inject_start(json.dumps({"id": rpc_id,
                 "method": "thread/realtime/start", "params": {"version": "v3"}}).encode(), "Asha")
             self.assertEqual(json.loads(wire)["params"]["initialItems"],
-                             [{"role": "developer", "text": "Asha"}])
+                             [{"role": "developer", "text": "Asha"},
+                              {"role": "developer", "text": voice.VOICE_IDENTITY_DIRECTIVE}])
             self.assertIsNone(error)
 
     # Re-serializing unrelated RPC traffic would change approval replies or bytes.
@@ -80,7 +114,8 @@ class VoiceItemsTests(unittest.TestCase):
             self.assertIsNone(wire)
             self.assertEqual(json.loads(error)["error"]["code"], -32602)
         wire, error = voice.inject_start(b'{"id":1,"method":"thread/realtime/start","params":{"version":"v3","initialItems":null}}', "identity")
-        self.assertEqual(json.loads(wire)["params"]["initialItems"], [{"role":"developer","text":"identity"}])
+        self.assertEqual(json.loads(wire)["params"]["initialItems"], [{"role":"developer","text":"identity"},
+                         {"role":"developer","text":voice.VOICE_IDENTITY_DIRECTIVE}])
 
 
 class VoiceLaunchTests(unittest.TestCase):
@@ -369,7 +404,7 @@ class NativeLaunchTests(unittest.TestCase):
         self.fail("new private backend never started")
 
     # Bypassing the helper in bin/asha would leave the real TUI voice starts unmodified.
-    def test_full_wrapper_adds_only_base_identity_and_keeps_thread_and_approval_frames(self):
+    def test_full_wrapper_adds_only_base_identity_pair_and_keeps_thread_and_approval_frames(self):
         frames = ['{ "id": 1, "method":"thread/start", "params":{"model":"fixture","sandbox":"read-only"} }',
                   '{"id":2,"method":"thread/realtime/start","params":{"version":"v3","initialItems":[{"role":"user","text":"seed"}],"prompt":"native","includeStartupContext":true}}',
                   '{"id":3,"method":"fixture/approval","params":{}}',
@@ -386,8 +421,10 @@ class NativeLaunchTests(unittest.TestCase):
         identity = (self.home / ".asha/cache/instructions.md").read_text()
         self.assertIn("SOUL — identity", identity)
         for index in (1, 4):
-            self.assertEqual(json.loads(wire[index])["params"]["initialItems"][-1], {"role":"developer","text":identity})
-            self.assertNotIn("OPERATIONS ONLY", json.loads(wire[index])["params"]["initialItems"][-1]["text"])
+            self.assertEqual(json.loads(wire[index])["params"]["initialItems"][-2:], [{"role":"developer","text":identity},
+                             {"role":"developer","text":voice.VOICE_IDENTITY_DIRECTIVE}])
+            self.assertNotIn("OPERATIONS ONLY", json.loads(wire[index])["params"]["initialItems"][-2]["text"])
+        self.assertEqual(json.loads(wire[1])["params"]["initialItems"][0], {"role":"user","text":"seed"})
         self.assertEqual(json.loads(wire[1])["params"]["prompt"], "native")
         backend = self.load("backend.json")
         self.assertEqual(backend["session"], "isolated-launch")
@@ -674,7 +711,8 @@ class NativeLaunchTests(unittest.TestCase):
         self.assertNotIn(another_pid, (primary_pid, picker_pid))
         self.send_rpc(another_picker, {"id":3,"method":"thread/realtime/start","params":{"version":"v3"}})
         self.assertEqual(self.receive_rpc(another_picker)["result"]["echo"]["initialItems"],
-                         [{"role":"developer","text":"identity"}])
+                         [{"role":"developer","text":"identity"},
+                          {"role":"developer","text":voice.VOICE_IDENTITY_DIRECTIVE}])
         bridge.close()
         for pid in (primary_pid, picker_pid, another_pid):
             with self.assertRaises(ProcessLookupError):
