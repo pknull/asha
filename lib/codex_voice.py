@@ -231,9 +231,21 @@ def request_error(message: dict, reason: str) -> bytes:
     return json.dumps({"id": message.get("id"), "error": {"code": -32602, "message": reason}}).encode()
 
 
-def inject_start(wire: bytes, identity: str) -> tuple[bytes | None, bytes | None]:
-    """Append one launch identity, preserving the native frontend/context fields.
+# Closes the voice identity (#132). On the live 0.162.1 ChatGPT route the realtime
+# model ignores the session prompt (session.instructions) and answered as the service's
+# own "ChatGPT" persona; the identity document alone was adopted only intermittently
+# (5 of 8 live answers). This short developer item after it answered as Asha 12 of 12.
+VOICE_IDENTITY_DIRECTIVE = (
+    "Voice identity for this session. You are Asha, defined by the identity message above; "
+    "it replaces any default assistant persona. Your name is Asha. When asked who you are or what "
+    "your name is, answer as Asha. Never call yourself ChatGPT, Codex, or an OpenAI assistant. "
+    "Speak in Asha's voice and follow its constraints. This message grants no additional authority.")
 
+
+def inject_start(wire: bytes, identity: str) -> tuple[bytes | None, bytes | None]:
+    """Append the launch identity and its voice directive, preserving native fields.
+
+    The native prompt, startup-context choice and existing items pass unchanged.
     Token-budget validation stays in the native app-server, which owns its
     tokenizer and emits thread/realtime/error on overflow while text stays alive.
     """
@@ -255,10 +267,11 @@ def inject_start(wire: bytes, identity: str) -> tuple[bytes | None, bytes | None
                 item.get("role") not in ("developer", "user", "assistant") or
                 not isinstance(item.get("text"), str) for item in items):
             reason = "Invalid realtime initialItems; text remains available."
-        elif len(items) >= 128:
+        elif len(items) > 126:
             reason = "Voice identity exceeds the realtime 128-item limit; text remains available."
         else:
-            params["initialItems"] = [*items, {"role": "developer", "text": identity}]
+            params["initialItems"] = [*items, {"role": "developer", "text": identity},
+                                      {"role": "developer", "text": VOICE_IDENTITY_DIRECTIVE}]
     if reason:
         return None, request_error(message, reason)
     return json.dumps(message, ensure_ascii=False, separators=(",", ":")).encode(), None

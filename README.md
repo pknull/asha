@@ -162,13 +162,16 @@ private and is never copied into project or workspace Memory.
 
 **Codex voice receives the same hot identity at each `/voice` start.** On a
 compatible native CLI, persona-enabled TUI launches use a private app-server
-and an authenticated loopback relay. The relay appends the base identity as a
-developer `initialItems` message, preserving Codex's frontend prompt, startup
-context and client delegation. It has no test prefix and does not record RPC
-payloads or audio. The operational layer and chair brief remain in the text
-agent's instructions. The private server retains the launching Room's hook
-environment and stops with the TUI; it does not join the shared daemon or
-restore remote-control publication.
+and an authenticated loopback relay. The relay appends the base identity and
+then a short voice identity directive as developer `initialItems` messages,
+preserving Codex's frontend prompt, startup context and client delegation. The
+live voice service does not apply the session prompt as a persona, and without
+the directive its default persona sometimes answered instead of Asha. The
+directive is a mitigation, not a guarantee (#132). The relay has no test prefix
+and does not record RPC payloads or audio. The operational layer and chair
+brief remain in the text agent's instructions. The private server retains the
+launching Room's hook environment and stops with the TUI; it does not join the
+shared daemon or restore remote-control publication.
 
 Voice-enabled sessions stay in the launch directory. In-session resume and fork
 targets are checked through the native server before switching; a target from
