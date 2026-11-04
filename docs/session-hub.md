@@ -532,7 +532,97 @@ it as stopped.
 Every successful publication path records one `hub_memory_publications` row
 naming its source: `explicit-save`, `close` (a handoff naming the request),
 `handoff` (an ordinary handoff) or `attestation` (`no-durable-update`, with its
-detail). "Saved" is read from these rows only.
+detail). "Saved" is read from these rows only. A nested project's handoff
+row carries that project's `project_id`, so it never counts (below).
+
+### Nested project Memory (#130)
+
+A session can publish the Memory of a Memory v2 project nested inside its own
+project, without a session per project. The folder structure decides; no
+`.asha/workspace.json` is read, and the acting project need not be a workspace:
+
+```bash
+asha control session handoff --read --component PATH --json      # the nested project's live digests
+asha control session handoff --component PATH --active-file A --decisions-file D \
+    --expected-active DIGEST --expected-decisions DIGEST --json   # publish it
+```
+
+PATH is relative to the session's own project root, or absolute. Control
+resolves it as the OS does, following links and `..`, and judges only the
+resulting real path, never the spelling. It refuses unless all of these hold:
+
+- The real path lies strictly inside the session's own project root (itself
+  a real path), at any depth. The root itself, an ancestor, a sibling and
+  anything a link carries out of the root are refused, so a session started in
+  a child project can write to projects beneath it but never up or across.
+- No folder of the real path below the root, the project's own folder
+  included, is hidden (its name starts with `.`). Copies under `.trash/`,
+  `.git/`, `.claude/` and similar never qualify, and neither does a plain-named
+  link to one. A hidden name that only appears in the spelling does not
+  refuse: `.hidden/../egregore`, `.alias/../egregore`, a hidden link `.alias`
+  to `egregore`, and a visible link to `.alias` all resolve to `egregore` and
+  publish there.
+- It is its own Memory v2 project (`memory_version` 2 and a `project_id`, the
+  same test every handoff applies) and its own plane, with a `project_id`
+  different from the session's, ignoring surrounding spaces.
+- Neither plane is silenced. `--read` reports a silenced plane as unavailable
+  instead of refusing.
+
+Control checks these at `--read` and at publication. Publication then opens
+the project's directory once, walking down from the session's root without
+following a link, and does everything else through that open directory: the
+lock, the recovery of a journal left by a crashed save, the journal and both
+Memory writes. The same checks, plus the project keeping the `project_id` first
+authorized and its name still leading to the open directory, run before
+anything is created, under the lock, and once both files are written. A
+refusal at that last check (the commit check) restores the directory from its
+journal: nothing is published and no row is recorded. So if the project's
+directory is renamed, moved under a hidden folder, replaced by a link or by
+another directory, or re-initialized with another `project_id` while it is
+being published, no write lands anywhere but that directory. `asha control
+session` runs outside a Codex sandbox, so a sandboxed agent cannot use such a
+swap to write into a project, or the session's own root, that the save did not
+authorize. A rename after the commit check is a rename after the save: the
+receipt names where the project was when the publication committed.
+
+The publication uses the nested project's own lock file, recovery journal and
+compare-and-swap digests, the same ones that project's own saves use, so a
+stale draft never overwrites a newer save. Four limits qualify this and the
+restore above:
+
+- The restore is complete only while the project's `Memory/` folder is not
+  replaced. If it is replaced and the process dies during the restore, the
+  project's next ordinary save or recovery can restore the old pair into the
+  replacement and remove the journal, leaving the held folder a mixed pair.
+- The two publishers serialize only while `Work/session-state/` and its lock
+  file keep their identity. If either is replaced during a publication, an
+  ordinary save can be undone by the component's rollback, or both can report
+  success for a mixed pair.
+- The receipt records the hashes of the drafted bytes. If a temporary file is
+  replaced before its final rename, the installed file can differ from the
+  receipt.
+- The commit check is several reads, not one snapshot. Its last read of the
+  `project_id` and of both planes' silence is Control's `component_scope`
+  call; the directory re-walk follows it. A `project_id` change or silence set
+  after that read is not detected.
+
+Each limit needs a process running as the user that changes the project's
+own files during a publication: its `Memory/`, `Work/session-state/`, lock or
+temporary files, its config, or a silence marker. Nothing is written outside
+the authorized directory, and such a process could already overwrite that
+project's Memory directly, so the Keeper accepted these limits (2026-11-04)
+rather than defending them.
+
+The row is recorded under the nested project's `project_id`, the receipt
+adds `acting_project_id`, `destination_project_id` and `component` (its real
+path relative to the session's root), and the response says
+`counts_as_session_save: false`: it never makes the session read as saved and
+never answers a close.
+`--component` refuses `--request`, `--outcome` and a missing draft file, and
+`--read --component` also refuses `--detail`, the draft files and the expected
+digests; each is checked before anything is read or written. Nothing on this
+path invokes Git, and the session stays open. The single-plane handoff and
+explicit save still write by path, unchanged.
 
 Compatibility for one release: the retired `control.idle_delivery`,
 `control.no_handoff_close` and `control.session_preview` settings are accepted

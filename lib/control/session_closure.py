@@ -283,6 +283,35 @@ def publish_handoff(project: str, active_file: str, decisions_file: str, *, expe
     return result
 
 
+def publish_component(anchor: Path, relative: str, active_file: str, decisions_file: str, *, expected: dict,
+                      check) -> dict:
+    """#130: publish a nested project's Memory, bound to the directory its caller authorized.
+
+    ``relative`` (plain directory names below ``anchor``) is opened once
+    without following a link, and every later step goes through that open
+    directory (``memory_v2.publish_bound``). ``check(bound)`` is the caller's
+    authority over the name, run before anything is created, under the lock and
+    at the commit check. Returns the publication receipt; no Git seam exists.
+    """
+    active_raw, _ = _bounded_read(_draft_path(active_file, "active draft"), memory_v2.ACTIVE_LIMIT, "active draft")
+    decisions_raw, _ = _bounded_read(_draft_path(decisions_file, "decisions draft"), memory_v2.DECISIONS_LIMIT, "decisions draft")
+    try:
+        active, decisions = active_raw.decode("utf-8"), decisions_raw.decode("utf-8")
+    except UnicodeError as exc:
+        raise ValueError("handoff drafts must be UTF-8") from exc
+    preimages = {"active": expected.get("activeContext.md"), "decisions": expected.get("decisions.md")}
+    with memory_v2.BoundProject(anchor, Path(relative).parts) as bound:
+        try:
+            return memory_v2.publish_bound(bound, active, decisions, expected_preimages=preimages,
+                                           publication_source="close", check=check)
+        except ValueError as exc:
+            if "preimage changed" in str(exc):
+                raise ValueError("publication preimage changed: the live Memory digests differ from --expected-active/"
+                                 "--expected-decisions (omitted, stale, or another save landed first); run "
+                                 "`asha control session handoff --read --component PATH --json`, merge, and retry") from exc
+            raise
+
+
 def _draft_path(value, label: str) -> Path:
     """Drafts are the agent's own files: absolute, symlink-free, readable by this user."""
     if not isinstance(value, str) or not value:
@@ -307,5 +336,5 @@ def parse_digest(value):
 __all__ = ["ACKNOWLEDGED", "CLOSE_REQUEST_TOKEN", "MEMORY_FILES", "MESSAGE_KEY_PREFIX", "OUTCOMES",
            "PUBLICATION_GRACE_SECONDS", "STOP_HOOK_HARNESSES", "StopDecision", "closed_label", "guidance_for",
            "mark_delivered", "memory_destination", "message_key", "new_closure", "parse_digest", "pending",
-           "pointer_line", "publish_handoff", "receipt_for", "record_handoff", "request_text",
+           "pointer_line", "publish_component", "publish_handoff", "receipt_for", "record_handoff", "request_text",
            "validate_handoff_request"]

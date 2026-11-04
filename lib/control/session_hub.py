@@ -1445,10 +1445,12 @@ class Hub:
             return row
         return self.actor()
 
-    def handoff_read(self):
-        """Live destination facts for the acting session; never writes."""
+    def handoff_read(self, component=None):
+        """Live destination facts for the acting session, or one nested project (#130); never writes."""
         row = self._handoff_actor()
         record = row.get('closure')
+        if component is not None:
+            return self._component_read(row, record, component)
         memory = closure.memory_destination(row['project'])
         pending = closure.pending(record, row)
         return {'session_id': row['session_id'], 'generation': row['generation'],
@@ -1457,18 +1459,26 @@ class Hub:
                 'paths': {name: (memory['destination'] + '/' + name) if memory['destination'] else None
                           for name in closure.MEMORY_FILES}}
 
-    def handoff(self, request_id, *, outcome=None, detail=None, active_file=None, decisions_file=None, expected=None):
+    def handoff(self, request_id, *, outcome=None, detail=None, active_file=None, decisions_file=None, expected=None,
+                component=None):
         """Save project Memory (or attest), optionally answering a pending close request.
 
         Any save lands as a publication row; a pending close closes on the
-        first one after its request (D8), named or not.
+        first one after its request (D8), named or not. ``component`` publishes
+        a nested project instead (#130), which never answers a close.
         """
         request_id = identifier(request_id) if request_id else None
+        if component is not None and request_id is not None:
+            raise StoreError('--component cannot answer a close request: a component save is not this '
+                             "session's save; answer the request with a handoff of this session's own Memory")
         actor = self._handoff_actor(request_id)
         with self._action_lock(actor['session_id']):
             row = self.get(actor['session_id'])
             if row['generation'] != actor['generation'] or row['lifecycle'] not in ACTIVE_LIFECYCLES:
                 raise StoreError('stale or inactive session reporter')
+            if component is not None:
+                return self._component_handoff(row, component, outcome=outcome, detail=detail, active_file=active_file,
+                                               decisions_file=decisions_file, expected=expected)
             if request_id is None:
                 return self._finalize_handoff(row, outcome=outcome, detail=detail, active_file=active_file,
                                               decisions_file=decisions_file, expected=expected)
@@ -1502,7 +1512,66 @@ class Hub:
         saved = self._record_saved(row, 'handoff', outcome, detail, publication)
         return dict(session_id=row['session_id'], outcome=outcome, detail=detail, git_invoked=False, **saved)
 
-    def _record_saved(self, row, source, outcome, detail, publication):
+    def _component_read(self, row, record, component):
+        """``handoff --read --component``: the component's live digests; authority refusals raise, silence reports."""
+        from .session_completion import component_scope
+        try:
+            scope = component_scope(row, component, silence=False)
+            memory = closure.memory_destination(str(scope['child']))
+            if memory['available'] and closure.secure_path(scope['root'], 'Work/markers/silence').exists():
+                memory = dict(memory, available=False,
+                              reason="Memory persistence is disabled by Work/markers/silence in this session's project")
+        except (ValueError, OSError) as exc:
+            raise StoreError('component handoff refused: ' + str(exc)) from exc
+        return {'session_id': row['session_id'], 'generation': row['generation'], 'request_id': None,
+                'closure_state': record.get('state') if record else None, 'memory': memory,
+                'paths': {name: (memory['destination'] + '/' + name) if memory['destination'] else None
+                          for name in closure.MEMORY_FILES},
+                'component': {'path': scope['path'], 'project_id': scope['project_id'],
+                              'acting_root': str(scope['root'])}}
+
+    def _component_handoff(self, row, component, *, outcome, detail, active_file, decisions_file, expected):
+        """#130: publish the Memory of a project nested inside this session's own project.
+
+        Recorded under the component's project_id, so it never makes this
+        session read as saved; no Git is invoked.
+        """
+        from .session_completion import component_scope
+        if outcome not in {None, 'published'} or not (active_file and decisions_file):
+            raise StoreError('--component publishes a component: it needs both draft files and no other outcome')
+        if detail:
+            detail = text(detail, 'handoff detail', 4000)   # refused before anything is written
+        try:
+            scope = component_scope(row, component)
+            authorized_id = scope['project_id'].strip()
+
+            def check(bound):
+                # The publisher holds the authorized directory open and runs this before it creates
+                # anything, under that directory's lock, and once both files are written (the commit
+                # check; a refusal there restores the directory). The directory held must be the
+                # authorized one, the name must still qualify and lead there with both planes
+                # unsilenced, and the project must keep the identity first authorized (review r2 F2).
+                if Path(bound.path) != scope['child']:
+                    raise StoreError('the component changed during publication')
+                current = component_scope(row, component)
+                if current['child'] != scope['child']:
+                    raise StoreError('the component changed during publication')
+                if current['project_id'].strip() != authorized_id:
+                    raise StoreError(f"the component's project_id changed during publication ({authorized_id} to "
+                                     f"{current['project_id'].strip()}); re-read it and retry")
+            publication = closure.publish_component(scope['root'], scope['path'], active_file, decisions_file,
+                                                    expected=expected or {}, check=check)
+        except (ValueError, OSError) as exc:
+            raise StoreError('component handoff refused: ' + str(exc)) from exc
+        detail = detail or f"Published verified component memory ({scope['path']})"
+        destination = {'path': scope['path'], 'project_id': scope['project_id']}
+        saved = self._record_saved(row, 'handoff', 'published', detail, publication, destination=destination)
+        return dict(session_id=row['session_id'], outcome='published', detail=detail, git_invoked=False,
+                    component=dict(destination, destination=str(scope['child'] / 'Memory'),
+                                   acting_root=str(scope['root'])),
+                    counts_as_session_save=False, **saved)
+
+    def _record_saved(self, row, source, outcome, detail, publication, *, destination=None):
         """Retain a publication row for a successful handoff or attestation (D3).
 
         The Memory write already committed; a failure to retain the row is
@@ -1516,7 +1585,7 @@ class Hub:
         else:
             return {}
         try:
-            saved = record(self, row, source, source_receipt)
+            saved = record(self, row, source, source_receipt, destination=destination)
         except (OSError, ValueError) as exc:
             return dict(hub_publication_status='unavailable', hub_publication_error=str(exc)[:1000])
         return dict(hub_publication_status='recorded', publication_source=saved['source'])

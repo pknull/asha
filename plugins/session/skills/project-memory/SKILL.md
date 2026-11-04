@@ -42,6 +42,11 @@ and five Next/Blockers items each. `decisions.md` is headed Decisions and contai
 only current binding decisions. A changed baseline requires rereading and merging;
 never refresh digests merely to force an old draft through.
 
+When the assignment authorizes the Memory of a v2 project nested inside this
+one, read its digests with `handoff --read --component PATH --json` and publish
+with the same flags plus `--component PATH`. That save is the nested project's:
+it never makes this session read as saved and cannot take `--request` or `--outcome`.
+
 When nothing durable changed, attest that explicitly:
 
 ```bash
