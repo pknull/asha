@@ -138,6 +138,10 @@ Worker assignments include the project-memory startup/completion contract across
 harnesses without chair context. `report --state finished` is never gated; the
 row reads finished, saved or unsaved. Publication blockers use `handoff
 --outcome blocked`; silence or scope refusal is not a no-update attestation.
+A session publishes the Memory of a v2 project nested inside its own project
+(no hidden folder in its real path) with `handoff --component PATH` (`handoff --read
+--component PATH` for its digests); the row is that project's, so it never makes
+the session read as saved or answers a close (docs/session-hub.md).
 Structured paths bind to their managed turn; native delivery and permissions
 remain separately qualified.
 

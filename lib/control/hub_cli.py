@@ -250,6 +250,27 @@ def startup_observation():
             '\nRead-only observation; no execution authority. Summarize briefly, then take the Keeper\'s work.\n')
 
 
+def _refuse_component_conflicts(args):
+    """#130: `--component` options are checked before read or publish is chosen, so none is silently ignored.
+
+    A component save never answers a close or attests, so `--request` and
+    `--outcome` are refused in both modes; `--read --component` only reads, so
+    it also refuses the publication inputs. The plain `--read` is unchanged.
+    """
+    if args.component is None:
+        return
+    given = [('--request', args.request), ('--outcome', args.outcome)]
+    if args.read:
+        given += [('--detail', args.detail), ('--active-file', args.active_file),
+                  ('--decisions-file', args.decisions_file), ('--expected-active', args.expected_active),
+                  ('--expected-decisions', args.expected_decisions)]
+    conflicts = [flag for flag, value in given if value is not None]
+    if conflicts:
+        mode = 'handoff --read --component only reads the nested project' if args.read else \
+            "handoff --component publishes the nested project's Memory and never answers a close or attests"
+        raise StoreError(f"{mode}; it takes no {', '.join(conflicts)}")
+
+
 def dispatch(argv, *, env):
     """None means this is an existing structured-session verb."""
     if not argv:
@@ -324,6 +345,9 @@ def dispatch(argv, *, env):
         parser.add_argument('--decisions-file')
         parser.add_argument('--expected-active', metavar='DIGEST')
         parser.add_argument('--expected-decisions', metavar='DIGEST')
+        parser.add_argument('--component', metavar='PATH',
+                            help="a Memory v2 project nested inside this session's own project (no hidden folder in its "
+                                 "real path): read or publish its Memory instead (never this session's own save)")
     elif verb in {'event', 'report'}:
         parser.add_argument('--event' if verb == 'event' else '--state', required=True)
         if verb == 'event':
@@ -465,14 +489,16 @@ def dispatch(argv, *, env):
             print('{}')
             return 0
         elif verb == 'handoff':
+            _refuse_component_conflicts(args)
             if args.read:
-                result = hub.handoff_read()
+                result = hub.handoff_read(component=args.component)
             else:
                 from .session_closure import parse_digest
                 expected = {'activeContext.md': parse_digest(args.expected_active),
                             'decisions.md': parse_digest(args.expected_decisions)}
                 result = hub.handoff(args.request, outcome=args.outcome, detail=args.detail,
-                                     active_file=args.active_file, decisions_file=args.decisions_file, expected=expected)
+                                     active_file=args.active_file, decisions_file=args.decisions_file, expected=expected,
+                                     component=args.component)
         elif verb == 'messages':
             sid = args.session_id or hub.actor()['session_id']
             result = hub.message_page(sid, offset=args.offset, limit=args.limit)

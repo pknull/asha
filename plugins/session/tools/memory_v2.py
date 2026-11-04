@@ -628,6 +628,329 @@ def recover_publication(project_dir: Path) -> bool:
         return _recover_publication_unlocked(root)
 
 
+# Descriptor-bound publication (#130). publish() re-resolves the project's
+# name at every step, so a directory renamed or replaced mid-publication
+# carries its writes elsewhere. A Control component handoff writes into a
+# project its caller authorized by name and runs outside a sandboxed agent's
+# sandbox, so there the name must never move a write. publish_bound() keeps
+# publish()'s lock file, journal and Memory files (the two interoperate on one
+# project) but reaches each through descriptors of the directory it holds.
+
+_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+_BOUND_LOCK = ".memory-publication.lock"
+_BOUND_JOURNAL = ".memory-publication-transaction.json"
+_BOUND_MEMORY = {"active": "activeContext.md", "decisions": "decisions.md"}
+
+
+def _same_object(left: os.stat_result, right: os.stat_result) -> bool:
+    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+
+class BoundProject:
+    """A project directory held open, reached from ``anchor`` through plain directories named ``parts``.
+
+    No link below ``anchor`` is followed. ``verify`` refuses unless walking
+    the same names again still reaches the held directory, and its held
+    ``Memory`` and ``Work/session-state`` are still the ones inside it.
+    """
+
+    def __init__(self, anchor: Path, parts) -> None:
+        self.anchor = Path(anchor)
+        self.parts = tuple(parts)
+        if not self.parts or any(not isinstance(part, str) or part in ("", ".", "..") or "/" in part
+                                 or "\x00" in part for part in self.parts):
+            raise ValueError(f"a bound project is named by plain directory names: {self.parts!r}")
+        self.path = self.anchor.joinpath(*self.parts)
+        self._held: dict[str, int] = {"project": self._walk()}
+
+    def _walk(self) -> int:
+        try:
+            fd = os.open(self.anchor, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0))
+        except OSError as exc:
+            raise ValueError(f"{self.anchor} is not a directory: {exc.strerror}") from exc
+        try:
+            for part in self.parts:
+                child = os.open(part, _DIRECTORY_FLAGS, dir_fd=fd)
+                os.close(fd)
+                fd = child
+        except OSError as exc:
+            os.close(fd)
+            raise ValueError(f"{self.path} is not a directory reached without a link: {exc.strerror}") from exc
+        return fd
+
+    def fd(self, name: str = "project") -> int:
+        return self._held[name]
+
+    def open_state(self) -> None:
+        """Create, inside the held directory only, and hold its Memory/ and Work/session-state/."""
+        for held, parent, name in (("memory", "project", "Memory"), ("work", "project", "Work"),
+                                   ("state", "work", "session-state")):
+            if held in self._held:
+                continue
+            try:
+                os.mkdir(name, dir_fd=self._held[parent])
+            except FileExistsError:
+                pass
+            try:
+                self._held[held] = os.open(name, _DIRECTORY_FLAGS, dir_fd=self._held[parent])
+            except OSError as exc:
+                raise ValueError(f"{name} in {self.path} is not a plain directory: {exc.strerror}") from exc
+
+    def verify(self) -> None:
+        """Refuse unless the name still leads to the held directory (and its held subdirectories)."""
+        try:
+            fresh = self._walk()
+        except ValueError as exc:
+            raise ValueError(f"{self.path} no longer leads to the directory being published ({exc})") from exc
+        try:
+            moved = not _same_object(os.fstat(fresh), os.fstat(self._held["project"]))
+        finally:
+            os.close(fresh)
+        if moved:
+            raise ValueError(f"{self.path} no longer leads to the directory being published")
+        for held, parent, name, label in (("memory", "project", "Memory", "Memory"), ("work", "project", "Work", "Work"),
+                                          ("state", "work", "session-state", "Work/session-state")):
+            if held not in self._held:
+                continue
+            try:
+                current = os.stat(name, dir_fd=self._held[parent], follow_symlinks=False)
+            except OSError as exc:
+                raise ValueError(f"{self.path / label} was moved during publication") from exc
+            if not _same_object(current, os.fstat(self._held[held])):
+                raise ValueError(f"{self.path / label} was replaced during publication")
+
+    def close(self) -> None:
+        while self._held:
+            try:
+                os.close(self._held.popitem()[1])
+            except OSError:
+                pass
+
+    def __enter__(self) -> "BoundProject":
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        self.close()
+
+
+def _read_at(dir_fd: int, name: str, maximum: int | None = None) -> bytes | None:
+    """The bytes of regular file ``name`` in ``dir_fd``, or None when it is absent; never follows a link."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(name, flags, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ValueError(f"published Memory target is not a regular file: {name}: {exc.strerror}") from exc
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError(f"published Memory target is not a regular file: {name}")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+            total += len(chunk)
+            if maximum is not None and total > maximum:
+                raise ValueError(f"{name} exceeds {maximum} bytes")
+    finally:
+        os.close(fd)
+
+
+def _write_at(dir_fd: int, name: str, content: bytes, mode: int | None = None) -> None:
+    """atomic_write_bytes() inside the held directory ``dir_fd``: temporary beside it, fsync, rename, fsync."""
+    if mode is None:
+        try:
+            mode = stat.S_IMODE(os.stat(name, dir_fd=dir_fd, follow_symlinks=False).st_mode)
+        except FileNotFoundError:
+            mode = 0o644
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    for _ in range(100):
+        temporary = f".{name}.tmp.{uuid.uuid4().hex[:8]}"
+        try:
+            fd = os.open(temporary, flags, 0o600, dir_fd=dir_fd)
+            break
+        except FileExistsError:
+            continue
+    else:
+        raise FileExistsError(f"no free temporary name beside {name}")
+    try:
+        try:
+            os.fchmod(fd, mode)
+            view = memoryview(content)
+            while view:
+                view = view[os.write(fd, view):]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(temporary, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+    except BaseException:
+        try:
+            os.unlink(temporary, dir_fd=dir_fd)
+        except FileNotFoundError:
+            pass
+        raise
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+
+
+def _bound_persistence_enabled(project: BoundProject) -> None:
+    try:
+        os.stat("Work/markers/silence", dir_fd=project.fd(), follow_symlinks=False)
+    except (FileNotFoundError, NotADirectoryError):
+        return
+    raise ValueError("Memory persistence is disabled by Work/markers/silence")
+
+
+def _bound_config(project: BoundProject) -> dict[str, Any]:
+    required = "valid Memory v2 project config with stable project_id required"
+    try:
+        asha = os.open(".asha", _DIRECTORY_FLAGS, dir_fd=project.fd())
+    except OSError as exc:
+        raise ValueError(required) from exc
+    try:
+        raw = _read_at(asha, "config.json", CONFIG_LIMIT)
+    finally:
+        os.close(asha)
+    if raw is None:
+        raise ValueError(required)
+    try:
+        config = json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_json_object)
+    except (_DuplicateJsonKey, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"existing project config is unreadable or malformed: {project.path / '.asha/config.json'}") from exc
+    if (not isinstance(config, dict) or config.get("memory_version") != 2 or
+            not isinstance(config.get("project_id"), str) or not config["project_id"].strip()):
+        raise ValueError(required)
+    return config
+
+
+@contextmanager
+def _bound_lock(project: BoundProject) -> Iterator[None]:
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(_BOUND_LOCK, flags, 0o600, dir_fd=project.fd("state"))
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _bound_digests(project: BoundProject) -> dict[str, str | None]:
+    digests: dict[str, str | None] = {}
+    for key, name in _BOUND_MEMORY.items():
+        raw = _read_at(project.fd("memory"), name)
+        digests[key] = None if raw is None else hashlib.sha256(raw).hexdigest()
+    return digests
+
+
+def _bound_prepare_journal(project: BoundProject) -> None:
+    record: dict[str, Any] = {"version": 2, "state": "prepared"}
+    for key, name in _BOUND_MEMORY.items():
+        raw = _read_at(project.fd("memory"), name)
+        record[key] = ({"existed": False, "content_b64": ""} if raw is None else
+                       {"existed": True, "content_b64": base64.b64encode(raw).decode("ascii")})
+    _write_at(project.fd("state"), _BOUND_JOURNAL, (json.dumps(record, sort_keys=True) + "\n").encode("utf-8"),
+              mode=0o600)
+
+
+def _bound_remove_journal(project: BoundProject) -> None:
+    try:
+        os.unlink(_BOUND_JOURNAL, dir_fd=project.fd("state"))
+    except FileNotFoundError:
+        pass
+    try:
+        os.fsync(project.fd("state"))
+    except OSError:
+        pass
+
+
+def _bound_recover(project: BoundProject) -> bool:
+    """_recover_publication_unlocked() for the held directory: its journal restores its own Memory."""
+    raw = _read_at(project.fd("state"), _BOUND_JOURNAL)
+    if raw is None:
+        return False
+    journal = project.path / "Work/session-state" / _BOUND_JOURNAL
+    try:
+        record = json.loads(raw.decode("utf-8"))
+        if not isinstance(record, dict) or record.get("version") != 2 or record.get("state") != "prepared":
+            raise ValueError("invalid publication recovery journal")
+        for key, name in _BOUND_MEMORY.items():
+            item = record[key]
+            if item.get("existed"):
+                _write_at(project.fd("memory"), name,
+                          base64.b64decode(str(item.get("content_b64", "")), validate=True))
+            else:
+                try:
+                    os.unlink(name, dir_fd=project.fd("memory"))
+                except FileNotFoundError:
+                    pass
+        _bound_remove_journal(project)
+        return True
+    except (AttributeError, KeyError, TypeError, json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+        raise ValueError(f"publication recovery failed closed: {journal}") from exc
+
+
+def publish_bound(project: BoundProject, active_context: str, decisions: str, *,
+                  expected_preimages: dict[str, str | None] | None = None,
+                  publication_source: str = "close", check=None) -> dict:
+    """publish(), bound to the directory ``project`` holds (#130).
+
+    The lock, journal, recovery and both Memory writes go through descriptors
+    of that directory, so renaming or replacing its name never carries a
+    write elsewhere. The caller's ``check(project)`` (its authority over the
+    name) and ``project.verify()`` run before anything is created, under the
+    lock, and again once both files are written. If that commit check
+    refuses, because the name no longer leads to the held directory or the
+    caller's authority no longer holds, the held directory is restored from
+    its own journal and nothing is published; a rename after the commit check
+    is a rename after the save. Records no hub row: the caller does that.
+    """
+    def authorized() -> None:
+        if check is not None:
+            check(project)
+        project.verify()
+
+    _bound_persistence_enabled(project)
+    project_config = _bound_config(project)
+    authorized()
+    validate_active_context(active_context)
+    validate_decisions(decisions)
+    project.open_state()
+    with _bound_lock(project):
+        _bound_persistence_enabled(project)
+        authorized()
+        _bound_recover(project)
+        current = _bound_digests(project)
+        if expected_preimages is not None and current != expected_preimages:
+            raise ValueError("publication preimage changed; re-read the coherent Memory snapshot, merge the draft, and retry")
+        _bound_prepare_journal(project)
+        try:
+            _write_at(project.fd("memory"), _BOUND_MEMORY["active"], active_context.encode("utf-8"))
+            _write_at(project.fd("memory"), _BOUND_MEMORY["decisions"], decisions.encode("utf-8"))
+        except Exception:
+            _bound_recover(project)
+            raise
+        try:
+            authorized()
+        except Exception as exc:
+            _bound_recover(project)
+            raise ValueError(f"{project.path / 'Memory'} was not published: its commit check refused, and the "
+                             f"directory it held was restored from its journal ({exc})") from exc
+        _bound_remove_journal(project)
+        after = {"active": hashlib.sha256(active_context.encode()).hexdigest(),
+                 "decisions": hashlib.sha256(decisions.encode()).hexdigest()}
+        return {"contract": "asha.memory-publication.v1", "status": "published",
+                "publication_id": str(uuid.uuid4()), "source": publication_source,
+                "project_id": project_config["project_id"], "destination": str(project.path / "Memory"),
+                "before": current, "after": after,
+                "changed": [name for name in after if current[name] != after[name]], "git_invoked": False}
+
+
 def initialize(project_dir: Path) -> str:
     """Create only v2 operational memory and preserve a stable project id."""
     root = secure_project_root(project_dir)

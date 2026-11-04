@@ -5,6 +5,7 @@ Best-effort close (D3) retired completion receipts: "saved" is read from the
 """
 from __future__ import annotations
 
+import os
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -53,7 +54,7 @@ def instruction(profile):
     return ROOM_INSTRUCTION if profile == 'room' else WORKER_INSTRUCTION
 
 
-def _scope(row):
+def _scope(row, *, silence=True):
     import save_scope
     root = closure.secure_project_root(Path(row['project']))
     plane, errors = save_scope.resolve_effective_plane('none', start=root)
@@ -62,8 +63,58 @@ def _scope(row):
     config = closure.memory_v2.require_v2_config(root)
     if config['project_id'] != row['project_id']:
         raise StoreError('project-memory identity changed')
-    closure.memory_v2._assert_persistence_enabled(root)
+    if silence:
+        closure.memory_v2._assert_persistence_enabled(root)
     return root
+
+
+def component_scope(row, path, *, silence=True):
+    """#130: the nested Memory v2 project ``path`` names, inside the acting session's own project.
+
+    The folder structure decides (Keeper, revised 2026-11-03); no manifest is
+    read. ``path`` is resolved as the OS resolves it (a relative ``path``
+    against the root), and only that real path is judged: it must lie strictly
+    inside the session's own root, no folder of it below the root (it
+    included) may be hidden (a name starting with ``.``), and it must be its
+    own Memory v2 project and plane with a ``project_id`` different from the
+    session's. The spelling is never judged, so a hidden name cancelled by
+    ``..`` or a link through a hidden link is accepted when the real path
+    qualifies, and a plain link to a hidden real path is refused. With
+    ``silence`` (the publication path), either plane silenced refuses; the
+    read reports silence instead.
+    """
+    import save_scope
+    root = _scope(row, silence=silence)
+    if not isinstance(path, str) or not path or '\x00' in path:
+        raise StoreError('a component path is required')
+    given = Path(path) if os.path.isabs(path) else root / path
+    try:
+        requested = given.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise StoreError(f'component path does not exist: {path}') from exc
+    if requested == root:
+        raise StoreError(f"component path {path} is this session's own project root")
+    # Control runs this outside a sandboxed agent's sandbox, so a link the agent
+    # planted inside the root must not carry the write out of it.
+    if root not in requested.parents:
+        raise StoreError(f"component path {path} resolves outside this session's project root: {requested}")
+    relative = requested.relative_to(root)
+    hidden = next((part for part in relative.parts if part.startswith('.')), None)
+    if hidden is not None:
+        raise StoreError(f'component path {path} is in or under the hidden folder {hidden}')
+    try:
+        config = closure.memory_v2.require_v2_config(requested)
+    except ValueError as exc:
+        raise StoreError(f'component {relative} has no initialized Memory v2 config: {exc}') from exc
+    if config['project_id'].strip() == row['project_id'].strip():
+        raise StoreError(f"component {relative} shares this session's project_id")
+    plane, errors = save_scope.resolve_effective_plane('none', start=requested)
+    if not plane or Path(plane['plane_base']) != requested:
+        raise StoreError(f'component {relative} is not its own Memory plane: '
+                         + (errors[0]['message'] if errors else 'different plane'))
+    if silence:
+        closure.memory_v2._assert_persistence_enabled(requested)
+    return {'root': root, 'child': requested, 'path': str(relative), 'project_id': config['project_id']}
 
 
 @contextmanager

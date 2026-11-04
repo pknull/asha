@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased — a session publishes a nested project's Memory (#130)
+
+- `asha control session handoff --component PATH` publishes, and
+  `handoff --read --component PATH` reads, the Memory of a Memory v2 project
+  nested inside the session's own project, so a workspace Room no longer needs
+  a session per component (Keeper ruling 2026-11-03, revised the same day: the
+  folder structure decides; no `.asha/workspace.json` is read). PATH's real
+  path must lie strictly inside the session's own root, at any depth, with no
+  hidden folder (name starting with `.`) in that real path below the root, so
+  copies under `.trash/` or `.git/` never qualify; only the real path is
+  judged, never the spelling. PATH must be its own v2 project and plane with a
+  different `project_id`. The root, an ancestor, a sibling and a link out of
+  the root are refused, so a child project may write to projects beneath it
+  but never up or across; either plane silenced refuses. Publication holds the
+  project's directory open (walked from the session's root without following a
+  link) and does its lock, journal recovery, journal and both writes through
+  it, rechecking authority, the first-authorized `project_id` and that the name
+  still leads there before anything is created, under the lock and after both
+  writes; a refusal at that commit check restores the directory from its
+  journal and publishes nothing, so a rename or replacement mid-publication
+  never carries a write out of that directory (`memory_v2.publish_bound`).
+  Four accepted limits need a same-user process changing the project's own
+  files mid-publication: an interrupted restore into a replaced `Memory/`, a
+  replaced lock or `Work/session-state/`, a replaced temporary file, and a
+  change after the commit check's last read (docs/session-hub.md). The row is
+  recorded under the nested project's `project_id` with `acting_project_id`
+  and `destination_project_id` in the receipt, so it never makes the session
+  read as saved or answers a close. `--component` refuses `--request` and
+  `--outcome`, `--read --component` also refuses the publication options, and
+  a bad `--detail` is refused before the write. The explicit-save publisher
+  and the single-plane handoff are unchanged. No Git.
+
 ## Unreleased — panel 5.1.0, docs bundle: repository docs and panel decisions are OKF concepts (phase three)
 
 - `docs/` is an OKF v0.2 bundle. Every guide carries `title`, `description`,

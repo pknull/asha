@@ -44,27 +44,40 @@ def publication_actor(project_dir):
 SOURCES = ('explicit-save', 'close', 'handoff', 'attestation')
 
 
-def insert(c, row, source, receipt):
-    """Retain one successful publication or attestation for this incarnation."""
+def insert(c, row, source, receipt, *, destination=None):
+    """Retain one successful publication or attestation for this incarnation.
+
+    ``destination`` names a nested project the session published (#130): the
+    row and receipt carry that project's ``project_id``, so the acting
+    session's own saved readers, which filter by its ``project_id``, never
+    count it.
+    """
     from .session_guidance import canonical
     if source not in SOURCES:
         raise StoreError('unknown publication source')
+    project_id, linkage = row['project_id'], {}
+    if destination is not None:
+        if destination['project_id'] == row['project_id']:
+            raise StoreError('a component publication cannot carry the acting project_id')
+        project_id = destination['project_id']
+        linkage = dict(acting_project_id=row['project_id'], destination_project_id=project_id,
+                       component=destination['path'])
     receipt = dict(receipt, source=source, hub_session_id=row['session_id'], hub_generation=row['generation'],
-                   project_id=row['project_id'])
+                   project_id=project_id, **linkage)
     receipt.setdefault('publication_id', str(uuid.uuid4()))
     c.execute('INSERT INTO hub_memory_publications VALUES(?,?,?,?,?,?,?)',
-              (receipt['publication_id'], row['session_id'], row['generation'], row['project_id'],
+              (receipt['publication_id'], row['session_id'], row['generation'], project_id,
                assignment_epoch(row), time.time(), canonical(receipt)))
     return receipt
 
 
-def record(hub, row, source, receipt):
+def record(hub, row, source, receipt, *, destination=None):
     """Insert a handoff's publication or attestation row for the acting incarnation."""
     from .session_guidance import active_incarnation
     hub.initialize()
     with hub.database() as db, db.transaction(write=True) as c:
         active_incarnation(c, row)
-        return insert(c, row, source, receipt)
+        return insert(c, row, source, receipt, destination=destination)
 
 
 def record_publication(hub, actor, receipt):
