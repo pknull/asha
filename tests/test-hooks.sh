@@ -675,6 +675,28 @@ policy_case rp-invariants-edit '{"tool_name":"Write","tool_input":{"file_path":"
 policy_case rp-canon-layout-edit '{"tool_name":"Edit","tool_input":{"file_path":"/p/Memory/canon-layout.md"}}' allow
 [[ $POLICY_OK -eq 1 ]] && ok "policy matrix preserves destructive guards and v2 Memory boundary"
 
+# #133: delete guidance points at the desktop trash (gio trash), keeping a dated
+# .trash/ staging directory only where gio cannot trash (tmpfs, remote hosts).
+# A plain ~/.trash folder is invisible to the file manager's Empty Trash.
+DELETE_REASON="$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rm -rf build"}}' \
+  | HOME="$HOME_DIR" CLAUDE_PROJECT_DIR="$PROJECT" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" ASHA_HARNESS=claude \
+    "$HANDLERS/policy-guard.sh" 2>&1 >/dev/null)"
+if [[ "$DELETE_REASON" == *"[destructive-delete]"* && "$DELETE_REASON" == *'gio trash'* \
+      && "$DELETE_REASON" == *tmpfs* && "$DELETE_REASON" == *remote* \
+      && "$DELETE_REASON" != *'Prefer moving to a `.trash/` staging dir'* ]]; then
+  ok "destructive-delete guidance prefers gio trash with a tmpfs/remote .trash/ fallback"
+else
+  fail "destructive-delete guidance prefers gio trash with a tmpfs/remote .trash/ fallback: $DELETE_REASON"
+fi
+TRASH_STAGE_OK=1
+[[ "$(policy_decision '{"tool_name":"Bash","tool_input":{"command":"rm -rf /srv/job/.trash/2026-11-03/old"}}')" == allow ]] || TRASH_STAGE_OK=0
+[[ "$(policy_decision '{"tool_name":"Bash","tool_input":{"command":"rm -rf /srv/job/old"}}')" == deny ]] || TRASH_STAGE_OK=0
+# Negative control: the exemption's dot is literal. A wildcard `.trash/` would
+# also exempt this look-alike, which the two probes above cannot tell apart.
+[[ "$(policy_decision '{"tool_name":"Bash","tool_input":{"command":"rm -rf /srv/job/xtrash/old"}}')" == deny ]] || TRASH_STAGE_OK=0
+check "destructive-delete keeps the .trash/ staging exemption" test "$TRASH_STAGE_OK" -eq 1
+
 # require_env rules are inert outside the session that carries the variable.
 # The shipped coordinator rules left with the initiative engine (L-b); a user
 # rule keeps the mechanism covered.
