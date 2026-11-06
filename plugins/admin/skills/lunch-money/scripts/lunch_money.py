@@ -44,7 +44,11 @@ API_BASE = "https://api.lunchmoney.dev/v2"
 API_VERSION = "v2"
 TOKEN_ENV = "LUNCH_MONEY_TOKEN"
 CONVENTIONS_ENV = "LUNCH_MONEY_CONVENTIONS"
-DEFAULT_CONVENTIONS = "~/life/finance/lunch-money-conventions.md"
+# Durable personal data sits under ASHA_HOME (default ~/.asha), never in a repository:
+# <ASHA_HOME>/lunch-money/ holds the optional conventions file and saved attachments,
+# <ASHA_HOME>/state/lunch-money/ the replay ledger.
+DATA_SUBDIR = "lunch-money"
+CONVENTIONS_NAME = "conventions.md"
 USER_AGENT = "asha-lunch-money/0.2"
 HTTP_TIMEOUT_SECONDS = 30
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -85,7 +89,7 @@ MAX_REMOVED_ROWS = 500
 MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024
 DOWNLOAD_TIMEOUT_SECONDS = 60
 MAX_ATTACHMENT_NAME_CHARS = 100
-DEFAULT_SAVE_DIR = ("life", "finance", "lunch-money", "attachments")
+ATTACHMENTS_NAME = "attachments"
 # --match runs in a child process killed after this many seconds: Python's re can
 # backtrack for hours on a pattern like (a+)+$ and cannot be interrupted in-process.
 REGEX_TIMEOUT_SECONDS = 5
@@ -976,8 +980,21 @@ def cmd_balance_history(client: Client, args: argparse.Namespace) -> dict[str, A
     return _out(count=len(history), balance_history=history)
 
 
+def asha_home() -> Path:
+    """ASHA_HOME (empty counts as unset), else ~/.asha: the one root the conventions file,
+    saved attachments and the replay ledger share."""
+    return Path(os.environ.get("ASHA_HOME") or "~/.asha").expanduser()
+
+
+def conventions_path() -> Path:
+    configured = os.environ.get(CONVENTIONS_ENV)
+    if configured:
+        return Path(configured).expanduser()
+    return asha_home() / DATA_SUBDIR / CONVENTIONS_NAME
+
+
 def cmd_conventions(client: Client | None, args: argparse.Namespace) -> dict[str, Any]:
-    path = Path(os.environ.get(CONVENTIONS_ENV) or DEFAULT_CONVENTIONS).expanduser()
+    path = conventions_path()
     result: dict[str, Any] = {"ok": True, "path": str(path), "present": False,
                               "text": None, "writes": "never"}
     try:
@@ -3243,7 +3260,7 @@ def attachment_filename(transaction_id: int, file_id: int, name: Any) -> str:
 
 
 def default_save_dir() -> Path:
-    return Path.home().joinpath(*DEFAULT_SAVE_DIR)
+    return asha_home() / DATA_SUBDIR / ATTACHMENTS_NAME
 
 
 def check_save_dir(path: Path, *, create: bool) -> None:
@@ -4982,8 +4999,7 @@ def default_ledger_path() -> Path:
     configured = os.environ.get("LUNCH_MONEY_LEDGER_PATH")
     if configured:
         return Path(configured).expanduser()
-    asha_home = Path(os.environ.get("ASHA_HOME") or (Path.home() / ".asha"))
-    return asha_home / "state" / "lunch-money" / "replay-ledger.json"
+    return asha_home() / "state" / "lunch-money" / "replay-ledger.json"
 
 
 def _read_ledger(path: Path) -> dict[str, Any]:

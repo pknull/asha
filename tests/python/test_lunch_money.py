@@ -45,6 +45,22 @@ TOKEN = "lm-test-token-0123456789abcdef"
 SYNTHETIC_TOKEN = "Qz7Wx-Rt9Pl-Mn4Kj-8HgFd-2Sa6V-bNc1X-y5UiO-p3Ty7-ReWq0-Lk"
 
 
+_MODULE_HOME: Any = None
+
+
+def setUpModule():
+    """A session exports the real ASHA_HOME: point HOME and ASHA_HOME at a throwaway tree
+    for this module, so no test can resolve a default path into the real home."""
+    global _MODULE_HOME
+    _MODULE_HOME = tempfile.TemporaryDirectory()
+    home = Path(_MODULE_HOME.name)
+    patcher = mock.patch.dict(os.environ, {"HOME": str(home / "home"),
+                                           "ASHA_HOME": str(home / "asha-home")})
+    patcher.start()
+    unittest.addModuleCleanup(_MODULE_HOME.cleanup)
+    unittest.addModuleCleanup(patcher.stop)
+
+
 def assert_no_token_fragment(test, text, token=SYNTHETIC_TOKEN):
     """No 8-character piece of the token survives, in any case."""
     low = text.lower()
@@ -527,10 +543,14 @@ class HelperTestCase(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.dir = Path(self.tmp.name)
         self.ledger = self.dir / "state" / "replay-ledger.json"
+        # ASHA_HOME is set explicitly: a session exports the real one, and run_cli's
+        # cleared environment must never fall back to it or to the real home.
+        self.asha_home = self.dir / "asha-home"
         self.env = {
             "LUNCH_MONEY_TOKEN": TOKEN,
             "LUNCH_MONEY_LEDGER_PATH": str(self.ledger),
             "HOME": str(self.dir / "home"),
+            "ASHA_HOME": str(self.asha_home),
         }
         self.sleeps = []
         for name, value in (("SLEEP", self.sleeps.append),
@@ -2039,7 +2059,7 @@ class BoundaryTests(HelperTestCase):
         self.assertEqual(path.stat().st_mtime_ns, before)
         env.pop("LUNCH_MONEY_CONVENTIONS")
         code, out, _, _ = run_cli("conventions", env=env)
-        self.assertTrue(out["path"].endswith("life/finance/lunch-money-conventions.md"))
+        self.assertEqual(out["path"], str(self.asha_home / "lunch-money" / "conventions.md"))
 
     def test_cli_errors_are_json(self):
         code, _, err, _ = self.cli("delete-transactions")
@@ -2127,6 +2147,7 @@ class RedirectTests(unittest.TestCase):
         # The hostname reaches the message lowercased; cut the token at every offset.
         with tempfile.TemporaryDirectory() as tmp:
             env = {"LUNCH_MONEY_TOKEN": SYNTHETIC_TOKEN, "HOME": tmp,
+                   "ASHA_HOME": str(Path(tmp) / "asha-home"),
                    "LUNCH_MONEY_LEDGER_PATH": str(Path(tmp) / "ledger.json")}
             for k in range(len(SYNTHETIC_TOKEN) + 1):
                 parts = [p for p in (SYNTHETIC_TOKEN[:k], SYNTHETIC_TOKEN[k:]) if p]
@@ -2575,7 +2596,7 @@ class ReviewFindingsTests(HelperTestCase):
 # (the Keeper's ruling 2026-11-05 on review #5 and #8)
 
 
-SAVE_SUBDIR = ("life", "finance", "lunch-money", "attachments")
+SAVE_SUBDIR = ("lunch-money", "attachments")  # under ASHA_HOME
 
 
 class RemovalFixture(HelperTestCase):
@@ -2601,7 +2622,7 @@ class RemovalFixture(HelperTestCase):
         api.attach(10, 502, "../../photo of slip.JPG", b"\xff\xd8" * 1536, "image/jpeg")
         api.attach(1, 509, "parent.pdf", b"P" * 2048)  # the parent's own file stays
         api.attach(20, 601, "group.pdf", b"G" * 5120)
-        self.save_dir = self.dir.joinpath("home", *SAVE_SUBDIR)
+        self.save_dir = self.asha_home.joinpath(*SAVE_SUBDIR)
         return api
 
     def unsplit(self, *extra):
@@ -3688,6 +3709,152 @@ class RegexTimeoutTests(HelperTestCase):
                     continue
                 plan, _ = self.plan(*argv)
                 self.assertEqual(sorted(r["id"] for r in plan["operation"]["rows"]), expected)
+
+
+# ---------------------------------------------------------------------------
+# One ASHA_HOME holds the conventions, saved attachments and the replay ledger, and no
+# shipped file names the Keeper's private tree outside it.
+
+_LIFE = "li" "fe"  # spelled apart so this file never carries the literal it guards against
+OLD_PRIVATE_PATH = re.compile(
+    rf"~/{_LIFE}\b|\$\{{?HOME\}}?/{_LIFE}\b|[\"']{_LIFE}[\"']|\b{_LIFE}/finance\b")
+
+
+def private_tree(home):
+    """Every directory and file under home, with its mode (what a run created there)."""
+    return {str(p.relative_to(home)): stat.S_IMODE(p.stat().st_mode)
+            for p in sorted(Path(home).rglob("*"))}
+
+
+class AshaHomeTests(RemovalFixture):
+    def setUp(self):
+        super().setUp()
+        del self.env["LUNCH_MONEY_LEDGER_PATH"]  # the default ledger is under test here
+
+    def defaults(self, env):
+        code, conventions, err, _ = run_cli("conventions", env=env)
+        self.assertEqual(code, 0, err)
+        code, plan, err, _ = run_cli("plan-unsplit", "--id", "10", env=env)
+        self.assertEqual(code, 0, err)
+        return conventions["path"], plan
+
+    def apply_with(self, env, plan, name):
+        path = self.write_private(name, plan)
+        code, out, err, _ = run_cli("apply", "--plan", str(path), "--plan-hash",
+                                    plan["plan_hash"], env=env)
+        self.assertEqual((code, (out or {}).get("status")), (0, "applied"), out or err)
+        return out
+
+    def test_ah1_conventions_attachments_and_ledger_share_asha_home(self):
+        conventions, plan = self.defaults(self.env)
+        root = self.asha_home
+        self.assertEqual(conventions, str(root / "lunch-money" / "conventions.md"))
+        self.assertEqual(plan["operation"]["attachments"]["directory"],
+                         str(root / "lunch-money" / "attachments"))
+        self.assertFalse(root.exists())  # reading and planning create nothing
+        out = self.apply_with(self.env, plan, "plan.json")
+        self.assertEqual([Path(s["path"]).parent for s in out["saved"]],
+                         [root / "lunch-money" / "attachments"] * 2)
+        self.assertTrue((root / "state" / "lunch-money" / "replay-ledger.json").is_file())
+        tree = private_tree(root)
+        for directory in ("lunch-money", "lunch-money/attachments", "state",
+                          "state/lunch-money"):
+            self.assertEqual(tree[directory], 0o700, directory)
+        self.assertEqual(stat.S_IMODE(root.stat().st_mode), 0o700)  # created by apply
+        self.assertFalse((self.dir / "home").exists())  # nothing under HOME
+        with mock.patch.dict(os.environ, self.env, clear=True):
+            self.assertEqual(lm.asha_home(), root)
+            self.assertEqual(lm.default_save_dir(), root / "lunch-money" / "attachments")
+            self.assertEqual(lm.default_ledger_path(),
+                             root / "state" / "lunch-money" / "replay-ledger.json")
+        (root / "lunch-money" / "conventions.md").write_text("Coffee goes to Dining.\n")
+        code, out, _, _ = run_cli("conventions", env=self.env)
+        self.assertEqual((code, out["present"], out["text"]),
+                         (0, True, "Coffee goes to Dining.\n"))
+
+    def test_ah2_an_existing_asha_home_keeps_its_mode_and_new_directories_are_0700(self):
+        self.asha_home.mkdir(mode=0o755)
+        self.asha_home.chmod(0o755)
+        _, plan = self.defaults(self.env)
+        self.assertEqual(private_tree(self.asha_home), {})  # planning creates nothing
+        self.apply_with(self.env, plan, "plan.json")
+        tree = private_tree(self.asha_home)
+        self.assertEqual((tree["lunch-money"], tree["lunch-money/attachments"]),
+                         (0o700, 0o700))
+        self.assertEqual(stat.S_IMODE(self.asha_home.stat().st_mode), 0o755)
+
+    def test_ah3_empty_or_unset_asha_home_falls_back_to_dot_asha_in_home(self):
+        for case, value in enumerate(("", None)):
+            with self.subTest(asha_home=value):
+                self.fresh()
+                home = self.dir / f"home-{case}"
+                env = {**self.env, "HOME": str(home)}
+                if value is None:
+                    del env["ASHA_HOME"]
+                else:
+                    env["ASHA_HOME"] = value
+                root = home / ".asha"
+                conventions, plan = self.defaults(env)
+                self.assertEqual(conventions, str(root / "lunch-money" / "conventions.md"))
+                self.assertEqual(plan["operation"]["attachments"]["directory"],
+                                 str(root / "lunch-money" / "attachments"))
+                self.apply_with(env, plan, f"plan-{case}.json")
+                self.assertTrue((root / "state" / "lunch-money" / "replay-ledger.json").is_file())
+                tree = private_tree(home)
+                for directory in (".asha", ".asha/lunch-money", ".asha/lunch-money/attachments"):
+                    self.assertEqual(tree[directory], 0o700, directory)
+                self.assertFalse(self.asha_home.exists())
+                with mock.patch.dict(os.environ, env, clear=True):
+                    self.assertEqual(lm.asha_home(), root)
+
+    def test_ah4_a_tilde_in_asha_home_means_the_home_directory(self):
+        env = {**self.env, "ASHA_HOME": "~/alt-asha"}
+        conventions, plan = self.defaults(env)
+        root = self.dir / "home" / "alt-asha"
+        self.assertEqual(conventions, str(root / "lunch-money" / "conventions.md"))
+        self.assertEqual(plan["operation"]["attachments"]["directory"],
+                         str(root / "lunch-money" / "attachments"))
+
+    def test_ah5_overrides_still_win(self):
+        conventions_file = self.dir / "elsewhere" / "conventions.md"
+        chosen = self.dir / "chosen"
+        ledger = self.dir / "ledger" / "replay-ledger.json"
+        env = {**self.env, "LUNCH_MONEY_CONVENTIONS": str(conventions_file),
+               "LUNCH_MONEY_LEDGER_PATH": str(ledger)}
+        code, out, _, _ = run_cli("conventions", env=env)
+        self.assertEqual((code, out["path"]), (0, str(conventions_file)))
+        code, plan, err, _ = run_cli("plan-unsplit", "--id", "10", "--save-dir", str(chosen),
+                                     env=env)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(plan["operation"]["attachments"]["directory"], str(chosen))
+        out = self.apply_with(env, plan, "plan.json")
+        self.assertEqual({Path(s["path"]).parent for s in out["saved"]}, {chosen})
+        self.assertTrue(ledger.is_file())
+        self.assertFalse(self.asha_home.exists())  # nothing written under ASHA_HOME
+        self.assertFalse((self.dir / "home").exists())
+
+    def test_ah6_no_shipped_file_names_the_old_private_path(self):
+        for sample in (f"~/{_LIFE}/finance/x.md", f'("{_LIFE}", "finance")',
+                       f"$HOME/{_LIFE}/x", f"{_LIFE}/finance"):
+            self.assertRegex(sample, OLD_PRIVATE_PATH)
+        for sample in ("plan lifetime", "~/.asha/lunch-money/attachments", "real-life"):
+            self.assertNotRegex(sample, OLD_PRIVATE_PATH)
+        root = Path(__file__).parents[2]
+        skill = SCRIPT.parents[1]
+        files = [p for p in sorted(skill.rglob("*"))
+                 if p.is_file() and "__pycache__" not in p.parts]
+        files.append(root / "secrets.example")
+        names = {str(p.relative_to(root)) for p in files}
+        for required in ("plugins/admin/skills/lunch-money/SKILL.md",
+                         "plugins/admin/skills/lunch-money/references/api.md",
+                         "plugins/admin/skills/lunch-money/scripts/lunch_money.py",
+                         "secrets.example"):
+            self.assertIn(required, names)
+        for path in files:
+            text = path.read_text(encoding="utf-8")
+            for number, line in enumerate(text.splitlines(), 1):
+                self.assertNotRegex(line, OLD_PRIVATE_PATH,
+                                    f"{path.relative_to(root)}:{number}")
 
 
 if __name__ == "__main__":

@@ -129,10 +129,11 @@ at `~/.asha/index.md`; the learnings index declares none.
 
 The files live in the dotfiles stow module and reach `~/.asha` through
 symlinks, which the walker follows. Runtime trees beside them (`cache/`,
-`chair/`, `chat/`, `state/`, `workspaces/`, `session-state/`, backups) are not
-concepts: `~/.asha/.okfignore` scopes them out for every tool, and a pass is
-reported for the admitted set only (a concept linked solely from an excluded
-file lints as an orphan; a link into an excluded file is not broken).
+`chair/`, `chat/`, `lunch-money/`, `state/`, `workspaces/`, `session-state/`,
+backups) are not concepts: `~/.asha/.okfignore` scopes them out for every
+tool, and a pass is reported for the admitted set only (a concept linked
+solely from an excluded file lints as an orphan; a link into an excluded file
+is not broken).
 
 `asha doctor` is this bundle's gate: once the root index exists it runs the
 strict validator and the index drift check and fails on either. Regenerate

@@ -44,10 +44,10 @@
 - Unsplit and ungroup plans list every row they delete with all its fields and
   attachments, refuse on any drift in those rows, the restored parent or the
   members, and save every attachment before the `DELETE` (on by default, to
-  `~/life/finance/lunch-money/attachments/` or `--save-dir`; fetched through a
-  fresh signed link by a separate client that sends no token, accepts https
-  only, follows no redirect, times out and stops at 10 MiB; written new, 0600,
-  synced). A failed save stops before the `DELETE`; `--no-save-attachments`
+  `${ASHA_HOME:-~/.asha}/lunch-money/attachments/`, created `0700`, or
+  `--save-dir`; fetched through a fresh signed link by a separate client that
+  sends no token, accepts https only, follows no redirect, times out and stops
+  at 10 MiB; written new, 0600, synced). A failed save stops before the `DELETE`; `--no-save-attachments`
   names the files that will be lost in the plan's `attachments_lost`.
 - Hardened after an independent review: redirects are never followed, so the
   token reaches only `api.lunchmoney.dev`; API errors are redacted before
@@ -82,9 +82,12 @@
   redaction works inside the result before serialization, so output always
   parses.
 - The optional conventions file (`LUNCH_MONEY_CONVENTIONS`, default
-  `~/life/finance/lunch-money-conventions.md`) is read, never written. Lunch
-  Money text is untrusted data; the helper keeps no cache, and its replay
-  ledger holds only nonces, hashes and timestamps.
+  `${ASHA_HOME:-~/.asha}/lunch-money/conventions.md`) is read, never written.
+  Lunch Money text is untrusted data; the helper keeps no cache, and its
+  replay ledger (`${ASHA_HOME:-~/.asha}/state/lunch-money/`) holds only
+  nonces, hashes and timestamps. Its personal data lives under one
+  `ASHA_HOME` like the other skills', and a source test keeps the Keeper's
+  private tree out of the skill and `secrets.example`.
 
 ## Unreleased — a session publishes a nested project's Memory (#130)
 
