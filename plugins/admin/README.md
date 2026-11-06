@@ -1,6 +1,6 @@
 # Admin Plugin
 
-**Version**: 0.3.2
+**Version**: 0.4.0
 
 Direct integrations for personal administration, grounded search, computation, and knowledge management.
 
@@ -16,6 +16,7 @@ Use gemini to find current primary sources for this claim.
 Use wolfram to verify this calculation.
 Use bookstack to find the deployment runbook.
 Use proton-mail to search for the invoice, but do not send anything.
+Use lunch-money to review last month's unreviewed transactions.
 ```
 
 The same request form works on Claude, Codex, Copilot, and OpenCode. Skill names may be
@@ -29,6 +30,7 @@ remain available to natural-language routing.
 | `bookstack` | Search and manage a BookStack instance through its REST API | `BOOKSTACK_BASE_URL`, `BOOKSTACK_API_TOKEN` |
 | `gemini` | Single-shot Google-grounded search with citations | Gemini API credentials documented by the skill |
 | `keybase` | List, create, delete and gc Keybase encrypted git repos; Keybase vs GitHub | Keybase client logged in, service running |
+| `lunch-money` | Review, categorize and analyse Lunch Money finances through its v2 REST API: suggestions, categorizing with new categories in one plan, pattern recategorizing, payee, date and recurring-item edits, splits, groups, categories, tags, budgets, Plaid fetch, subscription, missed-bill, duplicate, budget-burn and net-worth reads; every write a confirmed plan, drift-checked just before it is sent and verified after; only unsplit and ungroup delete rows, saving their attachments first | `LUNCH_MONEY_TOKEN`; optional `LUNCH_MONEY_CONVENTIONS` |
 | `proton-mail` | Read and manage Proton Mail through localhost-only Proton Mail Bridge IMAP/SMTP | `PROTON_BRIDGE_USERNAME`, `PROTON_BRIDGE_PASSWORD`; optional CA certificate |
 | `todoist` | Create, find, update, and complete Todoist tasks | `TODOIST_API_TOKEN` |
 | `wolfram` | Computational and factual queries through Wolfram | Wolfram credentials documented by the skill |

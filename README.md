@@ -307,7 +307,7 @@ lifecycle callback into a semantic save.
 | **Creative** | `rp` | Live roleplay lifecycle, continuity gating, and canon ratification |
 | **Tabletop** | `rpg` | Tabletop RPG rules and mechanics help (odds, design, encounters, builds, rulings, oracles) and library management |
 | **Image** | `image` | Local ComfyUI workflows and on-demand paid fal.ai generation |
-| **Integrations** | `admin` | Todoist, grounded search, computation, knowledge, and mail integrations |
+| **Integrations** | `admin` | Todoist, grounded search, computation, knowledge, mail, and Lunch Money finance integrations |
 | **Infrastructure** | `devops` | Owned-host inspection, read-only UniFi discovery, and explicitly authorized infrastructure changes |
 | **Security** | `security` | Web-application security review patterns |
 | **Tooling** | `test` | Installer canary primitives |
@@ -326,7 +326,7 @@ The owning guide below is the catalogue for each plugin.
 | `rpg` | Name the required skill, or `rpg-router` | Exact odds, mechanic and encounter design, character checks, rulings and oracles for any system; DriveThruRPG library audit, fetch and placement | [RPG guide](plugins/rpg/README.md) |
 | `image` | `image-generation` or `image-fal` skill | Stable Diffusion prompts and ComfyUI workflows (local first); priced, user-approved fal.ai images, sprites, textures, 3D, rigging, audio and video | [Image guide](plugins/image/README.md) |
 | `okf` | `okf-bundle` skill; `plugins/okf/tools/okf_validate.py BUNDLE --strict` | Open Knowledge Format bundles: pinned v0.2 validator and visualizer, generated indexes and logs, the strict gate the learnings store runs through | [OKF guide](plugins/okf/README.md) |
-| `admin` | Name the required skill | Todoist, Gemini, Wolfram, BookStack, and Proton Mail operations | [Admin guide](plugins/admin/README.md) |
+| `admin` | Name the required skill | Todoist, Gemini, Wolfram, BookStack, Proton Mail, and Lunch Money operations | [Admin guide](plugins/admin/README.md) |
 | `devops` | `devops-inspect`, `devops-unifi`, or `devops-change` skill | Inspect owned hosts, read UniFi inventory and health, or execute authorized changes with preflight, recovery, and verification | [DevOps guide](plugins/devops/README.md) |
 | `security` | `security-review` skill | Security-sensitive implementation and review | [Security guide](plugins/security/README.md) |
 | `asha` | `asha <harness>`; `asha-reference` when needed | Compact identity and task-selected private reference material | [Identity guide](plugins/asha/README.md) |
@@ -489,7 +489,7 @@ asha/
 ├── lib/                          # install/uninstall/doctor/build/init-repo engines
 ├── namespaces.json               # plugin dir → command namespace map (panel → panel-system)
 ├── plugins/
-│   ├── admin/                    # skills/ (bookstack, gemini, proton-mail, todoist, wolfram)
+│   ├── admin/                    # skills/ (bookstack, gemini, lunch-money, proton-mail, todoist, wolfram)
 │   ├── asha/                     # compact identity templates + on-demand reference skill
 │   ├── code/                     # development workflows and specialists
 │   ├── devops/                   # skills/ (inspect, unifi, change); infrastructure procedures

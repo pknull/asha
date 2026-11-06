@@ -1,5 +1,91 @@
 # Changelog
 
+## Unreleased — admin 0.4.0: lunch-money skill for review and categorization
+
+- New `admin-lunch-money` skill (`plugins/admin/skills/lunch-money`) and a
+  stdlib helper, `scripts/lunch_money.py`, for the Lunch Money v2 REST API
+  (`https://api.lunchmoney.dev/v2`, token from `LUNCH_MONEY_TOKEN` exported by
+  the secrets wrapper; `secrets.example` carries the placeholder). It reaches
+  feature parity with the public pp-lunch-money CLI (Apache-2.0; ideas cited,
+  no code vendored) without its local database: every read is live.
+- Reads: user, categories, tags, manual and Plaid accounts, crypto,
+  transactions (date range, status, category, uncategorized, account and tag
+  filters, offset paging), one transaction with children and attachment
+  metadata, attachment download URLs, recurring items, the budget summary,
+  budget settings and balance history.
+- Analyses: category suggestions from the Keeper's reviewed history of the same
+  normalized payee; suspected subscriptions (regular cadence, not linked to a
+  recurring item); missed bills from the API's missing recurring dates;
+  near-duplicate clusters; linear budget burn; changes since a time; stale
+  manual balances; net worth at a date by balance-history carry-forward.
+- Writes, each a hash-bound, expiring, single-use plan of before and after rows
+  bound to the budget account and user the token reaches, applied only after
+  the Keeper confirms its hash, refused whole when any row or precondition
+  drifted (a drift check immediately before the write; the API has no
+  conditional write, so an edit landing between that read and the write is
+  overwritten), then verified field by field by re-reading:
+  transaction category, tags, review status, notes, payee and linked recurring
+  item by id, changes file or payee/notes pattern, and the date by id or
+  changes file only (a new payee is one line of at most 140 characters; a date
+  more than a week ahead is flagged in the plan; a recurring item, reviewed or
+  suggested, must exist at plan and at apply; amount, currency, account and
+  metadata stay unchangeable); categorizing that creates any missing category first and
+  assigns it in the same plan (a new name colliding with any existing or
+  archived category is refused with its id; a failed creation stops before any
+  assignment); category and group create and update; tag create and
+  update; split and unsplit; group and ungroup; manual and cash transaction
+  creation (never applying rules or updating balances); a category's budget
+  for one period; a queued Plaid fetch. An uncertain outcome is never retried.
+- The client refuses any method and path outside a fixed write allowlist before
+  sending, so accounts, balances, balance history and crypto are never written
+  and only two writes delete anything: unsplit deletes a split's children and
+  ungroup deletes a group transaction. Transaction rules are not supported: the
+  public v2 and v1 APIs expose none.
+- Unsplit and ungroup plans list every row they delete with all its fields and
+  attachments, refuse on any drift in those rows, the restored parent or the
+  members, and save every attachment before the `DELETE` (on by default, to
+  `~/life/finance/lunch-money/attachments/` or `--save-dir`; fetched through a
+  fresh signed link by a separate client that sends no token, accepts https
+  only, follows no redirect, times out and stops at 10 MiB; written new, 0600,
+  synced). A failed save stops before the `DELETE`; `--no-save-attachments`
+  names the files that will be lost in the plan's `attachments_lost`.
+- Hardened after an independent review: redirects are never followed, so the
+  token reaches only `api.lunchmoney.dev`; API errors are redacted before
+  truncation; apply refuses a plan made for another budget account; assigned
+  categories and tags are re-checked at apply; categorizing re-checks the
+  transactions after creating categories and reports every category seen to
+  exist; created transactions are matched one to one on every field; split
+  children are sent and verified field by field; an all-account Plaid fetch
+  refuses an added account; an incomplete duplicate scan refuses; the replay
+  ledger's directory is synced; `--match` runs with a 5-second timeout; names
+  compare after Unicode NFKC; subscriptions group by currency; budget burn
+  counts spending only through `--as-of`; net worth uses today's balances and
+  keeps closed accounts' history; `changed` converts offsets to UTC;
+  duplicates compare only within the window; plans and errors carry the
+  untrusted-data marker.
+- A second review round: a created transaction in a Plaid or another manual
+  account never satisfies a planned row; redaction removes the token in any
+  case and every piece of it 8 or more characters long, before any truncation
+  or lowercasing; categorizing re-checks the categories it just created
+  before assigning them, and any failure after a creation returns the
+  structured partial result; new ledger and attachment directories are made
+  durable; duplicates cluster in near-linear time on dense same-day input
+  (20,000 rows in well under a second) with unchanged results.
+- A third review round: an attachment save counts only on HTTP 200 with no
+  `Content-Range` and a body of exactly the size Lunch Money gives (never
+  empty unless it says 0; without a size, a matching `Content-Length` is
+  required), else the plan stops before its `DELETE`; every attachment field,
+  notes included, is listed, hashed, checked for drift and saved in a
+  `<file>.json` sidecar, and a failed save lists any file it left on disk in
+  `failed.left_on_disk`; the ledger and attachment directories and all their
+  ancestors are synced on every apply; removed rows are confirmed gone by id;
+  redaction works inside the result before serialization, so output always
+  parses.
+- The optional conventions file (`LUNCH_MONEY_CONVENTIONS`, default
+  `~/life/finance/lunch-money-conventions.md`) is read, never written. Lunch
+  Money text is untrusted data; the helper keeps no cache, and its replay
+  ledger holds only nonces, hashes and timestamps.
+
 ## Unreleased — a session publishes a nested project's Memory (#130)
 
 - `asha control session handoff --component PATH` publishes, and
