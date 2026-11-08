@@ -88,6 +88,11 @@
   nonces, hashes and timestamps. Its personal data lives under one
   `ASHA_HOME` like the other skills', and a source test keeps the Keeper's
   private tree out of the skill and `secrets.example`.
+- The `--match` search child caps its own CPU time (`RLIMIT_CPU`, one second
+  past the timeout and never looser than an inherited limit; SIGKILL at the
+  limit on Linux) (#142). The parent's timeout stops it only while the parent
+  lives: a child whose parent died mid-search had been adopted by init and
+  spun at 100% CPU until a restart.
 
 ## Unreleased — a session publishes a nested project's Memory (#130)
 

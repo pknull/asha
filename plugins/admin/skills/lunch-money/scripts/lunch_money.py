@@ -93,8 +93,22 @@ ATTACHMENTS_NAME = "attachments"
 # --match runs in a child process killed after this many seconds: Python's re can
 # backtrack for hours on a pattern like (a+)+$ and cannot be interrupted in-process.
 REGEX_TIMEOUT_SECONDS = 5
+# The parent's timeout acts only while the parent lives, so the child also caps its own
+# CPU time (#142), a second past the timeout so a live parent stops it first with its
+# own message, and never looser than a limit it inherited. Soft equal to hard: Linux
+# sends SIGKILL at the hard limit; elsewhere the soft limit's SIGXCPU, restored to its
+# default and unblocked, ends it. A limit that cannot be set leaves only the timeout.
 _REGEX_CHILD = (
     "import json, re, sys\n"
+    "try:\n"
+    "    import resource, signal\n"
+    "    cap = min(n for n in (int(sys.argv[1]), *resource.getrlimit(resource.RLIMIT_CPU))\n"
+    "              if n != resource.RLIM_INFINITY)\n"
+    "    resource.setrlimit(resource.RLIMIT_CPU, (cap, cap))\n"
+    "    signal.signal(signal.SIGXCPU, signal.SIG_DFL)\n"
+    "    signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGXCPU})\n"
+    "except (ImportError, AttributeError, OSError, ValueError):\n"
+    "    pass\n"
     "job = json.loads(sys.stdin.read())\n"
     "rx = re.compile(job['pattern'], re.IGNORECASE if job['ignore_case'] else 0)\n"
     "print(json.dumps([i for i, texts in enumerate(job['texts'])"
@@ -4472,8 +4486,9 @@ def match_texts(pattern: str, ignore_case: bool, texts: list[list[str]]) -> list
     """Indices of the entries where any text matches, searched in a child process with
     a hard timeout so no pattern can hang planning."""
     job = json.dumps({"pattern": pattern, "ignore_case": ignore_case, "texts": texts})
+    cpu_limit = math.ceil(REGEX_TIMEOUT_SECONDS) + 1
     try:
-        proc = subprocess.run([sys.executable, "-I", "-S", "-c", _REGEX_CHILD],
+        proc = subprocess.run([sys.executable, "-I", "-S", "-c", _REGEX_CHILD, str(cpu_limit)],
                               input=job.encode("ascii"), capture_output=True, env={},
                               timeout=REGEX_TIMEOUT_SECONDS, check=False)
     except subprocess.TimeoutExpired:
