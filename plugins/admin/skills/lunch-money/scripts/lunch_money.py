@@ -5082,14 +5082,26 @@ def make_private_dirs(path: Path) -> None:
         _fsync_dir(directory.parent)
 
 
+# What a directory sync answers when it cannot be done at all: the directory cannot be
+# opened (not readable by the Keeper) or its filesystem does not sync directories (a
+# read-only or system mount). Any other error, such as EIO or ENOSPC, is a failed sync.
+_UNSYNCABLE_DIR_ERRORS = frozenset(
+    getattr(errno, name) for name in
+    ("EACCES", "EPERM", "EBADF", "EINVAL", "EROFS", "ENOTSUP", "EOPNOTSUPP")
+    if hasattr(errno, name))
+
+
 def sync_dir_chain(path: Path) -> None:
     """Sync path and every ancestor, on every use: a directory made by a run that stopped
     before syncing its parent is made durable by the next one. A directory that is not
-    the Keeper's own and refuses a sync (a read-only or system mount) is passed over."""
+    the Keeper's own and cannot be synced at all is passed over; a sync that fails
+    (#138: EIO, ENOSPC) stops the write, wherever it happens."""
     for directory in (path, *path.parents):
         try:
             _fsync_dir(directory)
-        except OSError:
+        except OSError as exc:
+            if exc.errno not in _UNSYNCABLE_DIR_ERRORS:
+                raise
             try:
                 owned = os.stat(directory).st_uid == os.getuid()
             except OSError:

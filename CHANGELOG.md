@@ -126,6 +126,12 @@
   needs a `Content-Length: 0`, since a size of 0 can be a file under 1 KB and a
   cut close-delimited reply arrives empty. HTTP 200 and no `Content-Range` are
   unchanged, so the coarser reading never vouches for a partial body.
+- A failed sync of an ancestor directory that is not the Keeper's own now stops
+  the plan (#138). Every error there had been passed over, `EIO` included, so
+  with a failing `/tmp` sync an unsplit still applied and sent its `DELETE`.
+  Only an ancestor that cannot be synced at all is passed over, on `EACCES`,
+  `EPERM`, `EINVAL`, `EROFS`, `EBADF` or `ENOTSUP` from opening or syncing it
+  (not readable by the Keeper, or a filesystem without directory sync).
 
 ## Unreleased — a session publishes a nested project's Memory (#130)
 
