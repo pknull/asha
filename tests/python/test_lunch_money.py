@@ -3043,6 +3043,10 @@ class DownloadMechanismTests(unittest.TestCase):
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
+                if self.path == "/empty-unsized":  # close-delimited, as a cut reply reads
+                    self.send_response(200)
+                    self.end_headers()
+                    return
                 if self.path == "/declared-big":
                     self.send_response(200)
                     self.send_header("Content-Length", "5000")
@@ -3147,6 +3151,25 @@ class DownloadMechanismTests(unittest.TestCase):
         self.assertEqual(len(lm.download_attachment(f"{self.base}/file", expected_size=3000)), 3000)
         self.assertEqual(len(lm.download_attachment(f"{self.base}/file", expected_size=None)), 3000)
         self.assertEqual(len(lm.download_attachment(f"{self.base}/unsized", expected_size=3000)), 3000)
+
+    def test_d7_a_kilobyte_size_counts_only_with_a_matching_content_length(self):
+        # 3,000 bytes: 2.93 KiB or 3 kB, so 2 or 3 in kilobytes (#137).
+        for size in (2, 3):
+            with self.subTest(size=size):
+                self.assertEqual(len(lm.download_attachment(f"{self.base}/file",
+                                                            expected_size=size)), 3000)
+        for path, size, pattern in (("/unsized", 3, "Content-Length"), ("/file", 1, "nor 1 KB"),
+                                    ("/file", 4, "nor 4 KB"), ("/partial", 3, "206"),
+                                    ("/range200", 2, "Content-Range"),
+                                    ("/empty-unsized", 0, "empty.*Content-Length")):
+            with self.subTest(path=path, size=size):
+                with self.assertRaisesRegex(lm.TransportError, pattern):
+                    lm.download_attachment(f"{self.base}{path}", expected_size=size)
+        # A size matching neither unit never suggests a Content-Length would have helped.
+        with self.assertRaises(lm.TransportError) as caught:
+            lm.download_attachment(f"{self.base}/unsized", expected_size=9)
+        self.assertNotIn("Content-Length", str(caught.exception))
+        self.assertEqual(lm.download_attachment(f"{self.base}/empty", expected_size=0), b"")
 
     def test_d5_a_slow_host_times_out(self):
         with mock.patch.object(lm, "DOWNLOAD_TIMEOUT_SECONDS", 0.3):
@@ -4017,6 +4040,80 @@ class AshaHomeTests(RemovalFixture):
             for number, line in enumerate(text.splitlines(), 1):
                 self.assertNotRegex(line, OLD_PRIVATE_PATH,
                                     f"{path.relative_to(root)}:{number}")
+
+
+# ---------------------------------------------------------------------------
+# #137: the schema gives an attachment's size in kilobytes
+
+
+class KilobyteSizeTests(RemovalFixture):
+    """The schema says `size` is in kilobytes and its example reads as bytes; the
+    Keeper's account has no attachment to settle it. A complete download is saved when
+    the size matches it in either unit; completeness is still proven by HTTP 200, no
+    Content-Range and an exact Content-Length."""
+
+    def test_kb_a_size_in_kilobytes_saves_and_the_delete_follows(self):
+        self.api.files[10][0]["size"] = 4  # receipt.pdf is 4,096 bytes
+        self.api.files[10][1]["size"] = 3  # the photo is 3,072 bytes
+        plan, path = self.unsplit()
+        out = self.assert_applied(plan, path)
+        self.assertEqual([(s["file_id"], s["bytes"]) for s in out["saved"]],
+                         [(501, 4096), (502, 3072)])
+        self.assertEqual((self.save_dir / "10-501-receipt.pdf").read_bytes(),
+                         self.api.blobs[501])
+        self.assertEqual(len(self.deletes()), 1)
+        self.assertNotIn(10, self.api.transactions)
+
+    def test_kb_only_the_four_roundings_match_never_the_band_between(self):
+        # 100,000 bytes: 97.66 KiB (97 or 98) or 100 kB exactly; 99 is no rounding.
+        accepted = {s for s in range(0, 200) if lm.kilobyte_size_matches(100_000, s)}
+        self.assertEqual(accepted, {97, 98, 100})
+        self.assertEqual({s for s in range(0, 10) if lm.kilobyte_size_matches(0, s)}, {0})
+        self.assertEqual({s for s in range(0, 10) if lm.kilobyte_size_matches(4096, s)}, {4, 5})
+
+    def test_kb_ungroup_saves_with_a_size_in_kilobytes(self):
+        self.api.files[20][0]["size"] = 5  # group.pdf is 5,120 bytes
+        plan, path = self.plan("plan-ungroup", "--id", "20")
+        out = self.assert_applied(plan, path)
+        self.assertEqual([(s["file_id"], s["bytes"]) for s in out["saved"]], [(601, 5120)])
+
+    def test_kb_either_kilobyte_and_either_rounding_is_accepted(self):
+        # 4,096 bytes is 4 KiB exactly and 4.096 kB, so 4 or 5 (rounded up).
+        for size in (4, 5):
+            with self.subTest(size=size):
+                api = self.fresh()
+                api.files[10][0]["size"] = size
+                plan, path = self.unsplit("--save-dir", str(self.dir / f"kb-{size}"))
+                out = self.assert_applied(plan, path)
+                self.assertEqual(out["saved"][0]["bytes"], 4096)
+
+    def test_kb_a_size_matching_neither_unit_aborts_before_the_delete(self):
+        for size in (3, 6, 4095, 4097):
+            with self.subTest(size=size):
+                api = self.fresh()
+                api.files[10][0]["size"] = size
+                plan, path = self.unsplit("--save-dir", str(self.dir / f"neither-{size}"))
+                out = self.assert_aborted(plan, path, "save-attachments", [])
+                self.assertRegex(out["detail"], f"4096 bytes, not the {size} bytes")
+                self.assertIn(10, self.api.transactions)
+
+    def test_kb_a_kilobyte_size_never_vouches_for_an_unchecked_body(self):
+        cases = [
+            ("no Content-Length", "no-length", "Content-Length"),
+            ("206 partial", "partial", "206"),
+            ("short read", "short", "bytes"),
+            ("empty body", "empty", "0 bytes"),
+        ]
+        for name, mode, pattern in cases:
+            with self.subTest(case=name):
+                api = self.fresh()
+                api.files[10][0]["size"] = 4
+                self.file_host.fail[501] = mode
+                plan, path = self.unsplit("--save-dir", str(self.dir / f"unchecked-{mode}"))
+                out = self.assert_aborted(plan, path, "save-attachments", [])
+                self.assertEqual(out["failed"]["file_id"], 501)
+                self.assertRegex(out["detail"], pattern)
+                self.assertIn(10, self.api.transactions)
 
 
 if __name__ == "__main__":

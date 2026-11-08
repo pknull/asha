@@ -3353,12 +3353,22 @@ def _download_open(request: Request, timeout: float) -> Any:
     return opener.open(request, timeout=timeout)
 
 
+def kilobyte_size_matches(count: int, size: int) -> bool:
+    """Whether size is count bytes in kilobytes of 1000 or 1024 bytes, rounded down or
+    up (#137: the schema says kilobytes, its example reads as bytes). Exactly those four
+    roundings, never the band between them."""
+    return size in {count // unit for unit in (1000, 1024)} | {-(-count // unit)
+                                                            for unit in (1000, 1024)}
+
+
 def download_attachment(url: Any, *, expected_size: int | None) -> bytes:
     """Fetch one signed attachment link: https only, no Authorization header (the token
     never leaves for the file host), no redirects, a timeout and a size cap. Only a
-    complete reply is accepted: HTTP 200 with no Content-Range, a body of exactly the
-    size Lunch Money gives (in bytes), and never an empty body unless that size is 0.
-    Without a size from Lunch Money, a Content-Length is required and must match."""
+    complete reply is accepted: HTTP 200 with no Content-Range, and a body matching the
+    size Lunch Money gives, read as bytes (exactly) or, only when a Content-Length
+    matched the body, as kilobytes; an empty body only when that size is 0 and a
+    Content-Length of 0 declares it. Without a size from Lunch Money, a Content-Length
+    is required and must match."""
     parts = urlsplit(url) if isinstance(url, str) else None
     if parts is None or parts.scheme != "https" or not parts.hostname:
         raise TransportError("the attachment link is not an https URL; nothing was downloaded")
@@ -3400,9 +3410,20 @@ def download_attachment(url: Any, *, expected_size: int | None) -> bytes:
         raise TransportError(f"the attachment sent {len(data)} bytes, not the {length} "
                              "bytes it declared")
     if expected_size is not None:
-        if len(data) != expected_size:
-            raise TransportError(f"the attachment is {len(data)} bytes, not the "
-                                 f"{expected_size} bytes Lunch Money gives")
+        # length, when present, already equals len(data): only then can the coarser
+        # kilobyte reading vouch for the body.
+        kilobytes = kilobyte_size_matches(len(data), expected_size)
+        if len(data) != expected_size and not (length is not None and kilobytes):
+            raise TransportError(
+                f"the attachment is {len(data)} bytes, not the {expected_size} bytes Lunch "
+                f"Money gives, nor {expected_size} KB"
+                + ("; a size in kilobytes counts only with a matching Content-Length, and "
+                   "the file host sent none" if length is None and kilobytes else ""))
+        if not data and length is None:
+            # Size 0 is also a file under 1 KB rounded down, and a close-delimited reply
+            # cut short arrives empty: an empty body needs the host to declare it.
+            raise TransportError("the attachment is empty and the file host sent no "
+                                 "Content-Length, so the download cannot be checked")
     else:
         if length is None:
             raise TransportError("the file host sent no Content-Length and Lunch Money gives "

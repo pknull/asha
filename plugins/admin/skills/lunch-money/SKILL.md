@@ -418,9 +418,12 @@ attachments with it.
   with a separate client that sends no token, accepts `https` only, follows
   no redirect, times out after 60 seconds and stops at 10 MiB (the API's
   10MB upload limit). A save counts only on HTTP 200 with no `Content-Range`,
-  a body of exactly the `size` the API gives, read as bytes, and never an
-  empty body unless that size is 0. Without a size, a `Content-Length` is
-  required and must match. Anything else is a failed save. Each file is
+  a body matching the `size` the API gives, read as bytes (exactly) or, only
+  when a `Content-Length` matched the body, as kilobytes (1000 or 1024 bytes,
+  rounded down or up; the schema says kilobytes, its example reads as bytes),
+  and an empty body only when that size is 0 and a `Content-Length: 0`
+  declares it. Without a size, a `Content-Length` is required and must match.
+  Anything else is a failed save. Each file is
   written as `<transaction id>-<file id>-<name>`, the name reduced to safe
   characters by the helper, with a sidecar `<same name>.json` beside it
   holding the transaction id and every field of the attachment. Both are
