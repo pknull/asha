@@ -959,7 +959,7 @@ class Hub:
                     return
                 # Recorded first, so a failure below never types a second line.
                 self._update(row['session_id'], closure=dict(latest, pointer_at=time.time()))
-                self.tmux.send_line(room['tmux']['pane_id'], closure.pointer_line(latest))
+                self.tmux.send_line(room['tmux']['pane_id'], closure.pointer_line())
         except (LockTimeout, ValueError, OSError):
             return
 

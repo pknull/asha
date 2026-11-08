@@ -166,10 +166,14 @@ def request_text(row: dict, record: dict) -> str:
     return "\n".join(lines)
 
 
-def pointer_line(record: dict) -> str:
-    """The one line typed into an idle or unobserved pane (D1): where the full request is."""
-    line = (f"{CLOSE_REQUEST_TOKEN} {record['request_id']}: read it with `asha control session messages`, "
-            "save project Memory as it says, then end your turn.")
+def pointer_line() -> str:
+    """The one line typed into an idle or unobserved pane (D1): where the full request is.
+
+    No digit, j or k (#146): in a Claude Code permission dialog a digit picks an
+    option and j or k moves its focus. The queued message names the request.
+    """
+    line = (f"{CLOSE_REQUEST_TOKEN}: read it with `asha control session messages`, "
+            "save Memory as it says, then end your turn.")
     return line[:POINTER_LIMIT]
 
 
