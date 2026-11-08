@@ -429,7 +429,10 @@ attachments with it.
   holding the transaction id and every field of the attachment. Both are
   created new (never overwriting), mode `0600`, in a `0700` directory, and
   synced to disk. The directory and every ancestor are synced on every apply,
-  so a directory left by an interrupted run is made durable by the next.
+  so a directory left by an interrupted run is made durable by the next. Only
+  an ancestor that is not the Keeper's own and cannot be synced at all
+  (unreadable, or a filesystem without directory sync) is passed over; a sync
+  that fails, such as `EIO`, stops the plan before any download or `DELETE`.
 - Any failed save stops the plan before the `DELETE` with `status: aborted`:
   nothing is removed, the plan is spent, `saved` lists the files already
   written, and `failed.left_on_disk` lists any file (or partial copy) the

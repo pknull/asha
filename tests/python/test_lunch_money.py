@@ -4116,5 +4116,81 @@ class KilobyteSizeTests(RemovalFixture):
                 self.assertIn(10, self.api.transactions)
 
 
+# ---------------------------------------------------------------------------
+# #138: a failed sync of an ancestor that is not the Keeper's own
+
+
+class UnownedAncestorSyncTests(RemovalFixture):
+    """Only an ancestor that cannot be synced at all (unreadable, or a filesystem
+    without directory sync) is passed over; a sync that fails, such as EIO, stops."""
+
+    def setUp(self):
+        super().setUp()
+        uid = os.getuid()
+        self.foreign = next((p for p in self.dir.parents if p.stat().st_uid != uid), None)
+        if self.foreign is None:
+            self.skipTest("every ancestor of the temporary directory is this user's")
+
+    def fail_sync(self, target, code, *, at_open=False):
+        """Make syncing target fail with errno code, at the open or at the fsync."""
+        key = (target.stat().st_dev, target.stat().st_ino)
+        real_open, real_fsync = os.open, os.fsync
+
+        def fake_open(path, flags, *args, **kwargs):
+            if at_open and flags & getattr(os, "O_DIRECTORY", 0) and \
+                    os.path.exists(path) and (os.stat(path).st_dev, os.stat(path).st_ino) == key:
+                raise OSError(code, os.strerror(code), str(path))
+            return real_open(path, flags, *args, **kwargs)
+
+        def fake_fsync(fd):
+            info = os.fstat(fd)
+            if not at_open and (info.st_dev, info.st_ino) == key:
+                raise OSError(code, os.strerror(code))
+            return real_fsync(fd)
+        return mock.patch.multiple(lm.os, open=fake_open, fsync=fake_fsync)
+
+    def test_us1_a_real_sync_failure_on_an_unowned_ancestor_is_raised(self):
+        for code in (errno.EIO, errno.ENOSPC):
+            with self.subTest(code=errno.errorcode[code]):
+                with self.fail_sync(self.foreign, code):
+                    with self.assertRaises(OSError) as caught:
+                        lm.sync_dir_chain(self.dir)
+                self.assertEqual(caught.exception.errno, code)
+
+    def test_us2_an_ancestor_that_cannot_be_synced_at_all_is_passed_over(self):
+        cases = [(errno.EINVAL, False), (errno.EROFS, False), (errno.EBADF, False),
+                 (errno.EOPNOTSUPP, False), (errno.EACCES, True), (errno.EPERM, True)]
+        for code, at_open in cases:
+            with self.subTest(code=errno.errorcode[code], at_open=at_open):
+                with self.fail_sync(self.foreign, code, at_open=at_open):
+                    lm.sync_dir_chain(self.dir)  # does not raise
+
+    def test_us3_the_keepers_own_directory_never_passes_over_a_failure(self):
+        for code in (errno.EINVAL, errno.EIO):
+            with self.subTest(code=errno.errorcode[code]):
+                with self.fail_sync(self.dir, code):
+                    with self.assertRaises(OSError):
+                        lm.sync_dir_chain(self.dir)
+
+    def test_us4_eio_on_an_unowned_ancestor_stops_apply_before_any_delete(self):
+        plan, path = self.unsplit()
+        with self.fail_sync(self.foreign, errno.EIO):
+            code, out, err, _ = self.apply(path, plan["plan_hash"])
+        self.assertEqual(code, 1, out)
+        self.assertNotEqual((out or {}).get("status"), "applied", out)
+        self.assertEqual(self.deletes(), [])
+        self.assertEqual(self.file_host.requests, [])  # stopped before any download
+        self.assertIn(10, self.api.transactions)
+        out = self.assert_applied(plan, path)  # unconsumed; applies once syncs work
+        self.assertEqual(len(self.deletes()), 1)
+
+    def test_us5_eio_on_an_unowned_ancestor_stops_the_attachments_directory(self):
+        target = self.dir / "fresh" / "attachments"
+        with self.fail_sync(self.foreign, errno.EIO):
+            with self.assertRaises(OSError) as caught:
+                lm.check_save_dir(target, create=True)
+        self.assertEqual(caught.exception.errno, errno.EIO)
+
+
 if __name__ == "__main__":
     unittest.main()
