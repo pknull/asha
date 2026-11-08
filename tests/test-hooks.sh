@@ -712,6 +712,16 @@ if [[ "$ARCHIVE_REASON" == *"[destructive-delete-archive]"* && "$ARCHIVE_REASON"
 else
   fail "destructive-delete-archive guidance prefers gio trash with a tmpfs/remote .trash/ fallback: $ARCHIVE_REASON"
 fi
+# #145: the archive rule's .trash/ exclusion counts only inside the rm segment,
+# as destructive-delete's path exemptions do; elsewhere on the line it exempted
+# every archive the same command deletes.
+ARCHIVE_TRASH_OK=1
+[[ "$(policy_decision '{"tool_name":"Bash","tool_input":{"command":"rm x.7z; ls ~/.trash/"}}')" == deny ]] || ARCHIVE_TRASH_OK=0
+[[ "$(policy_decision '{"tool_name":"Bash","tool_input":{"command":"rm x.7z && echo .trash/"}}')" == deny ]] || ARCHIVE_TRASH_OK=0
+# An rm inside a word ("form") is not an rm segment.
+[[ "$(policy_decision '{"tool_name":"Bash","tool_input":{"command":"rm x.7z; echo form .trash/"}}')" == deny ]] || ARCHIVE_TRASH_OK=0
+[[ "$(policy_decision '{"tool_name":"Bash","tool_input":{"command":"rm ~/.trash/2026-11-07/x.7z"}}')" == allow ]] || ARCHIVE_TRASH_OK=0
+check "destructive-delete-archive exempts .trash/ only inside the rm segment" test "$ARCHIVE_TRASH_OK" -eq 1
 
 # require_env rules are inert outside the session that carries the variable.
 # The shipped coordinator rules left with the initiative engine (L-b); a user
