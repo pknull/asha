@@ -198,6 +198,138 @@ class SessionHubTests(unittest.TestCase):
         self.assertEqual(self.hub.get(row['session_id'])['lifecycle'], 'open')
         self.assertEqual(self.tmux.killed, [])
 
+    # #140: after a host reboot the tmux server is gone, or a new one handed the
+    # recorded IDs to a foreign session. Stop records the row stopped and kills
+    # nothing; resume then reuses the captured native conversation.
+    NATIVE = 'dea1fa2e-49d2-421a-be8e-4647d06680a8'
+    NO_SERVER = rooms_fixture.RoomTests.NO_SERVER
+
+    def _orphan(self, *, resumed_before, reused):
+        sid = self.launch()['session_id']
+        if resumed_before:
+            self.hub.stop(sid)
+            self.tmux.next_ids = [('%43', '$8')]
+            self.assertEqual(self.hub.resume(sid, prompt='Carry on')['generation'], 2)
+            # That stop killed the row's own live pane; count kills from the reboot.
+            self.assertEqual(self.tmux.killed, ['$7'])
+            self.tmux.killed.clear()
+            self.tmux.kill_attempts.clear()
+        self.hub._update(sid, native_id=self.NATIVE)
+        self.tmux.sessions.clear()
+        self.tmux.session_options.clear()
+        self.tmux.pane_options.clear()
+        if reused:
+            # The Keeper's own terminal now holds the recorded pane and session IDs.
+            self.tmux.sessions.add('0')
+            self.tmux.session_names = {self.tmux.session_identity: '0'}
+        else:
+            self.tmux.server_error = self.NO_SERVER
+        self._reboot_now()
+        self.tmux.next_ids = [('%50', '$20')]
+        return self.hub.get(sid)
+
+    def _reboot_now(self):
+        """The host booted now: every Room created so far predates it."""
+        self.enterContext(mock.patch('lib.control.rooms._boot_time', return_value=time.time()))
+
+    def _assert_resumed(self, before, resumed):
+        self.assertEqual(resumed['lifecycle'], 'open')
+        self.assertEqual(resumed['generation'], before['generation'] + 1)
+        self.assertEqual(resumed['room_history'], before['room_history'] + [before['room_id']])
+        self.assertEqual(resumed['native_id'], self.NATIVE)
+        self.assertIn(self.NATIVE, self.tmux.respawned[-1][1])
+        self.assertEqual(self.tmux.kill_attempts, [])
+
+    def _stop_then_resume(self, before):
+        stopped = self.hub.stop(before['session_id'])
+        self.assertEqual(stopped['lifecycle'], 'stopped')
+        self.assertIn('nothing was killed', stopped['reason'])
+        self.assertEqual(self.tmux.kill_attempts, [])
+        return self.hub.resume(before['session_id'], prompt='Continue after the reboot')
+
+    def test_reboot_reused_ids_generation_one_resumes_directly(self):
+        before = self._orphan(resumed_before=False, reused=True)
+        resumed = self.hub.resume(before['session_id'], prompt='Continue after the reboot')
+        self._assert_resumed(before, resumed)
+        self.assertIn('0', self.tmux.sessions)
+
+    def test_reboot_without_server_generation_one_stops_then_resumes(self):
+        before = self._orphan(resumed_before=False, reused=False)
+        self._assert_resumed(before, self._stop_then_resume(before))
+
+    def test_reboot_reused_ids_after_one_resume_stops_then_resumes(self):
+        before = self._orphan(resumed_before=True, reused=True)
+        self.assertEqual(len(before['room_history']), 1)
+        self._assert_resumed(before, self._stop_then_resume(before))
+        self.assertIn('0', self.tmux.sessions)
+
+    def test_reboot_without_server_after_one_resume_resumes_directly(self):
+        before = self._orphan(resumed_before=True, reused=False)
+        resumed = self.hub.resume(before['session_id'], prompt='Continue after the reboot')
+        self._assert_resumed(before, resumed)
+
+    def test_absent_socket_in_this_boot_refuses_stop_and_resume(self):
+        # The socket file may be gone while the server and the harness still
+        # run; a resume here would start a second harness on the conversation.
+        sid = self.launch()['session_id']
+        self.tmux.server_error = self.NO_SERVER
+        with self.assertRaisesRegex(ValueError, 'ownership is unavailable'):
+            self.hub.stop(sid)
+        with self.assertRaisesRegex(ValueError, 'stop the previous session'):
+            self.hub.resume(sid, prompt='Continue')
+        self.assertEqual(self.hub.get(sid)['lifecycle'], 'open')
+        self.assertEqual(self.hub.get(sid)['generation'], 1)
+        self.assertEqual(self.tmux.kill_attempts, [])
+        self.assertEqual(len(self.tmux.created), 1)
+
+    def test_reused_ids_in_this_boot_refuse_stop_and_resume(self):
+        sid = self.launch()['session_id']
+        other = '65ec305e-f3fe-47e1-8b97-b8c77c3087d7'
+        self.tmux.sessions = {'asha-room-65ec305e'}
+        self.tmux.session_names = {self.tmux.session_identity: 'asha-room-65ec305e'}
+        self.tmux.session_options = {('asha-room-65ec305e', rooms_fixture.SESSION_ROOM_OPTION): other}
+        self.tmux.pane_options = {(self.tmux.pane_id, rooms_fixture.PANE_ROOM_OPTION): other}
+        with self.assertRaisesRegex(ValueError, 'ownership mismatch'):
+            self.hub.stop(sid)
+        with self.assertRaisesRegex(ValueError, 'stop the previous session'):
+            self.hub.resume(sid, prompt='Continue')
+        self.assertEqual(self.hub.get(sid)['lifecycle'], 'open')
+        self.assertEqual(self.tmux.kill_attempts, [])
+        self.assertEqual(len(self.tmux.created), 1)
+
+    def test_stop_whose_kill_outcome_is_unknown_claims_no_kill_either_way(self):
+        sid = self.launch()['session_id']
+        self.tmux.before_kill = self.tmux.sessions.clear
+        stopped = self.hub.stop(sid)
+        self.assertEqual(stopped['lifecycle'], 'stopped')
+        self.assertNotIn('nothing was killed', stopped['reason'])
+
+    def test_room_resumed_first_after_reboot_takes_ids_another_row_records(self):
+        # The live ordering: life resumed first and its new Room took the IDs
+        # THORNE's record still named. THORNE must recover without touching it.
+        thorne = self.launch()
+        self.tmux.next_ids = [('%43', '$8')]
+        life = self.launch()
+        self.tmux.sessions.clear()
+        self.tmux.session_options.clear()
+        self.tmux.pane_options.clear()
+        self.tmux.session_names.clear()
+        self._reboot_now()
+        self.tmux.next_ids = [('%42', '$7')]
+        self.assertEqual(self.hub.resume(life['session_id'], prompt='Continue')['generation'], 2)
+        self.assertEqual(self.hub.show(life['session_id'])['process_state'], 'live')
+        stopped = self.hub.stop(thorne['session_id'])
+        self.assertEqual(stopped['lifecycle'], 'stopped')
+        self.assertIn('nothing was killed', stopped['reason'])
+        self.assertEqual(self.tmux.kill_attempts, [])
+        self.assertEqual(self.tmux.sent, [])
+        self.assertEqual(self.hub.show(life['session_id'])['process_state'], 'live')
+        self.tmux.next_ids = [('%44', '$9')]
+        resumed = self.hub.resume(thorne['session_id'], prompt='Continue after the reboot')
+        self.assertEqual(resumed['generation'], 2)
+        self.assertEqual(resumed['room_history'], [thorne['room_id']])
+        self.assertEqual(self.tmux.killed, [])
+
     def test_repeated_friendly_names_create_distinct_sessions(self):
         first = self.launch()
         # The shared Room fake models one pane at a time; a graceful close would

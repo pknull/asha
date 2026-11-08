@@ -65,7 +65,10 @@ Room of a fresh home, and retain only a digest of the opening prompt. Attach and
 immutable tmux session/pane IDs and UUID/project markers in the same tmux
 server action; a readable tmux name is never ownership evidence. Missing or
 ended owned Rooms remain safely closable, while a foreign collision is reported
-as `mismatch` and never killed. `close --json`
+as `mismatch` and never killed. For a Room created before the host's current
+boot, a pane at the recorded ID without the Room's pane marker (the new server
+handed the ID on, #140) reads as `missing` and is never killed either.
+`close --json`
 and other non-interactive closes require `--yes`; the dashboard requires exact
 lowercase `yes` every time.
 

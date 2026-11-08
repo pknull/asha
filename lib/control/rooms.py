@@ -31,7 +31,7 @@ from .harness import HarnessError, validate_harness
 from .model import ModelError, canonical_uuid
 from .record_registry import RecordRegistry
 from .store import StoreError, _directory_fd, _managed_start, _registry_lock
-from .tmux import TmuxAdapter, TmuxError, validate_command_argv
+from .tmux import TmuxAdapter, TmuxError, tmux_server_absent, validate_command_argv
 from .projects import display_name, list_projects_across, resolve_roots
 
 
@@ -122,6 +122,29 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
         "+00:00", "Z",
     )
+
+
+def _boot_time() -> float | None:
+    """When this host booted, in epoch seconds (Linux ``/proc/stat``), else None."""
+    try:
+        with open("/proc/stat", encoding="ascii") as handle:
+            for line in handle:
+                if line.startswith("btime "):
+                    return float(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+    return None
+
+
+def _created_before_boot(record: Mapping[str, Any]) -> bool:
+    """A Room created before this boot: its tmux server cannot still be running."""
+    boot = _boot_time()
+    if boot is None:
+        return False
+    try:
+        return _timestamp(record.get("created_at"), "creation time").timestamp() < boot
+    except RoomError:
+        return False
 
 
 def _room_name(value: Any) -> tuple[str, str]:
@@ -568,11 +591,18 @@ def _owned_state(
         return "missing", "no immutable tmux identity or readable session is present"
     try:
         facts = tmux.pane_facts(pane, **bounded())
+        owned_pane = tmux.pane_option(pane, PANE_ROOM_OPTION, **bounded()) == record["room_id"]
+        if not owned_pane and _created_before_boot(record):
+            # A server never reuses a pane ID and none survives a reboot, so
+            # a pane at the recorded ID without this Room's marker, answered
+            # by a server newer than the Room, proves the owned pane is gone
+            # (#140). In the same boot the old server may only be hidden.
+            return "missing", "recorded tmux pane ID now names a pane this Room does not own; the Room predates this boot"
         if tmux.session_id(pane, **bounded()) != session_id:
             return "mismatch", "immutable session identity mismatch"
         if tmux.session_option(session_id, SESSION_ROOM_OPTION, **bounded()) != record["room_id"]:
             return "mismatch", "session ownership mismatch"
-        if tmux.pane_option(pane, PANE_ROOM_OPTION, **bounded()) != record["room_id"]:
+        if not owned_pane:
             return "mismatch", "pane ownership mismatch"
         if tmux.pane_option(pane, PANE_PROJECT_OPTION, **bounded()) != _project_marker(
             record["project_id"]
@@ -592,6 +622,11 @@ def _owned_state(
             "can't find", "no server", "no sessions", "missing pane",
         )):
             return "missing", "exact tmux pane is absent"
+        if tmux_server_absent(diagnostic) and _created_before_boot(record):
+            # An absent socket file alone does not prove the server is dead
+            # (a deleted socket, another TMUX_TMPDIR), but no tmux server
+            # survives a reboot, so a Room from an earlier boot is gone (#140).
+            return "missing", "no tmux server is running and the Room predates this boot"
         return "unavailable", str(exc)
 
 
@@ -976,9 +1011,14 @@ def close_room(
         if state == "unavailable":
             raise RoomError(f"room ownership is unavailable: {detail}; no session was killed")
         already = record["lifecycle"] == "ended" and state == "missing"
+        # True: this close killed the owned session. False: no kill was
+        # attempted. None: the kill reported failure and the pane is now gone,
+        # so whether this close ended it is unknown.
+        killed: bool | None = False
         if state in {"open", "ended"}:
             try:
                 tmux.kill_owned_room(**_action_identity(record))
+                killed = True
             except TmuxError as exc:
                 changed_state, changed_detail = _owned_state(record, tmux)
                 if changed_state != "missing":
@@ -986,6 +1026,7 @@ def close_room(
                         f"room close refused because ownership changed: {exc}; "
                         f"{changed_detail}; no session was killed"
                     ) from exc
+                killed, state, detail = None, changed_state, changed_detail
         record["lifecycle"] = "ended"
         record["updated_at"] = _now()
         store.save(record, expected_digest=expected_digest)
@@ -993,6 +1034,7 @@ def close_room(
         "contract": ROOM_CLOSE_CONTRACT,
         **_result(record, state="ended", detail="room closed", tmux=tmux),
         "already_closed": already,
+        "killed": killed, "observed_state": state, "observed_detail": detail,
     }
 
 
