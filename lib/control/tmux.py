@@ -348,6 +348,19 @@ def _validate_argv(value: Any) -> list[str]:
     return list(value)
 
 
+def tmux_server_absent(diagnostic: str) -> bool:
+    """Does a tmux client diagnostic say no server answers at the socket path?
+
+    A stale socket reads "no server running"; an absent socket file reads
+    "error connecting to PATH (No such file or directory)" (tmux 3.4).
+    """
+    text = diagnostic.casefold()
+    return "no server running" in text or (
+        ("failed to connect to server" in text or "error connecting to" in text)
+        and ("no such file or directory" in text or "connection refused" in text)
+    )
+
+
 def validate_command_argv(value: Any) -> list[str]:
     """The argv rule ``respawn`` applies, for callers that must refuse before any pane exists."""
     return _validate_argv(value)
@@ -652,15 +665,9 @@ class TmuxAdapter:
             return True
         diagnostic = stderr.decode("utf-8", errors="replace").casefold()
         missing = any(marker in diagnostic for marker in (
-            "can't find session", "no server running", "no sessions",
+            "can't find session", "no sessions",
         ))
-        connection_absent = (
-            ("failed to connect to server" in diagnostic or
-             "error connecting to" in diagnostic)
-            and ("no such file or directory" in diagnostic or
-                 "connection refused" in diagnostic)
-        )
-        if missing or connection_absent:
+        if missing or tmux_server_absent(diagnostic):
             return False
         self._raise_failure(returncode, stderr)
 

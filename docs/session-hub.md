@@ -445,6 +445,21 @@ resume. `session close ID` is the best-effort close below. `session close ID
 for a save. Native harness exit is observed as exit, without guessing that the
 assignment succeeded.
 
+After a host reboot the tmux server is gone, and a new server numbers panes
+and sessions from zero again, so a Room's recorded IDs can name someone else's
+pane (#140). A tmux server never reuses a pane ID and none survives a reboot,
+so for a Room created before the host's current boot (`/proc/stat` `btime`
+against the Room's `created_at`) a pane at the recorded ID without the Room's
+pane marker, or an absent socket file (`error connecting to PATH (No such file
+or directory)`), reads as an absent pane: `session stop ID` records the row
+stopped with `nothing was killed` and the observed reason, and `session resume
+ID` continues the captured native conversation. A Room created in the current
+boot keeps the old refusals (`mismatch`, `unavailable`), because a deleted
+socket or another `TMUX_TMPDIR` can hide a live server while a newer one reuses
+its IDs; a same-boot tmux server restart therefore still needs a manual check.
+A pane that carries the Room's marker in another session is the Room's own pane
+and stays a refused mismatch.
+
 ## Best-effort close
 
 Control observes native sessions from outside (tmux panes plus hook reports),

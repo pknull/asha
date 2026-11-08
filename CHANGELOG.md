@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased — control: a Room orphaned by a host reboot stops and resumes (#140)
+
+- A new tmux server numbers panes and sessions from zero, so a Room's recorded
+  `$N`/`%N` could name a foreign pane, and stop refused with `room ownership
+  mismatch` while resume demanded a stop. For a Room created before the host's
+  current boot (`/proc/stat` `btime` against `created_at`), a pane at the
+  recorded ID without the Room's pane marker now reads as absent, and so does
+  an absent socket file (`error connecting to PATH (No such file or
+  directory)`). No tmux server survives a reboot, and none reuses a pane ID.
+- A Room created in the current boot keeps the old refusals (`mismatch`,
+  `unavailable`): a deleted socket or another `TMUX_TMPDIR` can hide a live
+  server while a newer one reuses its IDs, and resuming then would start a
+  second harness on the same conversation. A same-boot tmux restart is still
+  refused. A pane carrying the Room's marker in another session stays a
+  refused mismatch.
+- `has_session` and the Room classifier share one `tmux_server_absent`
+  predicate.
+- `room close --json` reports `killed` (true, false, or null when the kill
+  failed and the pane then vanished), `observed_state` and `observed_detail`; a
+  hub stop or close that attempted no kill records `Stopped: DETAIL; nothing
+  was killed` (or `Closed: …`). No new kill path: every kill still revalidates
+  all five ownership facts in one tmux `if-shell`.
+
 ## Unreleased — admin 0.4.0: lunch-money skill for review and categorization
 
 - New `admin-lunch-money` skill (`plugins/admin/skills/lunch-money`) and a

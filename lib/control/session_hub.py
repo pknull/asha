@@ -764,6 +764,7 @@ class Hub:
     def _stop(self, row, *, close, closure_record=None):
         """Terminate the owned process; an attached terminal is killed too (D4)."""
         sid = row['session_id']
+        reason = None
         if row['transport'] == 'structured':
             from .session_store import SessionStore
             if self._has_structured_record(sid):
@@ -780,8 +781,14 @@ class Hub:
                 if self.tmux.has_session(session):
                     raise StoreError('launch ownership is uncertain; inspect the retained session')
             else:
-                close_room(rooms, row['room_id'], tmux=self.tmux)
+                closed = close_room(rooms, row['room_id'], tmux=self.tmux)
+                if closed['killed'] is False:
+                    # The pane was already gone (#140): say so rather than imply a kill.
+                    reason = (('Closed' if close else 'Stopped')
+                              + f": {closed['observed_detail']}; nothing was killed")
         changes = dict(lifecycle='closed' if close else 'stopped')
+        if reason is not None:
+            changes['reason'] = reason
         if closure_record is not None:
             changes['closure'] = closure_record
         self._update(sid, **changes)
