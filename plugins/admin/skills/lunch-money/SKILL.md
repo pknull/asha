@@ -281,7 +281,8 @@ A changes file holds `{"changes": [{"id": 101, "category_id": 11,
 
 Pattern selection (`--match REGEX`, Python syntax, at most 200 characters)
 searches `--match-field payee|notes|both` (default both) over the date range
-in a separate process stopped after 5 seconds, so a pattern that backtracks
+in a separate process stopped after 5 seconds (it also stops itself after 6
+seconds of CPU time if the helper dies first), so a pattern that backtracks
 (such as `(a+)+$`) is refused instead of hanging,
 with `--ignore-case` and filters `--filter-status`, `--filter-category-id`,
 `--filter-uncategorized`, `--filter-manual-account-id`,

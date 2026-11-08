@@ -13,9 +13,11 @@ import os
 import random
 import re
 import shutil
+import signal
 import ssl
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -3676,13 +3678,111 @@ class ThirdReviewTests(RemovalFixture):
                          {"k[REDACTED]": ["[REDACTED]", 7, None, {"x": "a[REDACTED]b", "n": 1.5}]})
 
 
+def _proc_start(pid):
+    """The process's start time from /proc (Linux), or None, so a reused pid is never
+    taken for the process the test started."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+_HAS_PROC = os.path.exists("/proc/self/stat")
+
+
+def _cpu_seconds(pid):
+    """The process's user plus system CPU time from /proc (Linux), or None."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            fields = f.read().rsplit(")", 1)[1].split()
+        return (int(fields[11]) + int(fields[12])) / os.sysconf("SC_CLK_TCK")
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _still_running(pid, start):
+    """Whether pid is still the process recorded at start; a zombie counts as gone, and
+    with /proc a process whose start was never read counts as gone (its pid may be
+    another's by now)."""
+    if _HAS_PROC:
+        if start is None:
+            return False
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+        except OSError:
+            return False
+        return fields[19] == start and fields[0] not in ("Z", "X")
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def _kill_if_running(pid, start):
+    """Cleanup: kill a regex child the test started if it is still alive, and reap it
+    when it is the test's own child."""
+    if _still_running(pid, start):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+    try:
+        os.waitpid(pid, 0)
+    except ChildProcessError:
+        pass
+
+
+def _reap(proc):
+    if proc.poll() is None:
+        proc.kill()
+    proc.wait()
+
+
+# The parent of #142: it hands the regex child a catastrophic job, then stalls before
+# its own timeout can act, the window in which the parent died in the field. The pid is
+# published before the job, so no child that has a job goes untracked.
+_ORPHAN_PARENT = r"""
+import importlib.util, os, subprocess, sys, time
+script, pid_file, timeout = sys.argv[1], sys.argv[2], int(sys.argv[3])
+spec = importlib.util.spec_from_file_location("lunch_money", script)
+lm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(lm)
+lm.REGEX_TIMEOUT_SECONDS = timeout
+
+class Stalled(subprocess.Popen):
+    def communicate(self, input=None, timeout=None):
+        with open(pid_file + ".tmp", "w") as f:
+            f.write(str(self.pid))
+        os.replace(pid_file + ".tmp", pid_file)
+        self.stdin.write(input)
+        self.stdin.close()
+        open(pid_file + ".sent", "w").close()
+        time.sleep(3600)
+
+subprocess.Popen = Stalled
+lm.match_texts("(a+)+$", False, [["a" * 40 + "!"]])
+"""
+
+
 class RegexTimeoutTests(HelperTestCase):
     """Finding 17. Before the fix this test hangs (Python's re cannot be interrupted),
     so its red run went through an outer timeout."""
 
     def test_f17_a_catastrophic_pattern_is_stopped(self):
         self.use(FakeAPI([txn(1, "2030-04-01", "a" * 40 + "!")]))
-        with mock.patch.object(lm, "REGEX_TIMEOUT_SECONDS", 1, create=True):
+        spawned: list[tuple[int, Any]] = []
+        real_popen = subprocess.Popen
+
+        def recording_popen(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            spawned.append((proc.pid, _proc_start(proc.pid)))
+            return proc
+        self.addCleanup(lambda: [_kill_if_running(pid, start) for pid, start in spawned])
+        with mock.patch.object(lm, "REGEX_TIMEOUT_SECONDS", 1, create=True), \
+                mock.patch.object(subprocess, "Popen", recording_popen):
             began = time.monotonic()
             code, _, err, _ = self.cli("plan-update", "--match", "(a+)+$", "--match-field",
                                        "payee", "--start", "2030-04-01", "--end", "2030-04-30",
@@ -3691,6 +3791,68 @@ class RegexTimeoutTests(HelperTestCase):
         self.assertEqual(code, 1)
         self.assertRegex(err["message"], "pattern took longer than 1 s")
         self.assertLess(elapsed, 10)
+        self.assertEqual(len(spawned), 1)
+        self.assertFalse(_still_running(*spawned[0]), "the stopped regex child was left behind")
+
+    @unittest.skipUnless(os.name == "posix", "the child limits itself with a POSIX rlimit")
+    def test_f142_a_child_whose_parent_dies_stops_itself_near_the_deadline(self):
+        """#142: the parent's timeout acts only while the parent lives. The parent is
+        killed after handing over a catastrophic job and before its own timeout acts;
+        the child must stop itself within about the deadline. Before the fix it was
+        adopted by init and searched on until killed."""
+        timeout = 2
+        pid_file = self.dir / "child.pid"
+        log_path = self.dir / "parent.log"
+        with log_path.open("wb") as log:
+            parent = subprocess.Popen(
+                [sys.executable, "-I", "-c", _ORPHAN_PARENT, str(SCRIPT), str(pid_file),
+                 str(timeout)], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
+                env={})
+        self.addCleanup(_reap, parent)
+        sent = Path(f"{pid_file}.sent")
+        child = start = None
+        began = time.monotonic()
+        while not sent.exists():
+            if child is None and pid_file.exists():
+                child = int(pid_file.read_text())
+                start = _proc_start(child)
+                self.addCleanup(_kill_if_running, child, start)
+            if parent.poll() is not None or time.monotonic() - began > 30:
+                self.fail("the parent never handed over the search: "
+                          + log_path.read_text(errors="replace")[-500:])
+            time.sleep(0.01)
+        if child is None:
+            child = int(pid_file.read_text())
+            start = _proc_start(child)
+            self.addCleanup(_kill_if_running, child, start)
+        parent.kill()
+        parent.wait()
+        self.assertTrue(_still_running(child, start),
+                        "the child ended with its parent; the orphaned search was not reached")
+        limit = timeout + 1  # the child's own CPU cap
+        # Judged by the child's CPU time where /proc shows it, so a busy machine that
+        # starves the child cannot fail the test; wall time is only the backstop.
+        orphaned, used = time.monotonic(), None
+        while _still_running(child, start) and time.monotonic() - orphaned < 60:
+            used = _cpu_seconds(child)
+            if used is not None and used > limit + 1.5:
+                break
+            time.sleep(0.05)
+        self.assertFalse(_still_running(child, start),
+                         f"the regex child was still searching after its parent died "
+                         f"({used} s of CPU, {time.monotonic() - orphaned:.1f} s)")
+
+    def test_f142_normal_patterns_match_as_they_do_in_process(self):
+        texts = [["AMZN Mktp", "gift card"], ["Corner Shop"], [], ["café 123", "Ünïcode"],
+                 ["line\nbreak"], ["a" * 40 + "!"], [""]]
+        for pattern in ("AMZN", "amzn", "^Corner", "Shop$", r"\d{3}", "caf[eé]", "ü",
+                        "(?i)GIFT", "^$", "", "a|Bus", "break$", "^a+!$"):
+            for ignore_case in (False, True):
+                with self.subTest(pattern=pattern, ignore_case=ignore_case):
+                    rx = re.compile(pattern, re.IGNORECASE if ignore_case else 0)
+                    expected = [i for i, entry in enumerate(texts)
+                                if any(rx.search(t) for t in entry)]
+                    self.assertEqual(lm.match_texts(pattern, ignore_case, texts), expected)
 
     def test_f17_matching_in_the_child_keeps_flags_and_fields(self):
         self.use(FakeAPI([txn(1, "2030-04-01", "AMZN Mktp", notes="gift"),
