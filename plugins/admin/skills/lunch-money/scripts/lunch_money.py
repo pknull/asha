@@ -3434,9 +3434,12 @@ def download_attachment(url: Any, *, expected_size: int | None) -> bytes:
     return data
 
 
-def write_new_file(directory: Path, name: str, data: bytes) -> Path:
+def write_new_file(directory: Path, name: str, data: bytes,
+                   created: list[Path] | None = None) -> Path:
     """Create name in directory exclusively (never overwriting), 0600, then sync the
-    file and the directory."""
+    file and the directory. The path is appended to created as soon as the exclusive
+    create succeeds, so a caller knows which files are its own even if a later step
+    fails."""
     if not name or "/" in name or "\x00" in name or name.startswith("."):
         raise SafetyError("refusing an unsafe attachment file name")
     dir_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
@@ -3444,6 +3447,8 @@ def write_new_file(directory: Path, name: str, data: bytes) -> Path:
     try:
         fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
                      0o600, dir_fd=dir_fd)
+        if created is not None:
+            created.append(directory / name)
         try:
             view = memoryview(data)
             while view:
@@ -3504,7 +3509,7 @@ def removal_runner(check: Callable[[Client, dict[str, Any]], list[dict[str, Any]
                 return _aborted(op, "save-attachments", saved, None, _failure(exc))
             for item in plan["files"]:
                 sidecar = item["filename"] + ".json"
-                writing = False
+                created: list[Path] = []  # only files this save's exclusive create made
                 try:
                     for name in (item["filename"], sidecar):  # neither may exist yet
                         if os.path.lexists(directory / name):
@@ -3512,19 +3517,16 @@ def removal_runner(check: Callable[[Client, dict[str, Any]], list[dict[str, Any]
                     link = client.get(f"/transactions/attachments/{item['file_id']}")
                     url = link.get("url") if isinstance(link, dict) else None
                     data = download_attachment(url, expected_size=item["size"])
-                    writing = True
-                    path = write_new_file(directory, item["filename"], data)
+                    path = write_new_file(directory, item["filename"], data, created)
                     metadata = json.dumps({"transaction_id": item["transaction_id"],
                                            "attachment": item["attachment"]},
                                           ensure_ascii=False, indent=2, sort_keys=True)
-                    meta_path = write_new_file(directory, sidecar, (metadata + "\n").encode())
+                    meta_path = write_new_file(directory, sidecar, (metadata + "\n").encode(),
+                                               created)
                 except (LunchMoneyError, OSError) as exc:
-                    # Both names were absent above, so once writing began whatever exists
-                    # now this save wrote, except a name someone else took meanwhile.
-                    taken = exc.filename if isinstance(exc, FileExistsError) else None
-                    left = [str(directory / name) for name in (item["filename"], sidecar)
-                            if writing and name != taken
-                            and os.path.lexists(directory / name)]
+                    # A name someone else took between the checks and the exclusive create
+                    # is theirs (#139): only what this save created is reported.
+                    left = [str(p) for p in created if os.path.lexists(p)]
                     return _aborted(op, "save-attachments", saved, item, _failure(exc), left)
                 saved.append({"transaction_id": item["transaction_id"],
                               "file_id": item["file_id"], "path": str(path), "bytes": len(data),
