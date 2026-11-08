@@ -697,6 +697,22 @@ TRASH_STAGE_OK=1
 [[ "$(policy_decision '{"tool_name":"Bash","tool_input":{"command":"rm -rf /srv/job/xtrash/old"}}')" == deny ]] || TRASH_STAGE_OK=0
 check "destructive-delete keeps the .trash/ staging exemption" test "$TRASH_STAGE_OK" -eq 1
 
+# The archive rule's reason follows #133: after extracting and verifying, the
+# desktop trash (gio trash), with a dated .trash/ staging directory only where
+# gio cannot trash (tmpfs, remote hosts).
+ARCHIVE_REASON="$(printf '%s' '{"tool_name":"Bash","tool_input":{"command":"rm backup.7z"}}' \
+  | HOME="$HOME_DIR" CLAUDE_PROJECT_DIR="$PROJECT" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" ASHA_HARNESS=claude \
+    "$HANDLERS/policy-guard.sh" 2>&1 >/dev/null)"
+if [[ "$ARCHIVE_REASON" == *"[destructive-delete-archive]"* && "$ARCHIVE_REASON" == *'gio trash'* \
+      && "$ARCHIVE_REASON" == *'extract first'* \
+      && "$ARCHIVE_REASON" == *tmpfs* && "$ARCHIVE_REASON" == *remote* \
+      && "$ARCHIVE_REASON" != *'or move to `.trash/` instead'* ]]; then
+  ok "destructive-delete-archive guidance prefers gio trash with a tmpfs/remote .trash/ fallback"
+else
+  fail "destructive-delete-archive guidance prefers gio trash with a tmpfs/remote .trash/ fallback: $ARCHIVE_REASON"
+fi
+
 # require_env rules are inert outside the session that carries the variable.
 # The shipped coordinator rules left with the initiative engine (L-b); a user
 # rule keeps the mechanism covered.
