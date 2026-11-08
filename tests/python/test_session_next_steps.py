@@ -68,7 +68,7 @@ class NextStepRenderingTests(unittest.TestCase):
 
     def test_save_label_requires_publication_evidence_not_a_status_or_result(self):
         row = self.row(activity='finished', result='Saved and pushed', memory_saved_at=0)
-        self.assertIn('Memory saved 00:00 UTC', '\n'.join(session_tui.lines({'rows': [row]})))
+        self.assertIn('Memory saved 01-01 00:00 UTC', '\n'.join(session_tui.lines({'rows': [row]})))   # dated (#141)
         row.pop('memory_saved_at')
         row['closure'] = {'generation': 1, 'state': 'acknowledged',
                           'handoff': {'outcome': 'no-durable-update'}}

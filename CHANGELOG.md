@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased — control: a close says when its request never reached the session (#141)
+
+- A Claude Room idle at its prompt with background work still running reads
+  working (#99), so close types no pointer and no Stop comes; the close used
+  to wait out its deadline and still read `Closed, saved HH:MM UTC` from an
+  earlier save. Three of the four stored closes of this kind read saved.
+- One predicate (`session_closure.withheld`) names why the pointer is withheld
+  (`idle with N background tasks since HH:MM UTC`, however old the Stop;
+  `working, last event HH:MM UTC`; `needs input`); the pointer gate reads it
+  with the same effect. Where nothing is on its way to the session, dashboard
+  `x`, the row (`Closing, likely unsaved: attach`) and a foreground `close`
+  (stderr, before it waits) say `Closing, likely unsaved: REASON; attach
+  before HH:MM UTC`. Presented closures carry `likely_unsaved`.
+- Once the request went out, only a save after it is the close's save, in the
+  label and in `closure.saved_at`: `Closed, unsaved (last save MM-DD HH:MM
+  UTC)`, or `Closed, unsaved: the request never reached it (REASON; last save
+  ...); resume to save` when nothing was delivered or typed (`--force` on a
+  pending request included). The save and background-Stop times in these
+  labels, and the detail line's `Memory saved` time, are dated unless from
+  today. A plain force close, a close at once (D7) and stop keep their labels;
+  the deadline kill is unchanged, and nothing new is typed or stored (the
+  stored `closure.saved_at` keeps its meaning; only the reported one changes).
+- Recovery: `session resume ID --text "save project Memory"`, then close again
+  once the row reads saved; attach before the deadline if the background job
+  is still wanted.
+
 ## Unreleased — control: a Room orphaned by a host reboot stops and resumes (#140)
 
 - A new tmux server numbers panes and sessions from zero, so a Room's recorded

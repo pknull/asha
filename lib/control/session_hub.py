@@ -674,13 +674,16 @@ class Hub:
 
     def _present_closure(self, row):
         """Read-only view of the close request or its outcome; never persisted here."""
+        if row.get('closure_history'):
+            row['closure_history'] = [closure.as_reported(r) for r in row['closure_history']]
         record = row.get('closure')
         if not record:
             return
         if record.get('generation') != row['generation']:
-            row['closure'] = dict(record, stale=True, guidance='Closure record from an earlier incarnation')
+            row['closure'] = dict(closure.as_reported(record), stale=True, guidance='Closure record from an earlier incarnation')
             return
-        record = dict(record, guidance=closure.guidance_for(row, record))
+        record = dict(closure.as_reported(record), guidance=closure.guidance_for(row, record),
+                      likely_unsaved=closure.likely_unsaved(row, record))
         row['closure'] = record
         if row['lifecycle'] == 'closing':
             if row['activity'] == 'needs-input':
@@ -794,7 +797,7 @@ class Hub:
         self._update(sid, **changes)
         return self.show(sid, refresh_usage=True)
 
-    def close(self, sid, *, force=False, wait=None, backstop=False):
+    def close(self, sid, *, force=False, wait=None, backstop=False, notify=None):
         """Best-effort close: ask for a Memory save, wait a bounded time, then terminate.
 
         ``wait`` defaults to ``control.close_wait_seconds``; ``force`` is a zero
@@ -803,7 +806,7 @@ class Hub:
         The row ends closed, labelled saved or unsaved from the generation's
         publications (D8). ``backstop`` also starts a detached waiter for a new
         request before this one waits, so a foreground close killed mid-wait
-        still ends by its deadline (#128).
+        still ends by its deadline (#128). ``notify(line)`` hears a likely-unsaved notice before the wait (#141).
         """
         wait = self._close_wait(force, wait)
         from .sessions import refuse_managed_operator
@@ -819,6 +822,8 @@ class Hub:
                 self.spawn_close_waiter(sid, request_id)
             except OSError:
                 pass    # this foreground wait still enforces the close while it runs
+        if notify and row['closure'].get('likely_unsaved'):
+            notify(row['closure']['guidance'])
         return self.await_close(sid, request_id)
 
     def _close_wait(self, force, wait):
@@ -939,8 +944,7 @@ class Hub:
         it is observed idle. Only the close's own waiter types.
         """
         if (row['transport'] != 'terminal' or record.get('pointer_at') is not None
-                or record['delivery'].get('delivered_at') is not None
-                or (row.get('native_activity') or 'unknown') not in {'idle', 'unknown'}):
+                or record['delivery'].get('delivered_at') is not None or closure.withheld(row) is not None):
             return
         try:
             with self._action_lock(row['session_id'], timeout=CLOSE_POLL_SECONDS):

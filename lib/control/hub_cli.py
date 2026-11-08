@@ -423,7 +423,9 @@ def dispatch(argv, *, env):
                         refuse_managed_operator(config, env)
                         result = hub.await_close(args.session_id, args.await_request)
                     else:
-                        result = hub.close(args.session_id, force=args.force, wait=args.wait, backstop=True)
+                        result = hub.close(args.session_id, force=args.force, wait=args.wait, backstop=True,
+                                           notify=(lambda line: print('asha control session: ' + line, file=sys.stderr,
+                                                                      flush=True)) if sys.stderr else None)
                 else:
                     result = hub.stop(args.session_id)
             else:

@@ -122,8 +122,18 @@ idle or unobserved terminal as one typed pointer line to `session messages`; a
 working Codex session gets the pointer once observed idle; a structured session
 gets it as its next turn. The close ends at the first save after the request,
 at process exit, or at the deadline; the row then reads `Closed, saved HH:MM
-UTC` or `Closed, unsaved` (unsaved only when the generation has no save at
-all). Dashboard `x` records the request and hands the wait to a detached
+UTC` or `Closed, unsaved`. Once the request went out, only a save after it
+counts: an earlier one reads `Closed, unsaved (last save MM-DD HH:MM UTC)`
+(dated unless from today). A Claude Room idle with background work, a stale
+working row or an open question gets no pointer, so `x`, `closure.guidance`
+and a foreground `close` (stderr) say `Closing, likely unsaved: REASON; attach
+before HH:MM UTC` (the row: `Closing, likely unsaved: attach`), and the
+deadline reads `Closed, unsaved: the request never reached it (...); resume to
+save` (#141). Recover with `session resume ID --text "save
+project Memory"`, then close again once the row reads saved; attach before the
+deadline instead if the background job is still wanted. A plain force close, a
+close at once and stop keep the generation's newest save. Dashboard `x` records
+the request and hands the wait to a detached
 waiter; re-running `close` joins a pending request and finalizes an expired
 one. A finished report that is still current and settled plus a save for the current
 assignment closes at once. The handoff never commits or pushes; landing code

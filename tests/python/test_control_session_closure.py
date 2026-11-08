@@ -6,6 +6,7 @@ import subprocess
 import threading
 import time
 import unittest
+import uuid
 from contextlib import contextmanager
 from unittest import mock
 
@@ -20,6 +21,9 @@ DECISIONS = "# Decisions\n\n- Handoffs publish through the validator.\n"
 
 def sha(text):
     return hashlib.sha256(text.encode()).hexdigest()
+
+
+WHEN = r'(\d\d-\d\d )?\d\d:\d\d UTC'   # a stamp is dated unless it is from today (#141)
 
 
 class ClosureFixture(unittest.TestCase):
@@ -188,7 +192,9 @@ class RequestTests(FastClose):
         with mock.patch.object(hub_cli, 'Hub', return_value=self.hub), \
                 mock.patch.object(self.hub, 'close', return_value={'lifecycle': 'closed'}) as close:
             hub_cli.dispatch(['close', sid, '--json'], env=self.env)
-            self.assertEqual(close.call_args.kwargs, {'force': False, 'wait': None, 'backstop': True})
+            kwargs = dict(close.call_args.kwargs)
+            self.assertTrue(callable(kwargs.pop('notify')))
+            self.assertEqual(kwargs, {'force': False, 'wait': None, 'backstop': True})
             with self.assertRaises(SystemExit):
                 hub_cli.dispatch(['close', sid, '--force', '--wait', '3'], env=self.env)
 
@@ -278,6 +284,120 @@ class PointerTests(FastClose):
         self.assertEqual(self.tmux.sent, [])
 
 
+class UnsavedReportTests(FastClose):
+    """#141: a close its request cannot reach says so at once and at the deadline; nothing more is typed."""
+
+    def stopped(self, sid, tasks=1):
+        with self.acting_as(sid):
+            self.hub.observe('prompt-submitted')
+            return self.hub.observe('turn-stopped', background_tasks=tasks)
+
+    def test_the_notice_says_why_at_once_where_the_request_is_stuck(self):
+        stuck, bg = r'^Closing, likely unsaved: {}; attach before \d\d:\d\d UTC$', ('prompt-submitted', 'turn-stopped')
+        for harness, events, age, notice in (
+                ('claude', bg, 0, stuck.format(rf'idle with 1 background task since {WHEN}')),
+                ('claude', ('tool-started',), 3600, stuck.format(rf'working, last event {WHEN}')),
+                ('claude', ('permission-requested',), 3600, stuck.format('needs input')),
+                ('claude', bg + ('tool-started',), 0, '^Closing: asked'),    # a woken turn's end delivers it
+                ('codex', ('prompt-submitted',), 0, '^Closing: asked')):
+            with self.subTest(harness=harness, events=events, age=age):
+                sid = self.launch(harness=harness, session_id=str(uuid.uuid4()))['session_id']
+                with self.acting_as(sid):
+                    for event in events:
+                        self.hub.observe(event, background_tasks=1 if event == 'turn-stopped' else None)
+                self.hub._update(sid, native_observed_at=time.time() - age)
+                closing = self.request(sid)          # what dashboard `x` returns
+                self.assertRegex(closing['closure']['guidance'], notice)
+                self.assertEqual(closing['next_step'] in ('Closing, likely unsaved: attach', 'Answer in terminal (attach)'),
+                                 'likely' in notice)
+                self.assertNotIn('resume', closing['closure']['guidance'], 'resume is refused while pending')
+                self.hub._point(self.hub.get(sid), closing['closure'])
+        self.assertEqual(self.tmux.sent, [])
+
+    def test_the_edges_a_typed_pointer_a_delivered_stop_a_save_at_the_request_and_force(self):
+        now = time.time()
+        row = dict(lifecycle='closing', transport='terminal', native_activity='working', background_tasks=1,
+                   native_observed_at=now, memory_saved_at=None)
+        record = dict(requested_at=now, pointer_at=None, delivery=dict(channel='stop-hook', delivered_at=None))
+        self.assertIsNotNone(closure.likely_unsaved(row, record))
+        for stamped in (dict(record, pointer_at=now), dict(record, delivery=dict(channel='stop-hook', delivered_at=now))):
+            self.assertIsNone(closure.likely_unsaved(row, stamped))
+        self.assertIsNone(closure.likely_unsaved(dict(row, memory_saved_at=now), record))
+        at = dict(row, lifecycle='closed', memory_saved_at=now)    # a save landing exactly at the request counts
+        self.assertEqual(closure.closed_label(at, record), 'Closed, saved ' + time.strftime('%H:%M UTC', time.gmtime(now)))
+        self.assertEqual(closure.as_reported(dict(record, saved_at=now))['saved_at'], now)
+        forced = dict(record, saved_at=now - 1, delivery=dict(channel=None))       # force and D7 keep theirs
+        self.assertEqual(closure.as_reported(forced)['saved_at'], now - 1)
+
+    def test_the_deadline_names_an_old_save_and_an_old_stop_with_dates(self):
+        sid = self.launch()['session_id']
+        self.save(sid)
+        self.stopped(sid, tasks=2)
+        saved, stopped = time.time() - 55 * 3600, time.time() - 2 * 86400   # past the four-hour bound
+        with self.hub.database() as db, db.transaction(write=True) as c:
+            c.execute('UPDATE hub_memory_publications SET published_at=? WHERE session_id=?', (saved, sid))
+        self.hub._update(sid, native_observed_at=stopped)
+        closed, day = self.hub.close(sid, wait=1), lambda t: time.strftime('%m-%d %H:%M UTC', time.gmtime(t))
+        self.assertEqual(closed['reason'], f'Closed, unsaved: the request never reached it (idle with 2 background '
+                                           f'tasks since {day(stopped)}; last save {day(saved)}); resume to save')
+        self.assertEqual((closed['closure']['saved_at'], closed['memory_saved_at']), (None, saved))
+        self.assertEqual((self.tmux.sent, len(self.tmux.killed)), ([], 1))
+
+    def test_background_work_that_wakes_the_session_during_the_wait_delivers_at_its_stop(self):
+        sid = self.launch()['session_id']
+        self.save(sid)
+        self.stopped(sid)
+        record = self.request(sid, wait=1)['closure']
+        self.assertIsNotNone(record['likely_unsaved'])
+        with self.acting_as(sid):
+            self.hub.observe('tool-started')            # the task finished and woke Claude, others still run
+            self.assertIsNone(self.hub.show(sid)['closure']['likely_unsaved'], 'a running turn delivers at its end')
+            stopped = self.hub.observe('turn-stopped', background_tasks=1)
+        self.assertTrue(self.hub.confirm_delivery(stopped, receipt=self.hub.stop_decision(stopped).receipt)['confirmed'])
+        closed = self.hub.await_close(sid, record['request_id'])
+        self.assertRegex(closed['reason'], rf'^Closed, unsaved \(last save {WHEN}\)$')
+        self.assertEqual(self.tmux.sent, [])
+
+    def test_a_foreground_close_prints_the_notice_before_it_waits(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        from lib.control import hub_cli
+        sid = self.launch()['session_id']
+        self.stopped(sid)
+        err, seen, wait = io.StringIO(), [], self.hub.await_close
+        with mock.patch.object(hub_cli, 'Hub', return_value=self.hub), mock.patch.object(self.hub, 'spawn_close_waiter'), \
+                mock.patch.object(self.hub, 'await_close', side_effect=lambda *a: seen.append(err.getvalue()) or wait(*a)), \
+                redirect_stderr(err), redirect_stdout(io.StringIO()):
+            hub_cli.dispatch(['close', sid, '--wait', '1', '--json'], env=self.env)
+        self.assertRegex(seen[0], r'^asha control session: Closing, likely unsaved: idle with 1 background task')
+
+    def test_the_four_stored_closes_replay_unsaved_naming_their_last_save(self):
+        # control.sqlite3 (read-only, 2026-11-08): native activity, background tasks, observed, last save, requested.
+        # 4f1ffa32's generation 1 was resumed since, so its native state at the close is not retained.
+        for prefix, native, tasks, observed, saved, requested, why in (
+                ('3f92ec57', 'working', 1, 1792399141.08, 1792399124.36, 1792399733.49,
+                 'idle with 1 background task since 10-19 08:39 UTC; last save 10-19 08:38 UTC'),
+                ('3b100e2d', 'working', None, 1792661106.53, 1792836586.17, 1792837795.21,
+                 'working, last event 10-22 09:25 UTC; last save 10-24 10:09 UTC'),
+                ('1d64ceab', 'working', 1, 1793522328.11, None, 1793523543.03, 'idle with 1 background task since 11-01 08:38 UTC'),
+                ('4f1ffa32', None, None, None, 1793820451.38, 1794019511.95, 'last save 11-04 19:27 UTC')):
+            with self.subTest(close=prefix):
+                row = self.launch(session_id=str(uuid.uuid4()))
+                record = dict(closure.new_closure(row, wait=60), state='closed', requested_at=requested, saved_at=saved,
+                              delivery=dict(channel='stop-hook', detail='', message_id=None, delivered_at=None))
+                if saved is not None:
+                    with self.hub.database() as db, db.transaction(write=True) as c:
+                        c.execute('INSERT INTO hub_memory_publications VALUES(?,?,?,?,?,?,?)',
+                                  (str(uuid.uuid4()), row['session_id'], 1, row['project_id'], 'a', saved, '{}'))
+                self.hub._update(row['session_id'], lifecycle='closed', native_activity=native, background_tasks=tasks,
+                                 native_observed_at=observed, closure=record)
+                shown = self.hub.show(row['session_id'])
+                self.assertEqual((shown['reason'], shown['closure']['saved_at']),
+                                 (f'Closed, unsaved: the request never reached it ({why}); resume to save', None))
+                self.hub._update(row['session_id'], closure=None, closure_history=[record])   # after a resume
+                self.assertIsNone(self.hub.show(row['session_id'])['closure_history'][0]['saved_at'])
+
+
 class OutcomeTests(FastClose):
     """D8: waits for a save after the request; the label shows the generation's latest save."""
 
@@ -317,13 +437,17 @@ class OutcomeTests(FastClose):
         self.assertEqual(len(self.tmux.killed), 1)
         self.assertNotIn(sid, [r['session_id'] for r in self.hub.list()['rows']])
 
-    def test_an_earlier_save_in_the_generation_labels_a_close_that_got_none(self):
+    def test_an_earlier_save_in_the_generation_is_named_not_claimed(self):
         sid = self.launch()['session_id']
         self.save(sid)
+        with self.acting_as(sid):
+            self.hub.observe('turn-stopped')      # plain idle: the request goes out as one pointer
         saved = self.hub.show(sid)['memory_saved_at']
         closed = self.hub.close(sid, wait=1)
-        self.assertEqual(closed['memory_saved_at'], saved)
-        self.assertTrue(closed['reason'].startswith('Closed, saved '))
+        self.assertEqual((closed['memory_saved_at'], len(self.tmux.sent)), (saved, 1))
+        # #141: only a save after the request is this close's save.
+        self.assertRegex(closed['reason'], rf'^Closed, unsaved \(last save {WHEN}\)$')
+        self.assertIsNone(closed['closure']['saved_at'])
 
     def test_force_is_a_zero_wait(self):
         sid = self.launch()['session_id']

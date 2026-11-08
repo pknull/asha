@@ -18,7 +18,8 @@ Closure record (``row['closure']``)::
     pointer_at     when the one pointer line was typed (terminal only), or None
     memory         {available, destination, reason, baseline}
     handoff        None or the close-path handoff's evidence
-    saved_at       the generation's latest publication when it closed, or None
+    saved_at       the generation's latest publication when it closed, or None;
+                   reported only when at or after a request that went out (#141)
     terminated_at
 
 Records from earlier versions (states such as ``acknowledged`` or
@@ -36,6 +37,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .session_presentation import when as _when
 from .store import StoreError
 
 _ROOT = Path(__file__).resolve().parents[2]
@@ -175,11 +177,52 @@ def _clock(stamp) -> str:
     return datetime.fromtimestamp(stamp, timezone.utc).strftime('%H:%M UTC')
 
 
-def closed_label(row: dict) -> str:
-    """``Closed, saved HH:MM UTC`` or ``Closed, unsaved`` (D8): unsaved only without any save in the generation."""
-    word = "Stopped" if row.get("lifecycle") == "stopped" else "Closed"
+def withheld(row: dict):
+    """#141: why the close types no pointer into this pane (``_point``'s gate), or None; background work never ages out."""
+    native, tasks = row.get("native_activity") or "unknown", row.get("background_tasks")
+    if native in {"idle", "unknown"}:
+        return None
+    if native != "working":
+        return native.replace("-", " ")
+    since = _when(row["native_observed_at"]) if row.get("native_observed_at") else "unknown"
+    return f"idle with {tasks} background task{'s' * (tasks != 1)} since {since}" if tasks else f"working, last event {since}"
+
+
+def likely_unsaved(row: dict, record: dict):
+    """#141: why a pending, undelivered, unsaved close is stuck, or None; a turn seen running is not: its end delivers."""
     saved = row.get("memory_saved_at")
-    return f"{word}, " + ("saved " + _clock(saved) if saved is not None else "unsaved")
+    if (row.get("lifecycle") != "closing" or row.get("transport") != "terminal" or record.get("pointer_at")
+            or (record.get("delivery") or {}).get("delivered_at")
+            or saved is not None and saved >= record.get("requested_at", 0)):
+        return None
+    if (row.get("native_activity") == "working" and not row.get("background_tasks")
+            and time.time() - (row.get("native_observed_at") or 0) <= STALE_OBSERVATION_SECONDS):
+        return None
+    return withheld(row)
+
+
+def as_reported(record: dict) -> dict:
+    """#141: a save older than a request that went out is not that close's ``saved_at``."""
+    saved = record.get("saved_at")
+    if saved is not None and (record.get("delivery") or {}).get("channel") and saved < record.get("requested_at", 0):
+        return dict(record, saved_at=None)
+    return record
+
+
+def closed_label(row: dict, record=None) -> str:
+    """``Closed, saved HH:MM UTC`` or ``Closed, unsaved`` (D8); once the request went out, only a later save (#141)."""
+    word = "Stopped" if row.get("lifecycle") == "stopped" else "Closed"
+    saved, record = row.get("memory_saved_at"), record or {}
+    delivery = record.get("delivery") or {}
+    if word == "Stopped" or not delivery.get("channel") or record.get("requested_at") is None:
+        return f"{word}, " + ("saved " + _clock(saved) if saved is not None else "unsaved")
+    if saved is not None and saved >= record["requested_at"]:
+        return "Closed, saved " + _when(saved)
+    last = f"last save {_when(saved)}" if saved is not None else None
+    if row.get("transport") != "terminal" or delivery.get("delivered_at") or record.get("pointer_at"):
+        return "Closed, unsaved" + (f" ({last})" if last else "")
+    why = "; ".join(filter(None, (withheld(row), last)))
+    return "Closed, unsaved: the request never reached it" + (f" ({why})" if why else "") + "; resume to save"
 
 
 def guidance_for(row: dict, record: dict) -> str:
@@ -189,8 +232,11 @@ def guidance_for(row: dict, record: dict) -> str:
         saved = row.get("memory_saved_at")
         if saved is not None and saved >= record.get("requested_at", float("inf")):
             return "Closing: saved " + _clock(saved)
+        reason = likely_unsaved(row, record)
+        if reason:
+            return f"Closing, likely unsaved: {reason}; attach before {_clock(record['deadline'])}"
         return "Closing: asked for a Memory save; closes by " + _clock(record["deadline"])
-    return closed_label(row)
+    return closed_label(row, record)
 
 
 def receipt_for(record: dict) -> dict:
@@ -337,4 +383,4 @@ __all__ = ["ACKNOWLEDGED", "CLOSE_REQUEST_TOKEN", "MEMORY_FILES", "MESSAGE_KEY_P
            "PUBLICATION_GRACE_SECONDS", "STOP_HOOK_HARNESSES", "StopDecision", "closed_label", "guidance_for",
            "mark_delivered", "memory_destination", "message_key", "new_closure", "parse_digest", "pending",
            "pointer_line", "publish_component", "publish_handoff", "receipt_for", "record_handoff", "request_text",
-           "validate_handoff_request"]
+           "validate_handoff_request", "as_reported", "likely_unsaved", "withheld"]
