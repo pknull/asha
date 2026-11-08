@@ -132,6 +132,11 @@
   Only an ancestor that cannot be synced at all is passed over, on `EACCES`,
   `EPERM`, `EINVAL`, `EROFS`, `EBADF` or `ENOTSUP` from opening or syncing it
   (not readable by the Keeper, or a filesystem without directory sync).
+- `failed.left_on_disk` lists only the files this save created (#139). It had
+  been built from existence checks after the failure, so another save that
+  took both names between this one's checks and its exclusive create had its
+  sidecar reported as this save's leftover. Each successful exclusive create
+  is now recorded as it happens.
 
 ## Unreleased — a session publishes a nested project's Memory (#130)
 

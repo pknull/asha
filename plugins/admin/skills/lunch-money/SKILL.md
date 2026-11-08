@@ -436,7 +436,8 @@ attachments with it.
 - Any failed save stops the plan before the `DELETE` with `status: aborted`:
   nothing is removed, the plan is spent, `saved` lists the files already
   written, and `failed.left_on_disk` lists any file (or partial copy) the
-  failed save wrote before it stopped. Never retry; make a fresh plan once the
+  failed save created before it stopped, never one another save made under
+  the same name meanwhile. Never retry; make a fresh plan once the
   cause is fixed (a file left in the directory blocks a second save of the
   same file until the Keeper moves it).
 - `--no-save-attachments` skips the saving, and the plan then lists every file

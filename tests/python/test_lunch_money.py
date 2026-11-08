@@ -4192,5 +4192,61 @@ class UnownedAncestorSyncTests(RemovalFixture):
         self.assertEqual(caught.exception.errno, errno.EIO)
 
 
+# ---------------------------------------------------------------------------
+# #139: failed.left_on_disk lists only files this save created
+
+
+class LeftOnDiskOwnershipTests(RemovalFixture):
+    """Another save may take both names between the existence checks and this run's
+    exclusive create; its files are never reported as this run's leftovers."""
+
+    def race(self, target, first, *, also_fail_write=False):
+        """When this run creates `first`, another save has just written `first` and its
+        sidecar (or, with also_fail_write, only the sidecar, and this run's write of
+        `first` then hits a full disk)."""
+        real_open, real_write = os.open, os.write
+        ours = set()
+
+        def racing_open(name, flags, *args, **kwargs):
+            if name == first and flags & os.O_EXCL:
+                if not also_fail_write:
+                    (target / first).write_text("another save's file")
+                (target / (first + ".json")).write_text("another save's sidecar")
+                fd = real_open(name, flags, *args, **kwargs)
+                ours.add(fd)
+                return fd
+            return real_open(name, flags, *args, **kwargs)
+
+        def full_disk_write(fd, data):
+            if also_fail_write and fd in ours:
+                real_write(fd, bytes(data)[:7])
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real_write(fd, data)
+        return mock.patch.multiple(lm.os, open=racing_open, write=full_disk_write)
+
+    def test_lo1_another_saves_file_and_sidecar_are_not_listed(self):
+        target = self.dir / "raced"
+        plan, path = self.unsplit("--save-dir", str(target))
+        first = plan["operation"]["attachments"]["files"][0]["filename"]
+        with self.race(target, first):
+            out = self.assert_aborted(plan, path, "save-attachments", [])
+        self.assertEqual(out["failed"]["file_id"], 501)
+        self.assertRegex(out["detail"], "already exists")
+        self.assertEqual(out["failed"]["left_on_disk"], [])
+        self.assertNotRegex(out["message"], "left_on_disk")
+        self.assertEqual((target / first).read_text(), "another save's file")
+        self.assertEqual((target / (first + ".json")).read_text(), "another save's sidecar")
+
+    def test_lo2_only_this_saves_partial_file_is_listed_beside_anothers_sidecar(self):
+        target = self.dir / "raced-full"
+        plan, path = self.unsplit("--save-dir", str(target))
+        first = plan["operation"]["attachments"]["files"][0]["filename"]
+        with self.race(target, first, also_fail_write=True):
+            out = self.assert_aborted(plan, path, "save-attachments", [])
+        self.assertRegex(out["detail"], "No space left")
+        self.assertEqual(out["failed"]["left_on_disk"], [str(target / first)])
+        self.assertEqual((target / (first + ".json")).read_text(), "another save's sidecar")
+
+
 if __name__ == "__main__":
     unittest.main()
