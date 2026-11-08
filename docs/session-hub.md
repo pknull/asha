@@ -360,7 +360,7 @@ it is open: JSON shows `activity: "idle"` with the added field
 `reported_activity: "finished"`, and `saved_label` carries `saved HH:MM UTC`.
 A Room that is closing or has ended keeps the close and ended hints below.
 Input requests direct you to the terminal or Control, and a pending close says
-`Closing: waiting for a save` or `Closing: saved`. Ended sessions occupy a separate group below current sessions until
+`Closing: waiting for a save`, `Closing, likely unsaved: attach` or `Closing: saved`. Ended sessions occupy a separate group below current sessions until
 closed. Raw activity, lifecycle, and observed process state remain in JSON.
 
 A Claude turn can end while its own background work is still running: a
@@ -480,7 +480,20 @@ save project Memory, waits a bounded time, then terminates:
    only by the close's own waiter after it verified Room ownership; a refresh
    never types. A session waiting at a native question or permission prompt is
    not typed into. A structured session gets the request as its next
-   structured turn.
+   structured turn. The reason the pointer is withheld is also what the close
+   reports (#141): `idle with N background tasks since HH:MM UTC` (a Claude
+   turn ended with its own background work still running, however long ago),
+   `working, last event HH:MM UTC`, or `needs input`. When nothing is on its
+   way to the session (nothing delivered or typed, no save since the request,
+   and no turn seen running in the last five minutes, whose end would carry
+   it), dashboard `x` and `closure.guidance` say `Closing, likely unsaved:
+   REASON; attach before HH:MM UTC`, the row reads `Closing, likely unsaved:
+   attach` (a row with an open question keeps `Answer in terminal (attach)`),
+   presented closures carry `likely_unsaved: REASON`, and a foreground `close`
+   prints the line to stderr before it waits. It is only likely: the
+   background work can still wake the session, and that turn's Stop delivers
+   the request. Nothing more is typed, and resume is refused while the close is
+   pending.
 3. The close ends at the first publication or attestation recorded after the
    request (a handoff that names the request or not, or an explicit save), when
    the process ends, or at the deadline. A publication still in flight at the
@@ -489,9 +502,23 @@ save project Memory, waits a bounded time, then terminates:
    close authorizes it; `--wait` extends it). A structured session is asked to
    stop; its store's own cleanup reconciles the provider, and the closed record
    does not claim a confirmed process exit.
-5. The row reads `Closed, saved HH:MM UTC` or `Closed, unsaved`. The time is
-   the newest publication in the generation, so an earlier save still shows,
-   with its age visible; `unsaved` means the generation has none.
+5. The row reads `Closed, saved HH:MM UTC` or `Closed, unsaved`. Once the
+   request went out (`closure.delivery.channel` is set), only a publication at
+   or after the request is this close's save, and `closure.saved_at` reports
+   only that one; an earlier save is named instead, dated `MM-DD` unless it is
+   from today: `Closed, unsaved (last save 11-04 19:27 UTC)`. A terminal close
+   that nothing delivered or typed reads `Closed, unsaved: the request never
+   reached it (REASON; last save ...); resume to save` (#141). `--force` on a
+   pending request follows the same rule, because its request went out. A
+   plain force close, a close at once (D7) and a stop keep the generation's
+   newest save as `HH:MM UTC`; `unsaved` there means the generation has none.
+   The detail line's `Memory saved` time is dated unless from today too.
+
+After an unsaved close, `session resume ID --text "save project Memory"`
+continues the session with that prompt (the captured native conversation for
+Claude and Codex); close it again once its row reads saved. If the background
+job is still wanted, attach before the deadline instead: the deadline kill
+ends it, and the kill is not held back.
 
 A session whose finished report is settled (a turn-ending Stop emitted after
 the report, above; #109, #114) and whose current assignment already has a

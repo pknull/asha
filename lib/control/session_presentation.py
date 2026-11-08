@@ -2,11 +2,15 @@
 from datetime import datetime, timezone
 
 
+def when(stamp):
+    """``HH:MM UTC``, dated ``MM-DD`` when not from today (#141)."""
+    moment = datetime.fromtimestamp(stamp, timezone.utc)
+    return moment.strftime('%H:%M UTC' if moment.date() == datetime.now(timezone.utc).date() else '%m-%d %H:%M UTC')
+
+
 def memory_label(row):
     stamp = row.get('memory_saved_at')
-    if stamp is None:
-        return ''
-    return 'Memory saved ' + datetime.fromtimestamp(stamp, timezone.utc).strftime('%H:%M UTC')
+    return '' if stamp is None else 'Memory saved ' + when(stamp)
 
 
 def saved_label(row):
@@ -49,7 +53,8 @@ def present(row):
     elif activity == 'closing':
         saved = row.get('memory_saved_at')
         hint = ('Closing: saved' if record.get('deadline') is not None and saved is not None
-                and saved >= record.get('requested_at', float('inf')) else 'Closing: waiting for a save')
+                and saved >= record.get('requested_at', float('inf')) else
+                'Closing, likely unsaved: attach' if record.get('likely_unsaved') else 'Closing: waiting for a save')
     elif room_open and activity in {'finished', 'idle'}:
         # #105: a Room's save (or a finished report sent anyway) is a checkpoint.
         saved = saved_label(row)
