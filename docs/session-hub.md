@@ -474,9 +474,10 @@ save project Memory, waits a bounded time, then terminates:
    a queued hub message (read with `session messages`). A working Claude
    session also gets it as the harness's own Stop-hook block decision when its
    turn ends. An idle session, or one whose activity is unknown, gets one
-   bounded pointer line typed into its pane naming the request and `session
-   messages`; any other working session (Codex) gets that pointer once it is
-   observed idle within the wait. At most one pointer is typed per request, and
+   bounded pointer line typed into its pane naming `session messages`; the line
+   holds no digit, `j` or `k`, which act on a Claude Code dialog (#146), and the
+   queued message names the request. Any other working session (Codex) gets
+   that pointer once it is observed idle within the wait. At most one pointer is typed per request, and
    only by the close's own waiter after it verified Room ownership; a refresh
    never types. A session waiting at a native question or permission prompt is
    not typed into. A structured session gets the request as its next

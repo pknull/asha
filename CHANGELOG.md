@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased — control: the close pointer line carries no digit, j or k (#146)
+
+- The one line close types into an idle Claude pane named the request UUID
+  (digits) and said "project" (a `j`). In a Claude Code 2.1.319 permission
+  dialog a digit picks an option and `j`/`k` move its focus, so the line could
+  answer a dialog that opened unseen. It now reads "Asha Control close request:
+  read it with `asha control session messages`, save Memory as it says, then
+  end your turn." The queued message still names the request, and the Stop
+  decision text is unchanged.
+
 ## Unreleased — control: a close says when its request never reached the session (#141)
 
 - A Claude Room idle at its prompt with background work still running reads

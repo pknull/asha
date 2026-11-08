@@ -213,8 +213,9 @@ class PointerTests(FastClose):
         self.assertEqual(len(self.tmux.sent), 1)
         self.assertEqual(pane, self.tmux.pane_id)
         self.assertLessEqual(len(line), 200)
-        rid = result[0]['closure']['request_id']
-        self.assertIn(rid, line)
+        # #146: a digit picks a dialog option and j or k moves its focus; the queued message names the request.
+        self.assertEqual([c for c in line if c.isdigit() or c in 'jkJK'], [], line)
+        self.assertIn(closure.CLOSE_REQUEST_TOKEN, line)
         self.assertIn('asha control session messages', line)
         self.assertIsNotNone(result[0]['closure']['pointer_at'])
 
