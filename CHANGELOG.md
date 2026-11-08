@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — session: the archive delete rule's .trash/ exemption stays in its rm (#145)
+
+- `destructive-delete-archive` excluded any command containing `.trash/`, so
+  `rm x.7z; ls ~/.trash/` and `rm x.7z && echo .trash/` deleted an archive
+  unchallenged. The exemption now counts only inside the rm segment (an `rm`
+  command word, up to the next `|`, `;` or `&`), as `destructive-delete`'s path
+  exemptions do; `rm ~/.trash/2026-11-07/x.7z` stays allowed. Accepted
+  residual, as for the sibling rule: an archive beside a `.trash/` target in
+  the same rm, any other rm segment on the line naming `.trash/`, and
+  `.trash/` in non-target text inside the rm segment (a comment, a
+  redirection, a substitution) still suppress. The
+  rule's reason no longer claims the arm has no path exemption at all.
+
 ## Unreleased — control: the close pointer line carries no digit, j or k (#146)
 
 - The one line close types into an idle Claude pane named the request UUID
