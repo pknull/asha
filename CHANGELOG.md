@@ -116,6 +116,16 @@
   limit on Linux) (#142). The parent's timeout stops it only while the parent
   lives: a child whose parent died mid-search had been adopted by init and
   spun at 100% CPU until a restart.
+- An attachment's `size` is accepted in either unit (#137). The schema says
+  kilobytes and its example reads as bytes, and the Keeper's account has no
+  attachment to settle it, so reading bytes alone would make every save, and
+  so every unsplit or ungroup of a row with a file, fail if Lunch Money means
+  kilobytes. A download now matches exactly as bytes, or as kilobytes (1000 or
+  1024 bytes, rounded down or up, never a size between those roundings) only
+  when the reply's `Content-Length` matched the body. An empty body now also
+  needs a `Content-Length: 0`, since a size of 0 can be a file under 1 KB and a
+  cut close-delimited reply arrives empty. HTTP 200 and no `Content-Range` are
+  unchanged, so the coarser reading never vouches for a partial body.
 
 ## Unreleased — a session publishes a nested project's Memory (#130)
 

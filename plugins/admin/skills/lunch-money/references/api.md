@@ -133,12 +133,15 @@ below).
   `{id, uploaded_by, name, type, size, notes, created_at}` by the schema, and
   the spec's own example also carries `source`, so the helper keeps every
   field it is given. The schema says `size` is "in kilobytes", but its example
-  shows a `receipt.png` of `size: 4330`, which reads as bytes. The helper
-  reads `size` as bytes and requires the download to match it exactly; if
-  Lunch Money really means kilobytes, every save fails and the plan stops
-  before its `DELETE`, the safe way round. (The Keeper's account has no
-  attachments to settle it.) Embedded split children and group members carry
-  `files` too (`childTransactionObject`).
+  shows a `receipt.png` of `size: 4330`, which reads as bytes. The Keeper's
+  account has no attachments to settle it (0 in 4,323 transactions,
+  2026-11-07), so the helper accepts a download matching `size` in either
+  unit: exactly as bytes, or as kilobytes (1000 or 1024 bytes, rounded down
+  or up, exactly those four values) only when the reply's `Content-Length`
+  matched the body, so the coarser reading never vouches for an unchecked
+  body (#137). A `size` of 0 can then be any file under 1 KB, so an empty
+  body counts only with `Content-Length: 0`. Embedded split
+  children and group members carry `files` too (`childTransactionObject`).
   `GET /transactions/attachments/{file_id}` answers `{url, expires_at}`, a
   signed link. The only documented size limit is on upload,
   `POST /transactions/{transaction_id}/attachments`: "The file must be less
