@@ -254,6 +254,31 @@ class PointerTests(FastClose):
         self.hub._point(current, current['closure'])
         self.assertEqual(self.tmux.sent, [], 'a delivered request gets no pointer')
 
+    def test_a_request_the_stop_decision_delivered_gets_no_pointer(self):
+        """#148 (b50c17d8): the waiter read the row between the Stop's idle observation and the
+        decision's confirmed delivery, then typed a pointer 42 ms after the decision went out."""
+        sid = self.launch()['session_id']
+        with self.acting_as(sid):
+            self.hub.observe('prompt-submitted')
+        self.request(sid)
+        with self.acting_as(sid):
+            stopped = self.hub.observe('turn-stopped')
+        stale = self.hub.get(sid)   # the waiter's read: idle, nothing delivered yet
+        decision = self.hub.stop_decision(stopped)
+        self.assertTrue(self.hub.confirm_delivery(stopped, receipt=decision.receipt)['confirmed'])
+        self.hub._point(stale, stale['closure'])
+        self.assertEqual(self.tmux.sent, [])
+        self.assertIsNone(self.hub.get(sid)['closure']['pointer_at'])
+
+    def test_a_question_asked_after_the_waiters_read_gets_no_pointer(self):
+        sid = self.launch()['session_id']
+        record = self.request(sid)['closure']
+        stale = self.hub.get(sid)   # unobserved when the waiter read it
+        with self.acting_as(sid):
+            self.hub.observe('permission-requested', body='May I?')
+        self.hub._point(stale, record)
+        self.assertEqual(self.tmux.sent, [])
+
     def test_stop_hook_active_never_chains_a_block(self):
         sid = self.launch()['session_id']
         self.request(sid)

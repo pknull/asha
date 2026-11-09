@@ -481,7 +481,13 @@ save project Memory, waits a bounded time, then terminates:
    queued message names the request. Any other working session (Codex) gets
    that pointer once it is observed idle within the wait. At most one pointer is typed per request, and
    only by the close's own waiter after it verified Room ownership; a refresh
-   never types. A session waiting at a native question or permission prompt is
+   never types. Before it checks Room ownership and types, the waiter re-reads
+   the row under the session's lock: a request whose Stop decision delivery is
+   already recorded,
+   or a question reported by then, gets no pointer (#148). A Stop hook
+   observes idle, decides and records delivery within tens of milliseconds;
+   a waiter reading inside that span can still type, so the pointer and the
+   Stop decision both arrive at the turn boundary. A session waiting at a native question or permission prompt is
    not typed into. A structured session gets the request as its next
    structured turn. The reason the pointer is withheld is also what the close
    reports (#141): `idle with N background tasks since HH:MM UTC` (a Claude

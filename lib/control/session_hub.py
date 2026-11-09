@@ -950,8 +950,12 @@ class Hub:
             with self._action_lock(row['session_id'], timeout=CLOSE_POLL_SECONDS):
                 current = self.get(row['session_id'])
                 latest = current.get('closure') or {}
+                # The gate again on the locked row: a Stop decision may have delivered the
+                # request, or a question opened, since the caller's read (#148).
                 if (current['lifecycle'] != 'closing' or latest.get('request_id') != record['request_id']
-                        or latest.get('pointer_at') is not None):
+                        or latest.get('pointer_at') is not None
+                        or (latest.get('delivery') or {}).get('delivered_at') is not None
+                        or closure.withheld(current) is not None):
                     return
                 room = RoomStore(self.config).read(current['room_id'])
                 state, detail = _owned_state(room, self.tmux)
