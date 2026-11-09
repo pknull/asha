@@ -3774,6 +3774,10 @@ spec = importlib.util.spec_from_file_location("lunch_money", script)
 lm = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(lm)
 lm.REGEX_TIMEOUT_SECONDS = timeout
+if sys.argv[4:] == ["no-deathsig"]:
+    # #144: prctl made unavailable, as off Linux; the child must carry on to its fallback.
+    assert ".prctl(" in lm._REGEX_CHILD
+    lm._REGEX_CHILD = lm._REGEX_CHILD.replace(".prctl(", ".prctl_unavailable(")
 
 class Stalled(subprocess.Popen):
     def communicate(self, input=None, timeout=None):
@@ -3787,6 +3791,21 @@ class Stalled(subprocess.Popen):
 
 subprocess.Popen = Stalled
 lm.match_texts("(a+)+$", False, [["a" * 40 + "!"]])
+"""
+
+# #144: a parent under an inherited CPU limit lower than the timeout, so the child's
+# CPU limit, not the parent's deadline, stops a catastrophic search.
+_CPU_LIMITED_PARENT = r"""
+import importlib.util, json, resource, sys
+resource.setrlimit(resource.RLIMIT_CPU, (int(sys.argv[2]), int(sys.argv[2])))
+spec = importlib.util.spec_from_file_location("lunch_money", sys.argv[1])
+lm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(lm)
+lm.REGEX_TIMEOUT_SECONDS = 60
+try:
+    lm.match_texts("(a+)+$", False, [["a" * 40 + "!"]])
+except lm.PlanError as exc:
+    print(json.dumps(str(exc)))
 """
 
 
@@ -3817,20 +3836,15 @@ class RegexTimeoutTests(HelperTestCase):
         self.assertEqual(len(spawned), 1)
         self.assertFalse(_still_running(*spawned[0]), "the stopped regex child was left behind")
 
-    @unittest.skipUnless(os.name == "posix", "the child limits itself with a POSIX rlimit")
-    def test_f142_a_child_whose_parent_dies_stops_itself_near_the_deadline(self):
-        """#142: the parent's timeout acts only while the parent lives. The parent is
-        killed after handing over a catastrophic job and before its own timeout acts;
-        the child must stop itself within about the deadline. Before the fix it was
-        adopted by init and searched on until killed."""
-        timeout = 2
+    def _orphan(self, timeout, *flags):
+        """Kill a parent that has handed its child a catastrophic job; (child pid, start)."""
         pid_file = self.dir / "child.pid"
         log_path = self.dir / "parent.log"
         with log_path.open("wb") as log:
             parent = subprocess.Popen(
                 [sys.executable, "-I", "-c", _ORPHAN_PARENT, str(SCRIPT), str(pid_file),
-                 str(timeout)], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-                env={})
+                 str(timeout), *flags], stdin=subprocess.DEVNULL, stdout=log,
+                stderr=subprocess.STDOUT, env={})
         self.addCleanup(_reap, parent)
         sent = Path(f"{pid_file}.sent")
         child = start = None
@@ -3848,8 +3862,25 @@ class RegexTimeoutTests(HelperTestCase):
             child = int(pid_file.read_text())
             start = _proc_start(child)
             self.addCleanup(_kill_if_running, child, start)
+        # Kill the parent only once the child is searching, past its start-up checks
+        # (#144: one of them exits a child whose parent is already gone).
+        while (used := _cpu_seconds(child)) is not None and used < 0.3:
+            if time.monotonic() - began > 30:
+                self.fail(f"the child never started searching ({used} s of CPU)")
+            time.sleep(0.01)
         parent.kill()
         parent.wait()
+        return child, start
+
+    @unittest.skipUnless(os.name == "posix", "the child limits itself with a POSIX rlimit")
+    def test_f142_a_child_whose_parent_dies_stops_itself_near_the_deadline(self):
+        """#142: the parent's timeout acts only while the parent lives. The parent is
+        killed after handing over a catastrophic job and before its own timeout acts;
+        the child must stop itself within about the deadline. Before the fix it was
+        adopted by init and searched on until killed. #144: with PR_SET_PDEATHSIG
+        unavailable, as off Linux, the CPU limit is the fallback that stops it."""
+        timeout = 2
+        child, start = self._orphan(timeout, "no-deathsig")
         self.assertTrue(_still_running(child, start),
                         "the child ended with its parent; the orphaned search was not reached")
         limit = timeout + 1  # the child's own CPU cap
@@ -3864,6 +3895,58 @@ class RegexTimeoutTests(HelperTestCase):
         self.assertFalse(_still_running(child, start),
                          f"the regex child was still searching after its parent died "
                          f"({used} s of CPU, {time.monotonic() - orphaned:.1f} s)")
+
+    @unittest.skipUnless(sys.platform.startswith("linux") and _HAS_PROC,
+                         "PR_SET_PDEATHSIG is Linux's; the test reads /proc")
+    def test_f144_a_child_dies_with_its_parent_well_before_its_cpu_limit(self):
+        """#144: on Linux the child dies with its parent, instead of searching on for
+        up to its 3 s CPU limit. Judged by its CPU time, so a starved child cannot
+        pass by not running."""
+        child, start = self._orphan(2)
+        orphaned, used = time.monotonic(), None
+        while _still_running(child, start) and time.monotonic() - orphaned < 30:
+            used = _cpu_seconds(child)
+            if used is not None and used > 1.0:
+                break
+            time.sleep(0.01)
+        self.assertFalse(_still_running(child, start),
+                         f"the regex child outlived its parent ({used} s of its 3 s CPU "
+                         f"limit, {time.monotonic() - orphaned:.2f} s)")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "PR_SET_PDEATHSIG is Linux's")
+    def test_f144_a_child_whose_parent_died_before_prctl_exits_at_once(self):
+        """The death signal is armed only once the child runs; a parent already gone by
+        then (here: a pid that is not the child's parent) means exit, not search."""
+        job = json.dumps({"pattern": "(a+)+$", "ignore_case": False, "texts": [["a" * 40 + "!"]]})
+        began = time.monotonic()
+        proc = subprocess.run([sys.executable, "-I", "-S", "-c", lm._REGEX_CHILD, "6", "1"],
+                              input=job.encode("ascii"), capture_output=True, env={},
+                              timeout=30, check=False)
+        self.assertEqual((proc.returncode, proc.stdout), (1, b""), proc.stderr)
+        self.assertIn(b"outlived its parent", proc.stderr)
+        self.assertLess(time.monotonic() - began, 3)
+
+    def test_f144_a_child_killed_by_a_signal_names_it(self):
+        """#144: a signal death leaves stderr empty, and the message used to end at its
+        colon. A signal is never blamed on the CPU limit without the CPU time spent."""
+        for code, named, stderr in ((-signal.SIGSEGV, "SIGSEGV", b""), (-signal.SIGKILL, "SIGKILL", b""),
+                                    (-200, "signal 200", b""),
+                                    (-signal.SIGABRT, r"SIGABRT \(Fatal Python error\)", b" Fatal Python error\n")):
+            done = subprocess.CompletedProcess([], code, b"", stderr)
+            with self.subTest(code=code), mock.patch.object(lm.subprocess, "run",
+                                                            return_value=done):
+                with self.assertRaisesRegex(lm.PlanError, "^the pattern search failed: it "
+                                            f"was killed by {named}$"):
+                    lm.match_texts("a", False, [["a"]])
+
+    @unittest.skipUnless(os.name == "posix", "the child limits itself with a POSIX rlimit")
+    def test_f144_a_child_stopped_by_its_cpu_limit_says_so(self):
+        proc = subprocess.run([sys.executable, "-I", "-c", _CPU_LIMITED_PARENT, str(SCRIPT), "2"],
+                              stdin=subprocess.DEVNULL, capture_output=True, env={}, timeout=60,
+                              check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr[-500:])
+        self.assertRegex(json.loads(proc.stdout), r"^the pattern search failed: it was killed "
+                         r"by (SIGKILL|SIGXCPU) at its 2 s CPU limit; simplify the pattern")
 
     def test_f142_normal_patterns_match_as_they_do_in_process(self):
         texts = [["AMZN Mktp", "gift card"], ["Corner Shop"], [], ["café 123", "Ünïcode"],

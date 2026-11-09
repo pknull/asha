@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — admin: lunch-money's regex child names its signal and dies with its parent (#144)
+
+- A `--match` search child killed by a signal used to fail as a bare `the
+  pattern search failed:`. The message now names the signal, and says when
+  the child's own CPU limit (#142) stopped it. The parent's 5 s deadline keeps
+  its own message.
+- On Linux the child asks for SIGKILL when its parent dies (`PR_SET_PDEATHSIG`
+  via ctypes `prctl`) and exits if the parent died before that took hold, so
+  an orphaned search ends at once instead of at its 6 s CPU limit. Without
+  `prctl` it carries on silently under the CPU limit, which stays the portable
+  fallback. Only Linux is tested; SKILL.md says so.
+
 ## Unreleased — docs: which closes get the pointer, and why hooks go silent (#147)
 
 - `docs/session-hub.md` promised the pointer line to a session "whose
