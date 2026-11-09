@@ -9,7 +9,7 @@ import sys
 import uuid
 import time
 
-from .config import load_config
+from .config import CLOSE_WAIT_DEFAULT, load_config
 from .database import DATABASE_NAME
 from .session_hub import Hub
 from .session_store import identifier
@@ -333,7 +333,7 @@ def dispatch(argv, *, env):
             parser.add_argument('--await-request', metavar='REQUEST_ID', help=argparse.SUPPRESS)
             parser.add_argument('--wait', type=int, default=None, metavar='SECONDS',
                                 help='how long to wait for a Memory save before terminating '
-                                     '(default control.close_wait_seconds, 60)')
+                                     f'(default control.close_wait_seconds, {CLOSE_WAIT_DEFAULT})')
     elif verb == 'handoff':
         parser.add_argument('--request', metavar='REQUEST_ID')
         # Accepted and ignored for one release: close requests in live Rooms still name it.

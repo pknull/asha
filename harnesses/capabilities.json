@@ -111,7 +111,7 @@
           "surface": "session close -> best-effort: queued hub message; a working session gets the request once as its Stop-hook block decision; an idle or unobserved pane gets one typed pointer line; bounded wait, then termination labelled saved or unsaved",
           "verifier": "python test_control_session_closure/test_session_publication_rows/test_session_emitted_at; tests:test-session-hub-hooks",
           "limitations": [
-            "Best-effort: the close ends at the first publication after the request, at process exit, or at the deadline (default 60 s); an unanswered request closes unsaved",
+            "Best-effort: the close ends at the first publication after the request, at process exit, or at the deadline (default control.close_wait_seconds, 180 s); an unanswered request closes unsaved",
             "The pointer line is typed by the close's own waiter after Room ownership is verified, at most once per request; a session at a native question or permission prompt is not typed into",
             "Publication runs through memory_v2 with a compare-and-swap; no Git seam; a kill mid-publication leaves the recovery journal",
             "The Stop decision is printed before delivery is recorded; a Stop that follows a delivered block carries stop_hook_active and emits nothing",

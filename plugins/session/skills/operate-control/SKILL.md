@@ -115,8 +115,10 @@ before conveying them as conclusions. Message pages expose `complete` and
 
 `session stop ID` stops the owned process now and retains history. `session
 close ID` is best-effort: it asks the session to save project Memory, waits a
-bounded time (`--wait SECONDS`, default `control.close_wait_seconds`, 60), then
+bounded time (`--wait SECONDS`, default `control.close_wait_seconds`, 180), then
 terminates it, attached terminal included. `close ID --force` is a zero wait.
+A foreground `close` returns at the save, but one that never saves runs to its
+deadline: give the call a timeout above the wait, or run it in the background.
 The request reaches a working Claude session as its Stop-hook decision and an
 idle or unobserved terminal as one typed pointer line to `session messages`; a
 working Codex session gets the pointer once observed idle; a structured session

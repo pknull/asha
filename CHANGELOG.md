@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — control: close waits 180 s for a save by default (#148)
+
+- Since 2026-10-01, 21 Claude terminal closes delivered their request and
+  still ended unsaved. In 16 the Room took up the request within a second (or,
+  once, at its turn's end 55 s in) and was still verifying claims or writing
+  drafts when the 60 s default ran out. Successful close saves that drafted
+  took a median 17 s from first draft to publication, so those Rooms needed
+  roughly 75-150 s. `control.close_wait_seconds` now defaults to 180 (the 600
+  cap is unchanged). A close still ends at the first save after its request, so
+  the longer default only lengthens closes that never save, which today
+  includes every Codex terminal close (0 of 13 delivered since 10-01 saved).
+  A foreground `close` that never saves now outlasts a two-minute tool
+  timeout: give the call a longer timeout or run it in the background.
+
 ## Unreleased — session: the archive delete rule's .trash/ exemption stays in its rm (#145)
 
 - `destructive-delete-archive` excluded any command containing `.trash/`, so
