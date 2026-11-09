@@ -13,6 +13,7 @@ from unittest import mock
 from lib.control.config import load_config
 from lib.control.store import StoreError
 from lib.control import session_closure as closure
+from lib.control import tmux as tmux_module
 from tests.python import test_control_rooms as rooms_fixture
 
 ACTIVE = "# Objective\nShip the closure\n\n# State\nDone\n\n# Next\n- Review\n\n# Blockers\n- None\n"
@@ -301,6 +302,32 @@ class PointerTests(FastClose):
         sid = self.launch(harness='copilot')['session_id']
         self.hub._point(self.hub.get(sid), self.request(sid)['closure'])
         self.assertEqual(len(self.tmux.sent), 1)
+
+    def pointer_keys(self, harness, **sleep):
+        self.tmux.keys.clear()
+        sid = self.launch(harness=harness, session_id=str(uuid.uuid4()))['session_id']
+        record = self.request(sid)['closure']
+        with mock.patch.object(tmux_module.time, 'sleep', **(sleep or dict(wraps=time.sleep))) as slept:
+            self.hub._point(self.hub.get(sid), record)
+        (typed_at, text), (entered_at, enter) = self.tmux.keys
+        self.assertEqual((text, enter), (['-l', closure.pointer_line()], ['Enter']))
+        return entered_at - typed_at, [c.args[0] for c in slept.call_args_list if c.args[0] > 0]
+
+    def test_a_codex_pointer_enters_well_after_its_paste_window(self):
+        """#150: Codex 0.162.1 takes an Enter within 8 ms of fast text as part of a paste, and
+        keeps a 120 ms Enter window on other paths; 0 of 13 Codex closes saved."""
+        gap, _ = self.pointer_keys('codex')
+        self.assertGreaterEqual(gap, 2 * 0.12)
+
+    def test_other_harnesses_enter_at_once(self):
+        for harness in ('claude', 'copilot', 'opencode'):
+            with self.subTest(harness=harness):
+                self.assertEqual(self.pointer_keys(harness)[1], [])
+
+    def test_an_interrupted_pause_still_enters(self):
+        with self.assertRaises(KeyboardInterrupt):
+            self.pointer_keys('codex', side_effect=KeyboardInterrupt)
+        self.assertEqual([keys for _, keys in self.tmux.keys], [['-l', closure.pointer_line()], ['Enter']])
 
     def test_a_session_waiting_for_input_gets_no_pointer(self):
         sid = self.launch()['session_id']

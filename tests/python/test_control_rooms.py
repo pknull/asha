@@ -61,6 +61,8 @@ class FakeTmux:
         self.before_kill = None
         # Lines typed through the operator-initiated ``send_line`` seam.
         self.sent: list[tuple[str, str]] = []
+        # (monotonic time, keys) for each send-keys the real adapter issues for them (#150).
+        self.keys: list[tuple[float, list[str]]] = []
         # The diagnostic every pane read fails with while no server answers (#140);
         # creating a session starts a server again, as tmux does.
         self.server_error: str | None = None
@@ -143,11 +145,16 @@ class FakeTmux:
         self.killed.append(identity["session_id"])
         self.sessions.clear()
 
-    def send_line(self, pane_id: str, text: str) -> None:
+    def send_line(self, pane_id: str, text: str, **options) -> None:
         self._server()
         if pane_id != self.pane_id or not self.sessions:
             raise TmuxError("missing pane")
         self.sent.append((pane_id, text))
+        TmuxAdapter(runner=self._record_keys).send_line(pane_id, text, **options)
+
+    def _record_keys(self, argv, **_kwargs):
+        self.keys.append((time.monotonic(), argv[argv.index("send-keys") + 3:]))
+        return subprocess.CompletedProcess(argv, 0, b"", b"")
 
     def session_option(self, session: str, option: str) -> str | None:
         self._server()

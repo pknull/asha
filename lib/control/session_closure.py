@@ -62,6 +62,10 @@ CLOSE_REQUEST_TOKEN = "Asha Control close request"
 PUBLICATION_GRACE_SECONDS = 10
 # ``tmux.send_line`` refuses longer lines.
 POINTER_LIMIT = 200
+# Seconds between the pointer's text and its Enter, by harness (#150). Codex
+# 0.162.1 takes an Enter handled within 8 ms of fast text as a newline in a
+# paste and keeps a 120 ms Enter window on other paths; 0.25 s is twice that.
+POINTER_ENTER_DELAY = {"codex": 0.25}
 # The five-minute staleness rule: a working observation with nothing newer this long reads unknown.
 STALE_OBSERVATION_SECONDS = 300
 
@@ -384,7 +388,7 @@ def parse_digest(value):
 
 
 __all__ = ["ACKNOWLEDGED", "CLOSE_REQUEST_TOKEN", "MEMORY_FILES", "MESSAGE_KEY_PREFIX", "OUTCOMES",
-           "PUBLICATION_GRACE_SECONDS", "STOP_HOOK_HARNESSES", "StopDecision", "closed_label", "guidance_for",
+           "POINTER_ENTER_DELAY", "PUBLICATION_GRACE_SECONDS", "STOP_HOOK_HARNESSES", "StopDecision", "closed_label", "guidance_for",
            "mark_delivered", "memory_destination", "message_key", "new_closure", "parse_digest", "pending",
            "pointer_line", "publish_component", "publish_handoff", "receipt_for", "record_handoff", "request_text",
            "validate_handoff_request", "as_reported", "likely_unsaved", "withheld"]

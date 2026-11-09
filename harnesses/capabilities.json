@@ -263,6 +263,7 @@
           "verifier": "python test_control_session_closure/test_session_publication_rows/test_session_emitted_at; tests:test-session-hub-hooks",
           "limitations": [
             "No proven Stop block return channel; a session that stays working through the wait closes unsaved",
+            "The pointer's Enter follows its text after 0.25 s to clear Codex's paste-burst detection (#150); not yet verified in a live Codex pane",
             "Fixture evidence is not a paid native probe"
           ]
         },

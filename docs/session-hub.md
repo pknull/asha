@@ -500,8 +500,12 @@ save project Memory, waits a bounded time, then terminates:
    naming `session messages`; the line holds no digit, `j` or `k`, which act on
    a Claude Code dialog (#146), and the queued message names the request. Any
    other working session (Codex) gets that pointer once it is observed idle
-   within the wait. At most one pointer is typed per request, and only by the
-   close's own waiter after it verified Room ownership; a refresh never types.
+   within the wait. In a Codex pane the Enter follows the text after 0.25 s:
+   Codex 0.162.1 reads fast typed text as a paste and takes an Enter within
+   8 ms of it as a newline in that paste (it keeps a 120 ms Enter window on
+   other paths), so the line sat unsubmitted (#150). At most one pointer is
+   typed per request, and only by the close's own waiter after it verified
+   Room ownership; a refresh never types.
    Before it checks Room ownership and types, the waiter re-reads the row under
    the session's lock: a request whose Stop decision delivery is already
    recorded, or a question reported by then, gets no pointer (#148). A Stop
