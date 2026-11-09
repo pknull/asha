@@ -324,8 +324,15 @@ follows a Bash `cd` or EnterWorktree. A missed SessionStart after `/clear`
 leaves the new conversation's events refused for the rest of that generation,
 and a native subagent reporting under its own thread ID is refused too; both
 are logged. Codex `/new` is not verified to report source `clear`; if it does
-not, its new conversation is refused the same way. A foreign conversation that
-starts inside the project before the session's own first event can still
+not, its new conversation is refused the same way. Claude Code (seen on 2.1.303
+and 2.1.312) can move a conversation to a background session, which continues
+it under a new ID with SessionStart source `fork`; unless the bound
+conversation ended first, that is refused too, so the row keeps its last
+observation while the session works on and its Memory publications, which go by
+the environment, still record (#147). The one host seen kept the environment of
+the Room that first moved a conversation to it, so a conversation moved there
+later reported as that Room's session. A foreign conversation that starts
+inside the project before the session's own first event can still
 bind. Refused hook events
 are appended to `~/.asha/state/control/hub-rejected-events.jsonl` (mode 0600,
 locked, trimmed in place to the newest half past 64 KiB) instead of being
@@ -475,21 +482,24 @@ save project Memory, waits a bounded time, then terminates:
 2. The request goes out through the seams that exist. A terminal session gets
    a queued hub message (read with `session messages`). A working Claude
    session also gets it as the harness's own Stop-hook block decision when its
-   turn ends. An idle session, or one whose activity is unknown, gets one
-   bounded pointer line typed into its pane naming `session messages`; the line
-   holds no digit, `j` or `k`, which act on a Claude Code dialog (#146), and the
-   queued message names the request. Any other working session (Codex) gets
-   that pointer once it is observed idle within the wait. At most one pointer is typed per request, and
-   only by the close's own waiter after it verified Room ownership; a refresh
-   never types. Before it checks Room ownership and types, the waiter re-reads
-   the row under the session's lock: a request whose Stop decision delivery is
-   already recorded,
-   or a question reported by then, gets no pointer (#148). A Stop hook
-   observes idle, decides and records delivery within tens of milliseconds;
-   a waiter reading inside that span can still type, so the pointer and the
-   Stop decision both arrive at the turn boundary. A session waiting at a native question or permission prompt is
-   not typed into. A structured session gets the request as its next
-   structured turn. The reason the pointer is withheld is also what the close
+   turn ends. An idle session, or one never observed (no hook report yet, or a
+   harness without hooks), gets one bounded pointer line typed into its pane
+   naming `session messages`; the line holds no digit, `j` or `k`, which act on
+   a Claude Code dialog (#146), and the queued message names the request. Any
+   other working session (Codex) gets that pointer once it is observed idle
+   within the wait. At most one pointer is typed per request, and only by the
+   close's own waiter after it verified Room ownership; a refresh never types.
+   Before it checks Room ownership and types, the waiter re-reads the row under
+   the session's lock: a request whose Stop decision delivery is already
+   recorded, or a question reported by then, gets no pointer (#148). A Stop
+   hook observes idle, decides and records delivery within tens of
+   milliseconds; a waiter reading inside that span can still type, so the
+   pointer and the Stop decision both arrive at the turn boundary. A session
+   waiting at a native question or permission prompt is not typed into, nor is
+   a working row that has gone stale: it shows `unknown` but keeps its last
+   observation, so its pane may be mid-turn or at a dialog (#147). A structured
+   session gets the request as its next structured turn. The reason the pointer
+   is withheld is also what the close
    reports (#141): `idle with N background tasks since HH:MM UTC` (a Claude
    turn ended with its own background work still running, however long ago),
    `working, last event HH:MM UTC`, or `needs input`. When nothing is on its

@@ -258,7 +258,7 @@
         },
         "session-close": {
           "support": "partial",
-          "surface": "session close -> best-effort: queued hub message; one typed pointer line once the pane is observed idle (or at once when activity is unknown); bounded wait, then termination labelled saved or unsaved",
+          "surface": "session close -> best-effort: queued hub message; one typed pointer line once the pane is observed idle (or at once when never observed); bounded wait, then termination labelled saved or unsaved",
           "verifier": "python test_control_session_closure/test_session_publication_rows/test_session_emitted_at; tests:test-session-hub-hooks",
           "limitations": [
             "No proven Stop block return channel; a session that stays working through the wait closes unsaved",

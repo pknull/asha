@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — docs: which closes get the pointer, and why hooks go silent (#147)
+
+- `docs/session-hub.md` promised the pointer line to a session "whose
+  activity is unknown". The gate reads the stored observation, so a working
+  row with nothing newer for five minutes (shown `unknown`) gets none, and
+  should not: its pane may be mid-turn or at a dialog. The text now says the
+  pointer goes to an idle session or one never observed, and that a stale
+  working row is not typed into; its close reports `working, last event`.
+- THORNE Room `3b100e2d` was stored working (shown `unknown`) for 49 h because
+  Claude Code moved its conversation to a background session on 2026-10-22
+  (`continued-in` record, SessionStart source `fork`, new ID `a818b246`).
+  Control binds a generation to its first conversation and rebinds only on
+  `clear` or after that conversation ends, so every later hook event was
+  refused while its Memory saves still recorded. The binding section now names
+  this. The background host kept THORNE's environment: a Garret RP
+  conversation moved there on 2026-10-28 reported as THORNE and could not save
+  at its close (#148).
+
 ## Unreleased — control: no pointer after the Stop decision delivered the close (#148)
 
 - A close's waiter checked delivery on the row it read before taking the
