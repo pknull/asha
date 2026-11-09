@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — control: a Codex pointer's Enter waits out Codex's paste detection (#150)
+
+- No Codex terminal close since 2026-10-01 saved (0 of 13), and the chair's
+  live probe on 0.162.1 showed the typed pointer sitting unsubmitted in the
+  composer. `send_line` sends the text and the Enter as two `send-keys` calls,
+  which reached a pty 2.6 ms apart (median of 40; max 12.8). Codex's TUI reads
+  fast unbracketed text as a paste burst (`paste_burst.rs`), and an Enter it
+  handles within 8 ms of the burst's last character joins the paste as a
+  newline (`chat_composer.rs` `handle_submission_with_time`, `reconnect.rs`
+  `handle_paste_enter`; 9 ms submits in `chat_composer_enter_tests.rs`; all at
+  `rust-v0.162.1`). Applying the flushed paste clears Codex's 120 ms Enter
+  window, so only 8 ms applies to this line; the window still holds on other
+  paths. For a Codex pane the Enter now follows the text after 0.25 s, twice
+  that window, because Codex times each key when it handles it, not when it
+  arrives (252-254 ms at the pty, 40 of 40). The Enter is sent even when an interrupt cuts the pause short.
+  Other harnesses are unchanged, and nothing more is typed. Not yet verified
+  in a live Codex pane.
+
 ## Unreleased — control: a moved Claude conversation cannot act as the Room (#149)
 
 - Claude Code can move a Room's conversation to a background session under a

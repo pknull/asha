@@ -1086,7 +1086,7 @@ class TmuxAdapter:
             *child,
         ]
 
-    def send_line(self, pane_id: str, text: str) -> None:
+    def send_line(self, pane_id: str, text: str, *, enter_delay: float = 0.0) -> None:
         """Type one bounded line plus Enter into a pane.
 
         OPERATOR-INITIATED SEAM: it types only for an explicit operator action,
@@ -1094,6 +1094,8 @@ class TmuxAdapter:
         types into an idle or unobserved session (best-effort close D1). This
         checks the pane syntax and line length only; the caller verifies Room
         ownership first. Nothing types on a refresh or reconciliation.
+        ``enter_delay`` seconds pass between the text and the Enter, for a
+        harness that reads a fast Enter as part of a paste (#150).
         """
         pane = _validate_pane_id(pane_id)
         if not isinstance(text, str) or not text or len(text) > 200 or any(
@@ -1101,7 +1103,11 @@ class TmuxAdapter:
         ):
             raise TmuxError("pane input must be one bounded printable line")
         self._run(["send-keys", "-t", pane, "-l", text])
-        self._run(["send-keys", "-t", pane, "Enter"])
+        try:
+            if enter_delay:
+                time.sleep(enter_delay)
+        finally:   # an interrupt in the pause must not leave the line unsubmitted
+            self._run(["send-keys", "-t", pane, "Enter"])
 
     def pipe_pane(self, pane_id: str, path: str | Path) -> None:
         """Append every byte an owned pane emits to a durable file.
