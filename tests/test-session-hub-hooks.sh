@@ -163,6 +163,7 @@ fi
 printf '%s\n' "$*" > "$CONTROL_CAPTURE"
 [[ -z "${CONTROL_STUB_SLEEP:-}" ]] || sleep "$CONTROL_STUB_SLEEP"
 [[ -z "${CONTROL_STUB_OUTPUT:-}" ]] || printf '%s\n' "$CONTROL_STUB_OUTPUT"
+printf '%s\n' "$*" >> "$CONTROL_CAPTURE.answered"  # reached only by a call that answered (#135)
 STUB
 chmod +x "$FAKE_ROOT/bin/asha"
 
@@ -297,13 +298,25 @@ else
   fail "a pending close request is returned on Stop as the harness's block decision ($OUT)"
 fi
 
-for pair in "PostToolUse" "SessionEnd" "UserPromptSubmit" "PermissionRequest"; do
-  OUT="$(run_control "$pair" '' ASHA_HUB_SESSION_ID="$HUB_ID" CONTROL_STUB_OUTPUT="$CLOSE_DECISION")"
-  [[ "$OUT" == '{}' ]] || fail "close decision leaked through $pair ($OUT)"
+# #135: a controller killed at the bridge budget also answers '{}', so each
+# entry also proves its call answered in time: the stub recorded the answer, and
+# no detached loss record names it.
+: > "$CAPTURE.lost"; : > "$CAPTURE.answered"
+CONFINED=1
+CONFINE_PAIRS=(PostToolUse SessionEnd UserPromptSubmit PermissionRequest)
+for pair in "${CONFINE_PAIRS[@]}"; do
+  OUT="$(run_control "$pair" "{\"session_id\":\"confine-$pair\"}" ASHA_HUB_SESSION_ID="$HUB_ID" CONTROL_STUB_OUTPUT="$CLOSE_DECISION")"
+  [[ "$OUT" == '{}' ]] || { CONFINED=""; fail "close decision leaked through $pair ($OUT)"; }
+  grep -q -- "--native-id confine-$pair\$" "$CAPTURE.answered" \
+    || { CONFINED=""; fail "the $pair confinement entry's controller never answered"; }
 done
-if [[ "$OUT" == '{}' ]]; then
-  ok "the close decision is confined to Stop"
-fi
+sleep 0.5  # the loss record is written by a detached call after the hook returns
+for pair in "${CONFINE_PAIRS[@]}"; do
+  if LOST="$(grep -- "--native-id confine-$pair\$" "$CAPTURE.lost")"; then
+    CONFINED=""; fail "the $pair confinement entry timed out instead of answering ($LOST)"
+  fi
+done
+[[ -z "$CONFINED" ]] || ok "the close decision is confined to Stop"
 
 for shape in '{"decision":"block","reason":"Asha Control close request","extra":1}' \
              '{"decision":"allow","reason":"Asha Control close request"}' \
