@@ -152,8 +152,10 @@ reachable.
 Terminal session reports and Memory handoffs take their session from the
 environment only (`ASHA_HUB_SESSION_ID` and `ASHA_HUB_GENERATION`), with no
 tmux or process-ancestry proof; the generation and lifecycle fences refuse a
-stale or closed session. They write Control state, which the workspace-write
-sandbox mounts read-only. The installer-owned `rules/asha.rules` therefore pins
+stale or closed session. On a Claude session they also refuse when the caller's
+`CLAUDE_CODE_SESSION_ID` names another conversation than the generation's
+binding (#149, unit-tested; `docs/session-hub.md`). They write Control state,
+which the workspace-write sandbox mounts read-only. The installer-owned `rules/asha.rules` therefore pins
 `asha` to `$HOME/.local/bin/asha` with `host_executable` and allows exactly
 `asha control session report` and `asha control session handoff`, so Codex runs
 those two outside the sandbox without a prompt. Neither takes a session

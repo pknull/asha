@@ -34,7 +34,7 @@ def publication_actor(project_dir):
     from .config import load_config
     from .session_hub import Hub
     hub = Hub(load_config(os.environ), env=os.environ)
-    actor = hub.structured_actor()[0] if os.environ.get('ASHA_MANAGED_SESSION_ID') else hub.actor()
+    actor = hub.structured_actor()[0] if os.environ.get('ASHA_MANAGED_SESSION_ID') else hub.bound_actor()
     if Path(actor['project']).resolve() != Path(project_dir).resolve():
         raise StoreError('publication actor is outside this project plane')
     return hub, actor

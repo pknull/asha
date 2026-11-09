@@ -321,17 +321,28 @@ nested `claude -p` run inside the pane starts with source `startup` and is
 refused, as are its other events. Resume is a new generation and binds afresh.
 The bound conversation may report from anywhere, because Claude's hook cwd
 follows a Bash `cd` or EnterWorktree. A missed SessionStart after `/clear`
-leaves the new conversation's events refused for the rest of that generation,
-and a native subagent reporting under its own thread ID is refused too; both
-are logged. Codex `/new` is not verified to report source `clear`; if it does
+leaves the new conversation's events, and on Claude its actor commands below,
+refused for the rest of that generation, and a native subagent reporting
+under its own thread ID is refused too; both are logged. Codex `/new` is not verified to report source `clear`; if it does
 not, its new conversation is refused the same way. Claude Code (seen on 2.1.303
 and 2.1.312) can move a conversation to a background session, which continues
 it under a new ID with SessionStart source `fork`; unless the bound
 conversation ended first, that is refused too, so the row keeps its last
-observation while the session works on and its Memory publications, which go by
-the environment, still record (#147). The one host seen kept the environment of
-the Room that first moved a conversation to it, so a conversation moved there
-later reported as that Room's session. A foreign conversation that starts
+observation while the session works on (#147). The one host seen kept the
+environment of the Room that first moved a conversation to it, so a
+conversation moved there later carried that Room's session. Claude Code sets
+`CLAUDE_CODE_SESSION_ID` in every Bash tool and hook process to the
+conversation's hook `session_id` (2.1.132 and later), so on a Claude session
+an actor command (report, handoff, `handoff --read`, `messages` without an ID,
+ack-message, an explicit save) whose `CLAUDE_CODE_SESSION_ID` names another
+conversation than the generation's binding is refused before it writes
+anything (#149): a moved conversation can neither report nor publish Memory as
+the Room, not even its own continuation, until the binding rules change. A
+plain shell in a Claude Room's tmux session that inherited another
+conversation's value (a tmux server started from a Claude Bash tool) is
+refused the same way. Without the variable, before the generation's first
+binding, and on other harnesses (whose panes may inherit a Claude value), the
+environment alone decides, as before. A foreign conversation that starts
 inside the project before the session's own first event can still
 bind. Refused hook events
 are appended to `~/.asha/state/control/hub-rejected-events.jsonl` (mode 0600,
@@ -438,7 +449,9 @@ Reports, handoffs and message reads take their session from the environment
 only (`ASHA_HUB_SESSION_ID` and `ASHA_HUB_GENERATION`): no session argument
 selects it, and no Room marker or process-ancestry check proves it. The
 generation and lifecycle fences stop a stale actor: a reporter from an earlier
-generation, or of a closed or stopped session, is refused. Inside the Codex
+generation, or of a closed or stopped session, is refused. On a Claude session
+a caller whose `CLAUDE_CODE_SESSION_ID` names another conversation than the
+generation's binding is refused too (#149, above). Inside the Codex
 sandbox Control state is read-only, so a report still succeeds only as the one
 plain command its rules run outside the sandbox. Native hooks bound reporting
 time and fail open when the hub is unavailable. A report is the report axis
