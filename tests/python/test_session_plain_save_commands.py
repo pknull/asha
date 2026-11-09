@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[2]
 SKILL = ROOT / 'plugins/session/skills/project-memory/SKILL.md'
 PLAIN = 'on its own with literal arguments'
 FORBIDDEN = 'no `&&`, pipes, redirection, `$VAR` or heredoc'
+# #136 trial (2026-11-09): a nested project's Memory is often gitignored and a handoff never commits.
+PREIMAGE = 'a new directory `Work/component-preimage-YYYYMMDD-HHMMSS/<component.path>/`'
 
 
 class PlainSaveCommandTests(unittest.TestCase):
@@ -75,6 +77,24 @@ class DigestsBeforeRereadTests(unittest.TestCase):
         self.assert_order(nested, 'handoff --read --component PATH --json', 'then reread its pair',
                           'plus `--component PATH`', 'take its digests again, then reread and merge',
                           'never only refresh the digests')
+
+    def test_skill_nested_step_copies_the_reread_pair_before_publishing_and_names_it(self):
+        nested, = [p for p in SKILL.read_text(encoding='utf-8').split('\n\n') if '--read --component' in p]
+        self.assert_order(nested, 'handoff --read --component PATH --json', 'then reread its pair',
+                          'before publishing copy both files you reread, byte for byte', PREIMAGE,
+                          '`component.acting_root`', 'name every such directory in your report',
+                          'plus `--component PATH`',
+                          'take its digests again, then reread and merge, copying that pair to a new directory too')
+        nested = ' '.join(nested.split())
+        for phrase in ('never over an earlier copy', 'never committed'):
+            self.assertIn(phrase, nested)
+
+    def test_session_hub_doc_names_the_preimage_copy(self):
+        doc = (ROOT / 'docs/session-hub.md').read_text(encoding='utf-8')
+        section = re.split(r'\n##+ ', doc.split('### Nested project Memory (#130)', 1)[1], maxsplit=1)[0]
+        self.assert_order(section, 'takes the digests', 'rereads the pair',
+                          'before publishing copies both files byte for byte', PREIMAGE,
+                          'copies the pair it rereads to a new directory too', 'never commits a copy')
 
 
 if __name__ == '__main__':

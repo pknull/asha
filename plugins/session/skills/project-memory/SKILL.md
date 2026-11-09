@@ -45,11 +45,16 @@ never refresh digests merely to force an old draft through.
 When the assignment authorizes the Memory of a v2 project nested inside this
 one, take its digests first with `handoff --read --component PATH --json`, then
 reread its pair with the same reader, giving `--project-dir` the nested
-project's absolute path, and carry its current content into the drafts. Publish
-with the same flags plus `--component PATH`; if it is refused, take its digests
-again, then reread and merge; never only refresh the digests. That save is the
-nested project's: it never makes this session read as saved and cannot take
-`--request` or `--outcome`.
+project's absolute path, and carry its current content into the drafts. Its
+Memory is often gitignored and a handoff never commits, so before publishing
+copy both files you reread, byte for byte with a file copy, to a new directory
+`Work/component-preimage-YYYYMMDD-HHMMSS/<component.path>/` under the read's
+`component.acting_root`, never over an earlier copy and never committed, and
+name every such directory in your report. Publish with the same flags plus
+`--component PATH`; if it is refused, take its digests again, then reread and
+merge, copying that pair to a new directory too; never only refresh the digests.
+That save is the nested project's: it never makes this session read as saved and
+cannot take `--request` or `--outcome`.
 
 When nothing durable changed, attest that explicitly:
 
