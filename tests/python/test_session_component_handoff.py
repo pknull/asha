@@ -283,7 +283,8 @@ class ComponentOrderingTests(ComponentFixture):
         with mock.patch.dict(os.environ, self.env, clear=True):
             memory_v2.publish(self.egregore, OTHER_ACTIVE, OTHER_DECISIONS)
         with self.assertRaisesRegex(StoreError, 'preimage changed.*--read --component PATH --json.*then reread both of the '
-                                                'nested project.s Memory files.*never only refresh'):
+                                                'nested project.s Memory files, copy them to a new preimage '
+                                                'directory.*never only refresh'):
             self.publish_component(sid, 'egregore', expected=expected)
         self.assertEqual(self.contents(self.egregore), (OTHER_ACTIVE, OTHER_DECISIONS))
         self.assertEqual(self.rows(sid), [])

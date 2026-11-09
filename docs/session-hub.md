@@ -634,6 +634,18 @@ asha control session handoff --component PATH --active-file A --decisions-file D
     --expected-active DIGEST --expected-decisions DIGEST --json   # publish it
 ```
 
+A nested project often keeps its `Memory/` gitignored by design, and a handoff
+never commits, so nothing else keeps the pair a publication replaces. The writer
+therefore takes the digests, rereads the pair, and before publishing copies both
+files byte for byte to a new directory
+`Work/component-preimage-YYYYMMDD-HHMMSS/<component.path>/` under the read's
+`component.acting_root`, then names that directory in its report. A retry after
+a refusal copies the pair it rereads to a new directory too, and no copy
+overwrites an earlier one. The writer never commits a copy, though a parent's
+`Work/` may be tracked. Control neither makes nor checks the copy (#136's
+observed trial, 2026-11-09: the four Thallus children's earlier pairs survived
+only in a session transcript; text only, per the Keeper's #136 ruling).
+
 PATH is relative to the session's own project root, or absolute. Control
 resolves it as the OS does, following links and `..`, and judges only the
 resulting real path, never the spelling. It refuses unless all of these hold:

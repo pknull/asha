@@ -367,8 +367,8 @@ def publish_component(anchor: Path, relative: str, active_file: str, decisions_f
                 raise ValueError("publication preimage changed: the live Memory digests differ from --expected-active/"
                                  "--expected-decisions (omitted, stale, or another save landed first); run "
                                  "`asha control session handoff --read --component PATH --json`, then reread both of the "
-                                 "nested project's Memory files, merge them into your drafts and retry; never only "
-                                 "refresh the digests") from exc
+                                 "nested project's Memory files, copy them to a new preimage directory (project-memory "
+                                 "skill), merge them into your drafts and retry; never only refresh the digests") from exc
             raise
 
 

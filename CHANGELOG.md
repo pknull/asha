@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased — session: a component publisher keeps the pair it replaces (#136)
+
+- #136's observed trial (2026-11-09, the first real `handoff --component` use:
+  Thallus published familiar, scry, servitor and thallus-core) found that nested
+  projects often gitignore their Memory v2 pair by design, and a handoff never
+  commits, so nothing could restore the pair a publication replaced; the four
+  earlier pairs survived only in the session transcript. The project-memory
+  skill's nested step and the nested-project section of `docs/session-hub.md`
+  now have the publisher, after taking the digests and rereading the pair, copy
+  both files byte for byte to a new directory
+  `Work/component-preimage-YYYYMMDD-HHMMSS/<component.path>/` under the read's
+  `component.acting_root` before publishing, and name every such directory in
+  its report. A retry after a refused save copies the pair it rereads to a new
+  directory too; no copy overwrites an earlier one, and the writer commits none
+  (a parent's `Work/` may be tracked). The component stale-save refusal and the
+  operate-control skill point to the step. Text only, per the Keeper's #136
+  ruling: Control neither makes nor checks the copy.
+- Two tests pin the skill step's order (digests, reread, copy, publish, retry
+  copy) and the docs paragraph's; the component refusal test asks for the copy.
+
 ## Unreleased — session: Memory writers take the digests before they reread (#136)
 
 - The compare-and-swap protects a Memory draft only when its writer takes the
