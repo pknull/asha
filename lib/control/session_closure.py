@@ -153,13 +153,16 @@ def request_text(row: dict, record: dict) -> str:
         baseline = memory["baseline"] or {}
         lines.append(f"Destination: {memory['destination']} (current digests: activeContext "
                      f"{baseline.get('activeContext.md') or 'none'}, decisions {baseline.get('decisions.md') or 'none'}).")
-        lines.append("1. Re-read both published files; `asha control session handoff --read --json` prints the live digests. "
+        # #136: digests first, then the reread, so a save landing in between is refused instead of overwritten.
+        lines.append("1. Take the live digests first with `asha control session handoff --read --json`, then reread both "
+                     "published files and carry their current content into your drafts, never content read earlier. "
                      "2. If this session produced durable project knowledge, draft activeContext.md (exactly the level-one headings "
                      "Objective, State, Next, Blockers; at most 4096 bytes; at most five Next and five Blockers items) and "
                      "decisions.md (heading Decisions; current binding decisions only) outside Memory/ as absolute, symlink-free "
                      "paths you own, verify every claim against disk, then publish: `asha control session handoff --request " + rid +
                      " --active-file ACTIVE --decisions-file DECISIONS --expected-active DIGEST --expected-decisions DIGEST --json`. "
-                     "If it reports a changed preimage, re-read, merge and retry. "
+                     "If it reports a changed preimage, take the digests again, then reread both files, merge and retry; "
+                     "never only refresh the digests. "
                      "3. If nothing durable changed: `asha control session handoff --request " + rid +
                      " --outcome no-durable-update --detail WHY --json`. "
                      "4. If publication is impossible: `--outcome blocked --detail REASON`.")
@@ -314,7 +317,8 @@ def publish_handoff(project: str, active_file: str, decisions_file: str, *, expe
         if "preimage changed" in str(exc):
             raise ValueError("publication preimage changed: the live Memory digests differ from --expected-active/"
                              "--expected-decisions (omitted, stale, or another save landed first); run "
-                             "`asha control session handoff --read --json`, merge, and retry") from exc
+                             "`asha control session handoff --read --json`, then reread both Memory files, merge them "
+                             "into your drafts and retry; never only refresh the digests") from exc
         raise
     # publish() returns only after both atomic replacements committed under the
     # project lock, so the drafts are on disk. A later publisher may already have
@@ -362,7 +366,9 @@ def publish_component(anchor: Path, relative: str, active_file: str, decisions_f
             if "preimage changed" in str(exc):
                 raise ValueError("publication preimage changed: the live Memory digests differ from --expected-active/"
                                  "--expected-decisions (omitted, stale, or another save landed first); run "
-                                 "`asha control session handoff --read --component PATH --json`, merge, and retry") from exc
+                                 "`asha control session handoff --read --component PATH --json`, then reread both of the "
+                                 "nested project's Memory files, merge them into your drafts and retry; never only "
+                                 "refresh the digests") from exc
             raise
 
 

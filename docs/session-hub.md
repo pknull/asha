@@ -574,8 +574,17 @@ asha control session handoff --request ID --outcome blocked --detail REASON --js
 ```
 
 Publication runs through the shared Memory v2 validator with a compare-and-swap
-on both files: a digest that changed since the agent read it refuses the write,
-so a newer save is never overwritten; the agent re-reads, merges and retries.
+on both files: a digest that changed since the agent took it refuses the write,
+and the agent takes the digests again, rereads, merges and retries.
+
+The compare-and-swap protects a draft only when its writer takes the digests
+first and then rereads the pair it drafts from; a draft built from an earlier
+read would replace the other writer's save, and both would report published.
+The close request, the Room contract, the project-memory skill (own and nested
+steps) and both stale-save refusals say so: digests first, then reread, and on
+a refusal digests again, reread and merge, never only refresh the digests. The
+worker contract's fallback names the same order (Keeper, 2026-11-09, #136:
+text only, no code).
 Scope, identity and silence are checked before any write. A `no-durable-update`
 attestation passes the same checks and counts as saved; `failed` or `blocked`
 save nothing. Nothing on this path commits, pushes or integrates code; Git
@@ -665,7 +674,8 @@ receipt names where the project was when the publication committed.
 
 The publication uses the nested project's own lock file, recovery journal and
 compare-and-swap digests, the same ones that project's own saves use, so a
-stale draft never overwrites a newer save. Four limits qualify this and the
+stale draft never overwrites a newer save, given the read order above (digests
+first, then reread). Four limits qualify this and the
 restore above:
 
 - The restore is complete only while the project's `Memory/` folder is not
@@ -691,7 +701,13 @@ the authorized directory, and such a process could already overwrite that
 project's Memory directly, so the Keeper accepted these limits (2026-11-04)
 rather than defending them.
 
-The row is recorded under the nested project's `project_id`, the receipt
+A session's save of its own project has one more accepted limit (Keeper,
+2026-11-08, #136): a Codex Room can run `handoff` unprompted, since
+`asha.rules` allows it outside the sandbox, and that save follows a `Memory/`
+swapped for a link mid-save. A Codex Room's own-plane save therefore trusts
+the Room's own agent; this is a known limit, and no code defends it.
+
+A nested project's row is recorded under that project's `project_id`, the receipt
 adds `acting_project_id`, `destination_project_id` and `component` (its real
 path relative to the session's root), and the response says
 `counts_as_session_save: false`: it never makes the session read as saved and

@@ -43,9 +43,13 @@ only current binding decisions. A changed baseline requires rereading and mergin
 never refresh digests merely to force an old draft through.
 
 When the assignment authorizes the Memory of a v2 project nested inside this
-one, read its digests with `handoff --read --component PATH --json` and publish
-with the same flags plus `--component PATH`. That save is the nested project's:
-it never makes this session read as saved and cannot take `--request` or `--outcome`.
+one, take its digests first with `handoff --read --component PATH --json`, then
+reread its pair with the same reader, giving `--project-dir` the nested
+project's absolute path, and carry its current content into the drafts. Publish
+with the same flags plus `--component PATH`; if it is refused, take its digests
+again, then reread and merge; never only refresh the digests. That save is the
+nested project's: it never makes this session read as saved and cannot take
+`--request` or `--outcome`.
 
 When nothing durable changed, attest that explicitly:
 

@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — session: Memory writers take the digests before they reread (#136)
+
+- The compare-and-swap protects a Memory draft only when its writer takes the
+  digests first and then rereads the pair; a draft built from an earlier read
+  replaces another writer's save, and both report published. The skill's
+  own-project steps had the order right. The close request read the files
+  first and the digests second, the Room contract named `--read` and then the
+  publish with no reread, and the skill's nested-project step read only the
+  child's digests. Each now takes the digests first (a nested project's with
+  `--read --component`), rereads the pair, carries its current content into the
+  drafts and, when a save is refused, takes the digests again, rereads and
+  merges, never only refreshing the digests. Both stale-save refusals now say
+  to reread before retrying, and the worker contract's fallback names the same
+  order. Text only, per the Keeper's ruling on the #136 panel; `handoff --read`
+  still returns digests only. Sessions launched before this keep their old
+  contract until resumed.
+- A new test pins the parent-first direction: after a parent's `--component`
+  save, the child's own stale save is refused, plain or answering its close;
+  the close stays pending, and a retry with fresh digests lands as its close
+  save. `docs/session-hub.md` records the Keeper's 2026-11-08 ruling that a
+  Codex Room's own-plane save trusts the Room's own agent.
+
 ## Unreleased — control: a Codex pointer's Enter waits out Codex's paste detection (#150)
 
 - No Codex terminal close since 2026-10-01 saved (0 of 13), and the chair's
