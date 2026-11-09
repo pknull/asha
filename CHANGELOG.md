@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — control: a moved Claude conversation cannot act as the Room (#149)
+
+- Claude Code can move a Room's conversation to a background session under a
+  new ID, and the background host keeps the first Room's environment. Hook
+  events from the moved conversation were already refused, but `report`,
+  `handoff`, `handoff --read`, `messages` without an ID, `ack-message` and an
+  explicit save found their session from the environment alone, so a moved
+  conversation could report or publish Memory as another Room.
+- Claude Code sets `CLAUDE_CODE_SESSION_ID` in every Bash tool and hook
+  process to the conversation's hook `session_id` (changelog 2.1.132; 2.1.319
+  computes it at each spawn from the running conversation, after inherited and
+  settings variables). On a Claude session these verbs now refuse, before any
+  write, when it names another conversation than the generation's binding.
+  Without it, before the first binding, on Codex, Copilot and OpenCode, and
+  for structured sessions, nothing changes. Hook events keep their own binding
+  rules, so `/clear` still rebinds.
+- Refused too, until the Keeper rules on rebinding at SessionStart `fork`: a
+  moved continuation of the Room's own conversation, whose explicit saves into
+  its own project now fail (two such THORNE saves recorded on 2026-10-24 would
+  have); a `/clear` conversation whose SessionStart hook was lost; and a plain
+  shell in the Room's tmux session that inherited another Claude value.
+
 ## Unreleased — admin: lunch-money's regex child names its signal and dies with its parent (#144)
 
 - A `--match` search child killed by a signal used to fail as a bare `the

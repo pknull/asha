@@ -230,6 +230,24 @@ def native_binding(row, event, native_id, cwd, source=None):
     return dict(generation=row['generation'], native_id=native_id)
 
 
+def same_conversation(row, caller):
+    """Refuse an actor verb from another Claude conversation than the generation bound (#149).
+
+    Claude Code gives every Bash tool and hook process ``CLAUDE_CODE_SESSION_ID``,
+    the ``session_id`` its hooks carry. A different value is positive evidence
+    of another conversation carrying this session's environment: one Claude Code
+    moved to a background session, which keeps the first Room's environment, or
+    a nested ``claude -p``. An absent value, no binding for this generation, and
+    other harnesses (whose panes may inherit a Claude value) change nothing.
+    """
+    binding = row.get('native_binding') or {}
+    bound = binding.get('native_id') if binding.get('generation') == row['generation'] else None
+    if row['harness'] == 'claude' and caller and bound and caller != bound:
+        raise StoreError('this Claude conversation (CLAUDE_CODE_SESSION_ID) is another native conversation '
+                         'than this session bound; a conversation Claude Code moved to a background session '
+                         "keeps the first Room's environment (#149). Tell the Keeper; do not change the environment")
+
+
 def _native_id(value):
     value = text(value, 'native session ID', 512)
     if value.startswith('-') or not value.isprintable():
@@ -1045,7 +1063,7 @@ class Hub:
         """An explicit report from the acting session; finished is never gated (D3)."""
         if state not in REPORT_STATES:
             raise StoreError('report state must be needs-input, finished or working')
-        actor = self.structured_actor()[0] if self.env.get('ASHA_MANAGED_SESSION_ID') else self.actor()
+        actor = self.structured_actor()[0] if self.env.get('ASHA_MANAGED_SESSION_ID') else self.bound_actor()
         with self._action_lock(actor['session_id']):
             row = self.get(actor['session_id'])
             if row['generation'] != actor['generation'] or row['lifecycle'] not in ACTIVE_LIFECYCLES:
@@ -1282,10 +1300,21 @@ class Hub:
 
         No session argument selects it and no Room marker or process ancestry
         proves it; the generation and lifecycle fences stop stale actors.
+        Verbs use ``bound_actor``, which also checks the caller's conversation.
         """
         row = self.get(identifier(self.env.get('ASHA_HUB_SESSION_ID', '')))
         if str(row['generation']) != self.env.get('ASHA_HUB_GENERATION') or row['lifecycle'] not in ACTIVE_LIFECYCLES:
             raise StoreError('stale or inactive session reporter')
+        return row
+
+    def bound_actor(self):
+        """The actor for a verb (report, handoff, messages, save): its caller is the bound conversation (#149).
+
+        Hook events keep ``actor``: their payload names the conversation and
+        ``native_binding`` judges it, so /clear can still rebind.
+        """
+        row = self.actor()
+        same_conversation(row, self.env.get('CLAUDE_CODE_SESSION_ID'))
         return row
 
     def observe(self, event, *, native_id=None, state=None, body=None, cwd=None, background_tasks=None,
@@ -1296,7 +1325,7 @@ class Hub:
                 raise StoreError('emitted-at is hook evidence; worker reports do not carry it')
             if cwd is not None or background_tasks is not None or source is not None:
                 raise StoreError('cwd, background tasks and source are hook evidence; worker reports do not carry them')
-            return self._report(self.actor(), state, body, native_id=native_id)
+            return self._report(self.bound_actor(), state, body, native_id=native_id)
         actor = self.actor()
         with self._observation_lock(actor['session_id']):
             row = self.get(actor['session_id'])
@@ -1409,7 +1438,7 @@ class Hub:
             return self._update(row['session_id'], expected_generation=row['generation'], **changes)
 
     def acknowledge(self, mid, *, delivery_digest=None):
-        row = self.actor()
+        row = self.bound_actor()
         from .session_guidance import receipt_in, supplied
         with self.database() as db, db.transaction() as c:
             message = c.execute('SELECT * FROM hub_messages WHERE message_id=? AND session_id=?', (mid, row['session_id'])).fetchone()
@@ -1458,7 +1487,7 @@ class Hub:
             if request_id and (not record or key != closure.message_key(record)):
                 raise StoreError('this turn did not receive the current close request')
             return row
-        return self.actor()
+        return self.bound_actor()
 
     def handoff_read(self, component=None):
         """Live destination facts for the acting session, or one nested project (#130); never writes."""

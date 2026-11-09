@@ -502,7 +502,7 @@ def dispatch(argv, *, env):
                                      active_file=args.active_file, decisions_file=args.decisions_file, expected=expected,
                                      component=args.component)
         elif verb == 'messages':
-            sid = args.session_id or hub.actor()['session_id']
+            sid = args.session_id or hub.bound_actor()['session_id']
             result = hub.message_page(sid, offset=args.offset, limit=args.limit)
         elif verb == 'ack-message':
             result = hub.acknowledge(args.message_id, delivery_digest=args.delivery_digest)

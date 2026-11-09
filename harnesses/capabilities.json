@@ -132,10 +132,11 @@
         "project-memory": {
           "support": "partial",
           "surface": "project-memory skill; hub worker/Room assignments; explicit save and session handoff publication rows; ungated finished report",
-          "verifier": "python test_session_publication_rows + test_control_session_closure; tests:test-install/test-session-hub-hooks",
+          "verifier": "python test_session_publication_rows + test_control_session_closure + test_session_bound_conversation; tests:test-install/test-session-hub-hooks",
           "limitations": [
             "Controller/scripted fixtures are not native finish-save-idle delivery proof; no paid native probe performed",
             "Every successful save records a publication row (explicit save, close, handoff or no-durable-update attestation); saved is read from those rows only",
+            "Report, handoff, handoff --read, messages without an ID, ack-message and explicit save refuse when CLAUDE_CODE_SESSION_ID names another conversation than the generation's binding (#149: a conversation moved to a background session keeps the Room's environment); unit-tested, no live moved-conversation probe; an absent value or no binding acts as before",
             "No Git publication, transcript extraction, chair context, or native permission bypass",
             "Structured close is the next structured turn, then a stop request; native permissions may block the handoff CLI"
           ]
