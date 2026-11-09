@@ -468,8 +468,10 @@ save project Memory, waits a bounded time, then terminates:
 
 1. `close ID` records `closure = {request_id, generation, requested_at,
    deadline}` and moves the session to lifecycle `closing`. The wait is
-   `--wait SECONDS`, defaulting to `control.close_wait_seconds` (60, at most
-   600); `--force` is a zero wait and cannot be combined with `--wait`.
+   `--wait SECONDS`, defaulting to `control.close_wait_seconds` (180, at most
+   600); `--force` is a zero wait and cannot be combined with `--wait`. Of 21
+   Claude closes since 2026-10-01 that got their request and still closed
+   unsaved, 16 were still saving when the earlier 60 s default ran out (#148).
 2. The request goes out through the seams that exist. A terminal session gets
    a queued hub message (read with `session messages`). A working Claude
    session also gets it as the harness's own Stop-hook block decision when its

@@ -48,7 +48,9 @@ IGNORED_CONTROL_KEYS = frozenset({"idle_delivery", "no_handoff_close", "session_
 # control.workspace_trust stays a validated key so existing configuration keeps
 # loading; the task substrate that read it was retired (L-b).
 TRUST_MODES = ("inherit", "never")
-CLOSE_WAIT_DEFAULT = 60
+# 60 s cut off 16 of 21 delivered-but-unsaved Claude closes mid-save; those
+# needed an estimated 75-150 s (#148).
+CLOSE_WAIT_DEFAULT = 180
 CLOSE_WAIT_LIMIT = 600
 
 

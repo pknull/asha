@@ -416,6 +416,8 @@ nothing in the Room closes or relaunches itself. The procedure, for the chair:
    again just before the close.
 2. **Close** the Room with a save: `asha control session close <room>`. RP
    state lives in the vault; the save is the Room's own Memory, as at any close.
+   A close that never saves runs its whole wait (180 s by default): launch only
+   once `session show <room>` reads closed.
 3. **Launch** a fresh one with the same project, profile, harness, model and
    effort: `asha control session launch --project <project> --profile room
    --harness <harness> [--model ...] [--effort ...] --prompt "<the Room's usual

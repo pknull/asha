@@ -180,6 +180,13 @@ class RequestTests(FastClose):
             self.hub.close(sid, force=True, wait=5)
         self.assertEqual(self.hub.get(sid)['lifecycle'], 'open')
 
+    def test_unconfigured_wait_is_three_minutes(self):
+        """#148: 16 of 21 delivered-but-unsaved closes were still saving when a 60 s wait ran out."""
+        sid = self.launch()['session_id']
+        record = self.request(sid, wait=self.hub._close_wait(False, None))['closure']
+        self.assertEqual(record['wait'], 180)
+        self.assertAlmostEqual(record['deadline'] - record['requested_at'], 180, places=3)
+
     def test_close_wait_setting_is_validated(self):
         from lib.control.config import ConfigError
         for bad in (-1, 601, 'x', True):
