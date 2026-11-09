@@ -23,6 +23,7 @@ import math
 import os
 import re
 import secrets
+import signal
 import ssl
 import stat
 import subprocess
@@ -93,17 +94,27 @@ ATTACHMENTS_NAME = "attachments"
 # --match runs in a child process killed after this many seconds: Python's re can
 # backtrack for hours on a pattern like (a+)+$ and cannot be interrupted in-process.
 REGEX_TIMEOUT_SECONDS = 5
-# The parent's timeout acts only while the parent lives, so the child also caps its own
-# CPU time (#142), a second past the timeout so a live parent stops it first with its
-# own message, and never looser than a limit it inherited. Soft equal to hard: Linux
-# sends SIGKILL at the hard limit; elsewhere the soft limit's SIGXCPU, restored to its
-# default and unblocked, ends it. A limit that cannot be set leaves only the timeout.
+# The parent's timeout acts only while the parent lives. On Linux the child asks for
+# SIGKILL when its parent dies (#144: prctl PR_SET_PDEATHSIG = 1, SIGKILL = 9), then
+# exits if the parent (argv[2]) died before that took hold; without prctl it carries on.
+# Everywhere it also caps its own CPU time (#142), a second past the timeout so a live
+# parent stops it first with its own message, and never looser than a limit it
+# inherited (argv[1], computed by the parent). Soft equal to hard: Linux sends SIGKILL
+# at the hard limit; elsewhere the soft limit's SIGXCPU, restored to its default and
+# unblocked, ends it. A limit that cannot be set leaves only the timeout.
 _REGEX_CHILD = (
-    "import json, re, sys\n"
+    "import json, os, re, sys\n"
+    "if sys.platform.startswith('linux'):\n"
+    "    try:\n"
+    "        import ctypes\n"
+    "        if ctypes.CDLL(None).prctl(1, ctypes.c_ulong(9)) == 0 \\\n"
+    "                and os.getppid() != int(sys.argv[2]):\n"
+    "            sys.exit('the pattern search outlived its parent')\n"
+    "    except (ImportError, AttributeError, OSError):\n"
+    "        pass\n"
     "try:\n"
     "    import resource, signal\n"
-    "    cap = min(n for n in (int(sys.argv[1]), *resource.getrlimit(resource.RLIMIT_CPU))\n"
-    "              if n != resource.RLIM_INFINITY)\n"
+    "    cap = int(sys.argv[1])\n"
     "    resource.setrlimit(resource.RLIMIT_CPU, (cap, cap))\n"
     "    signal.signal(signal.SIGXCPU, signal.SIG_DFL)\n"
     "    signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGXCPU})\n"
@@ -4505,22 +4516,65 @@ def build_update_operation(
     return {"rows": rows, "unchanged_ids": unchanged, "selection": selection}
 
 
+def _regex_cpu_limit() -> int:
+    """The regex child's CPU limit in seconds: a second past the timeout, never looser
+    than a limit this process (and so the child) inherited."""
+    cap = math.ceil(REGEX_TIMEOUT_SECONDS) + 1
+    try:
+        import resource
+        return min(n for n in (cap, *resource.getrlimit(resource.RLIMIT_CPU))
+                   if n != resource.RLIM_INFINITY)
+    except (ImportError, AttributeError, OSError, ValueError):
+        return cap
+
+
+def _children_cpu_seconds() -> float | None:
+    """CPU time of this process's reaped children, or None where it cannot be read."""
+    try:
+        import resource
+        usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    except (ImportError, AttributeError, OSError):
+        return None
+    return usage.ru_utime + usage.ru_stime
+
+
+def _signal_death(number: int, cpu_limit: int, cpu_before: float | None) -> str:
+    """Why the regex child ended on a signal (#144): which signal, and its CPU limit
+    when the child had spent it (SIGKILL at the hard limit on Linux, SIGXCPU elsewhere)."""
+    try:
+        name = signal.Signals(number).name
+    except ValueError:
+        name = f"signal {number}"
+    cpu_after = _children_cpu_seconds()
+    if (name in ("SIGKILL", "SIGXCPU") and cpu_before is not None and cpu_after is not None
+            and cpu_after - cpu_before >= cpu_limit - 0.5):
+        return (f"it was killed by {name} at its {cpu_limit} s CPU limit; simplify the "
+                "pattern (avoid nested repetition such as (a+)+)")
+    return f"it was killed by {name}"
+
+
 def match_texts(pattern: str, ignore_case: bool, texts: list[list[str]]) -> list[int]:
     """Indices of the entries where any text matches, searched in a child process with
     a hard timeout so no pattern can hang planning."""
     job = json.dumps({"pattern": pattern, "ignore_case": ignore_case, "texts": texts})
-    cpu_limit = math.ceil(REGEX_TIMEOUT_SECONDS) + 1
+    cpu_limit = _regex_cpu_limit()
+    cpu_before = _children_cpu_seconds()
     try:
-        proc = subprocess.run([sys.executable, "-I", "-S", "-c", _REGEX_CHILD, str(cpu_limit)],
+        proc = subprocess.run([sys.executable, "-I", "-S", "-c", _REGEX_CHILD, str(cpu_limit),
+                               str(os.getpid())],
                               input=job.encode("ascii"), capture_output=True, env={},
                               timeout=REGEX_TIMEOUT_SECONDS, check=False)
     except subprocess.TimeoutExpired:
         raise PlanError(f"the pattern took longer than {REGEX_TIMEOUT_SECONDS} s to search "
                         f"{len(texts)} transactions and was stopped; simplify it (avoid "
                         "nested repetition such as (a+)+)") from None
-    if proc.returncode != 0:
+    detail = proc.stderr.decode("utf-8", "replace").strip()[-200:]
+    if proc.returncode < 0:
         raise PlanError("the pattern search failed: "
-                        + proc.stderr.decode("utf-8", "replace").strip()[-200:])
+                        + _signal_death(-proc.returncode, cpu_limit, cpu_before)
+                        + (f" ({detail})" if detail else ""))
+    if proc.returncode != 0:
+        raise PlanError("the pattern search failed: " + detail)
     try:
         found = json.loads(proc.stdout.decode("ascii"))
     except (UnicodeDecodeError, json.JSONDecodeError):

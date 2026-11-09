@@ -281,10 +281,14 @@ A changes file holds `{"changes": [{"id": 101, "category_id": 11,
 
 Pattern selection (`--match REGEX`, Python syntax, at most 200 characters)
 searches `--match-field payee|notes|both` (default both) over the date range
-in a separate process stopped after 5 seconds (it also stops itself after 6
-seconds of CPU time if the helper dies first), so a pattern that backtracks
-(such as `(a+)+$`) is refused instead of hanging,
-with `--ignore-case` and filters `--filter-status`, `--filter-category-id`,
+in a separate process stopped after 5 seconds, so a pattern that backtracks
+(such as `(a+)+$`) is refused instead of hanging (a search killed by a signal
+names it, and its CPU limit when that stopped it). If the helper dies first,
+on Linux, the only tested platform, the search dies with it
+(`PR_SET_PDEATHSIG`); its fallback, and the only guard on other systems
+(untested), is a CPU-time limit (`RLIMIT_CPU`, 6 seconds) the search sets on
+itself. A search takes `--ignore-case` and the filters `--filter-status`,
+`--filter-category-id`,
 `--filter-uncategorized`, `--filter-manual-account-id`,
 `--filter-plaid-account-id`, `--filter-tag-id`. The plan is the preview: it
 lists every matched row with before and after and records the selection. More
