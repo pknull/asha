@@ -282,10 +282,34 @@ class ComponentOrderingTests(ComponentFixture):
         expected = self.read_component(sid, 'egregore')['memory']['baseline']
         with mock.patch.dict(os.environ, self.env, clear=True):
             memory_v2.publish(self.egregore, OTHER_ACTIVE, OTHER_DECISIONS)
-        with self.assertRaisesRegex(StoreError, 'preimage changed'):
+        with self.assertRaisesRegex(StoreError, 'preimage changed.*--read --component PATH --json.*then reread both of the '
+                                                'nested project.s Memory files.*never only refresh'):
             self.publish_component(sid, 'egregore', expected=expected)
         self.assertEqual(self.contents(self.egregore), (OTHER_ACTIVE, OTHER_DECISIONS))
         self.assertEqual(self.rows(sid), [])
+
+    def test_component_save_between_childs_read_and_its_own_save_refuses_the_childs_stale_draft(self):
+        """O3 reversed (#136): the parent's --component save lands first; the child's own stale save, plain or
+        answering its close, never overwrites it, and the close stays pending (visible, not lost)."""
+        parent, child = self.room(), self.launch(project=str(self.egregore), profile='room')['session_id']
+        rid = self.hub.request_close(child, wait=60)['closure']['request_id']
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(child)):
+            expected = self.hub.handoff_read()['memory']['baseline']
+        self.publish_component(parent, 'egregore')
+        active, decisions = self.drafts(OTHER_ACTIVE, OTHER_DECISIONS)
+        for request in (None, rid):
+            with self.subTest(request=request), self.acting_as(child), self.assertRaisesRegex(
+                    StoreError, 'preimage changed.*handoff --read --json.*then reread both Memory files.*never only refresh'):
+                self.hub.handoff(request, active_file=active, decisions_file=decisions, expected=expected)
+        self.assertEqual(self.contents(self.egregore), (CHILD_ACTIVE, CHILD_DECISIONS))
+        self.assertEqual(self.rows(child), [])
+        row = self.hub.get(child)
+        self.assertTrue(closure.pending(row['closure'], row))
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(child)):
+            fresh = self.hub.handoff_read()['memory']['baseline']   # the retry: digests again, then reread and merge
+        with self.acting_as(child):
+            self.hub.handoff(rid, active_file=active, decisions_file=decisions, expected=fresh)
+        self.assertEqual([row['receipt']['source'] for row in self.rows(child)], ['close'])
 
     def test_component_save_landing_while_the_room_waits_on_the_lock_wins(self):
         """O4: the compare runs under the component's lock, after the in-flight save."""

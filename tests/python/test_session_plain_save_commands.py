@@ -44,5 +44,38 @@ class PlainSaveCommandTests(unittest.TestCase):
                 self.assertIsNone(re.search(r'&&|\||[<>]|\$|<<|;', command), command)
 
 
+class DigestsBeforeRereadTests(unittest.TestCase):
+    """#136: the compare-and-swap protects a draft only when its writer takes the digests, then rereads the pair."""
+
+    def assert_order(self, text, *marks):
+        text = ' '.join(text.split())
+        found = [text.find(mark) for mark in marks]
+        self.assertNotIn(-1, found, list(zip(marks, found)))
+        self.assertEqual(found, sorted(found), list(zip(marks, found)))
+        self.assertLess(text.rfind(marks[0]), found[1], 'the digests are taken again after the reread')
+
+    def test_close_request_takes_digests_then_rereads_and_never_only_refreshes_them(self):
+        from lib.control import session_closure as closure
+        from lib.control.session_store import text as message_text
+        memory = {'available': True, 'destination': '/p/Memory', 'baseline': {'activeContext.md': 'a', 'decisions.md': 'd'}}
+        body = closure.request_text({'session_id': 'S', 'generation': 1}, {'request_id': 'R', 'memory': memory})
+        self.assert_order(body, 'asha control session handoff --read --json', 'then reread both',
+                          '--expected-active DIGEST', 'take the digests again, then reread both files, merge',
+                          'never only refresh the digests')
+        self.assertEqual(message_text(body, 'message'), body)  # the structured enqueue's 64 KiB cap, the only one
+
+    def test_assignment_contracts_take_digests_then_reread(self):
+        self.assert_order(ROOM_INSTRUCTION, 'asha control session handoff --read --json', 'then reread both',
+                          '--expected-active DIGEST', 'take the digests again, then reread and merge',
+                          'never only refresh the digests')
+        self.assert_order(WORKER_INSTRUCTION, 'asha control session handoff --read --json', 'then reread the pair')
+
+    def test_skill_nested_step_takes_the_childs_digests_then_rereads_its_pair(self):
+        nested, = [p for p in SKILL.read_text(encoding='utf-8').split('\n\n') if '--read --component' in p]
+        self.assert_order(nested, 'handoff --read --component PATH --json', 'then reread its pair',
+                          'plus `--component PATH`', 'take its digests again, then reread and merge',
+                          'never only refresh the digests')
+
+
 if __name__ == '__main__':
     unittest.main()
