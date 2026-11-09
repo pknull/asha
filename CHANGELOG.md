@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — control: no pointer after the Stop decision delivered the close (#148)
+
+- A close's waiter checked delivery on the row it read before taking the
+  session's lock, then re-checked only for an earlier pointer. A Stop hook
+  applies the idle observation before it prints and confirms its decision, so
+  a waiter reading in between typed the pointer anyway: one stored close
+  (`b50c17d8`, 2026-10-30) recorded its pointer 42 ms after the Stop decision
+  went out, into a session starting its save turn. The locked re-check now also
+  refuses a delivered request and reads the withheld reason (a question, a
+  working turn) from the locked row. Left open: a waiter whose read falls
+  inside the Stop hook's own tens of milliseconds between observing idle and
+  recording delivery still types (a forked probe: 3 of 40 interleavings, from
+  28 of 40 before), and a question reported during the tmux ownership check
+  is still typed into.
+
 ## Unreleased — control: close waits 180 s for a save by default (#148)
 
 - Since 2026-10-01, 21 Claude terminal closes delivered their request and
