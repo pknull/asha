@@ -39,6 +39,15 @@
   invariants`, asks the Keeper per item and recommends
   `/rp:extract-invariants`; canon-writer never runs without those decisions.
   New `tests/python/test_rp_end_ratification.py` pins both prompts.
+- code 1.7.1: `/code:review` said in one line that its four lenses run in
+  parallel or in sequence by harness, and in the next to launch four parallel
+  Task agents. It now says the four lenses always run, as parallel Task agents
+  where the harness supports subagents and otherwise in sequence. The red-flag
+  rows say "all four lenses" with no weaker fallback, the multi-pass row cites
+  the `reviewer` contract's "Multi-Pass Review" rule instead of a CLAUDE.md
+  rule that does not exist, and the contract is named as the `reviewer` agent,
+  the form other commands use, rather than a repository path that does not
+  resolve in a user's project.
 
 ## Unreleased — session: a component publisher keeps the pair it replaces (#136)
 
