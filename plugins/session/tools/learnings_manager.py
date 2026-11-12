@@ -26,7 +26,7 @@ from path_safety import secure_path, secure_project_root
 # The session plugin's own version, mirrored from plugins/session/README.md and
 # asserted equal by tests: it is the `generated.by` actor of every record this
 # writer emits (`asha/<version>`), so it must never read "unknown".
-SESSION_PLUGIN_VERSION = "3.0.0"
+SESSION_PLUGIN_VERSION = "3.0.1"
 GENERATED_BY = f"asha/{SESSION_PLUGIN_VERSION}"
 # The OKF v0.2 record shape is emitted only once the migration script has
 # written this marker; until then the writer keeps the legacy shape so a
