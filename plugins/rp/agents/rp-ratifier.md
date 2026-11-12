@@ -50,7 +50,7 @@ If CANON_PROPOSALS is absent, you derive them yourself by reading the session (e
 
 ### Step 1: Load context
 
-- Read INVARIANTS_FILE in full
+- Read INVARIANTS_FILE in full. If it does not exist, continue without it: skip only the invariant-conflict check, label each item `unchecked: no invariants` in place of the Step 2 category (a match in `Work/rp/pending-canon/` is still `pending_resolution`), still ask the Keeper per item in Step 3 (accept, reject or defer; no accept-and-update-invariants, as there is nothing to update), and recommend `/rp:extract-invariants` in the Step 6 summary
 - Read the session: each file in SESSION_FILES in order, else SESSION_FILE (or SUMMARY_FILE if dense). A session that crossed fiction days spans one day file per day
 - Never take a candidate from a `> [!struck]` callout block (a draft the gate struck, kept as a record: never canon), nor from a legacy `## VALIDATOR SURRENDER` block without the `KEEPER: accepted` marker. A CANON_PROPOSALS item whose only source is one is dropped, and named as such in the summary
 - If CANON_PROPOSALS not provided, scan session for canon candidates:

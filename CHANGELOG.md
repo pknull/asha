@@ -32,6 +32,13 @@
   asked for an agent on every profiled line; they now state the voice-critical
   rule. New `tests/python/test_rp_npc_handoff.py` checks the old wording is
   gone and the rule matches the reviewer's.
+- rp 0.5.7: `/rp:end` without `Memory/invariants.md` skipped ratification and
+  let canon-writer promote every proposal, against the rule that only
+  Keeper-accepted items are promoted. It now still runs the rp-ratifier, which
+  skips only the invariant-conflict check, labels each item `unchecked: no
+  invariants`, asks the Keeper per item and recommends
+  `/rp:extract-invariants`; canon-writer never runs without those decisions.
+  New `tests/python/test_rp_end_ratification.py` pins both prompts.
 
 ## Unreleased — session: a component publisher keeps the pair it replaces (#136)
 
