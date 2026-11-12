@@ -37,12 +37,15 @@ judgment calls instead of silently inventing an answer.
    voice document, then audit your own changed prose against it. Fix confirmed
    deviations; do not substitute generic preferences for project rules.
 7. **Prove the old value is gone.** From the repository root, run a scoped
-   repository-wide fixed-string search that excludes `.git`, `.jj`, and
-   `Work`, for example:
+   repository-wide fixed-string search. It excludes `.git`, `.jj`, the notes
+   under `Work`, and every `DECISIONS.md` (step 5 records the old value there
+   on purpose), and it still searches a manuscript kept under `Work/novel`
+   (the novel-state layout), for example:
 
    ```bash
+   paths=(.); [[ -d Work/novel ]] && paths+=(Work/novel)
    grep -rInF --exclude-dir=.git --exclude-dir=.jj --exclude-dir=Work \
-     -- "OLD" .
+     --exclude=DECISIONS.md -- "OLD" "${paths[@]}"
    ```
 
    Record the exact command and its empty output. A non-empty result means the
