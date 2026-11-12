@@ -1,7 +1,7 @@
 ---
 name: code-verify
 description: "Run code verification (types, lint, tests, security)"
-argument-hint: "[--quick | --full] [--file PATH]"
+argument-hint: "[--quick | --full | --file PATH]"
 allowed-tools: ["Bash", "Read"]
 ---
 
@@ -17,6 +17,9 @@ Run unified code verification across your project. Automatically detects project
 /code:verify --full             # Full suite (+ security scans)
 /code:verify --file src/app.ts  # Check single file (quick mode)
 ```
+
+`--file` selects quick mode on its own. Combined with `--full` or
+`--level standard|full` it exits non-zero with an error instead of running.
 
 ## Verification Levels
 
@@ -45,6 +48,10 @@ ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}
 [[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 python3 "$ASHA_ROOT/plugins/code/tools/verify.py" $ARGUMENTS
 ```
+
+With `--file PATH` in the arguments the engine runs quick mode on that file.
+If it exits with the `--file` error, report it; do not drop `--file` to rerun
+at a wider level.
 
 If arguments are empty, default to standard level:
 

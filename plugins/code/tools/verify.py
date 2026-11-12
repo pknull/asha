@@ -590,8 +590,8 @@ def main():
     parser.add_argument(
         "--level", "-l",
         choices=["quick", "standard", "full"],
-        default="standard",
-        help="Verification level (default: standard)"
+        default=None,
+        help="Verification level (default: standard; --file selects quick)"
     )
     parser.add_argument(
         "--quick", "-q",
@@ -606,7 +606,7 @@ def main():
     parser.add_argument(
         "--file",
         type=Path,
-        help="Single file to check (for quick level)"
+        help="Single file to check; selects the quick level"
     )
     parser.add_argument(
         "--root",
@@ -642,9 +642,13 @@ def main():
             print(f"  - {name}")
         return
 
-    # Determine level
-    level = args.level
-    if args.quick:
+    # Determine level. Only the quick level uses --file, so --file selects it
+    # and a standard or full request alongside it is an error, not ignored.
+    if args.file is not None and (args.full or args.level in ("standard", "full")):
+        parser.error("--file checks one file at the quick level; it cannot be "
+                     "combined with --full or --level standard/full")
+    level = args.level or "standard"
+    if args.quick or args.file is not None:
         level = "quick"
     elif args.full:
         level = "full"
