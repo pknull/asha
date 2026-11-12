@@ -22,6 +22,16 @@
   other `Work` notes, `.git` and `.jj`, and excludes every `DECISIONS.md`. New
   `tests/python/test_write_revision_pass.py` runs the documented block on a
   fixture.
+- rp 0.5.7: the RP hand-off rule is the one the continuity reviewer's
+  `profiled_npc_no_agent` category enforces. The GM writes routine
+  profiled-NPC lines itself and spawns the character agent for voice-critical
+  moments: confrontation, high-stakes interaction, revelation and first
+  appearance in a scene. `/rp:start`'s Orchestration Mode and the
+  `roleplay-gm` description, panel tree, authority table, parallel-spawn rule,
+  input interpretation, failure table, quality check and reviewer summary
+  asked for an agent on every profiled line; they now state the voice-critical
+  rule. New `tests/python/test_rp_npc_handoff.py` checks the old wording is
+  gone and the rule matches the reviewer's.
 
 ## Unreleased — session: a component publisher keeps the pair it replaces (#136)
 

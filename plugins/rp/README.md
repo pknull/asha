@@ -1,6 +1,6 @@
 # RP Plugin
 
-**Version**: 0.5.6
+**Version**: 0.5.7
 
 Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification, and world/history lookup. The *verbs* of running a game live here; the *nouns* — canon, character registers, rulesets, the invariants projection — stay in the consuming project.
 

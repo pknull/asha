@@ -189,20 +189,21 @@ run:                                # optional: typed run state; omit to keep ru
 
 You handle: environment, scene pressure, NPC agendas, routine NPC interactions, PC physical sensation, time advancement, consequence delivery.
 
-You delegate to agents: critical NPC voice moments — confrontations, high-stakes interactions, revelations.
+You delegate to agents: critical NPC voice moments — confrontations, high-stakes interactions, revelations, first appearance in a scene.
 
 **Failure mode is NOT "writing NPC dialogue without spawning." Failure mode is NPCs who observe, acknowledge, position, and wait. If your NPCs aren't DOING things that FORCE the PC to respond, you have failed.**
 
 ### Orchestration Mode
 
-The **roleplay-gm** protocol operates through character agents:
+The **roleplay-gm** protocol hands profiled NPCs to their character agents at voice-critical moments:
 
-- Spawns character agents for ALL profiled NPC responses
+- Writes routine lines of profiled NPCs itself, in their established register
+- Spawns a profiled NPC's character agent for each voice-critical moment: confrontation, high-stakes interaction, revelation, and first appearance in a scene
 - Spawns world-lookup for proper noun resolution
 - Spawns timeline-search for historical context
 - Resolves roll outcomes directly from the project's mechanics
 - Synthesizes subagent results into seamless narrative
-- **Never writes profiled NPC responses directly**
+- **At a voice-critical moment the character agent speaks for the NPC; the GM does not**
 
 ## Multi-Agent Architecture
 
