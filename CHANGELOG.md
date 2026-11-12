@@ -8,6 +8,13 @@
   non-zero with an error naming the conflict. `/code:verify` and the code README
   say so. New `tests/python/test_code_verify_cli.py` drives the CLI against a
   fake checker.
+- write 1.12.4: the novel-state skill's manual initialization block wrote its
+  templates with shell redirects, replacing any bible or story file a project
+  already had. It now runs `scripts/init_novel_state.py`, the helper
+  `/write:init-novel` uses, which creates only missing files and honours its
+  project-path argument (checked; no helper change). New
+  `tests/python/test_write_novel_state.py` keeps existing files byte for byte,
+  runs from another directory and pins the skill text.
 
 ## Unreleased — session: a component publisher keeps the pair it replaces (#136)
 

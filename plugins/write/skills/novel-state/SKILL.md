@@ -236,64 +236,20 @@ story/manuscript.md     # Full concatenated text
 
 ## Initialization
 
-### Using the init script
+Initialize with the helper, the same one `/write:init-novel` runs. It creates
+only what is missing (directories, template files and an empty
+`timeline/events.json`) and leaves existing files untouched, so it is safe on a
+project that already has a bible, story files or a timeline:
 
 ```bash
-python scripts/init_novel_state.py /path/to/project
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
+python3 "$ASHA_ROOT/plugins/write/skills/novel-state/scripts/init_novel_state.py" /path/to/project
 ```
 
-### Manual initialization
-
-```bash
-cd /path/to/project
-mkdir -p Work/novel/{bible/characters,bible/world,state,timeline,story}
-
-# Create template files
-cat > Work/novel/bible/voice.md << 'EOF'
-# Voice Guide
-
-## Author DNA
-(Define influences and style here)
-
-## Prohibited Patterns
-(List patterns to avoid)
-
-## Required Patterns
-(List patterns to include)
-EOF
-
-cat > Work/novel/bible/rules.md << 'EOF'
-# Story Rules
-
-## World Constraints
-(Immutable world rules)
-
-## Character Constraints
-(Character limitations)
-
-## Narrative Constraints
-(Story structure rules)
-EOF
-
-echo '{"events":[]}' > Work/novel/timeline/events.json
-
-cat > Work/novel/story/synopsis.md << 'EOF'
-# Synopsis
-
-(Story summary)
-EOF
-
-cat > Work/novel/story/outline.md << 'EOF'
-# Outline
-
-## Act 1
-- Chapter 1:
-- Chapter 2:
-
-## Act 2
-...
-EOF
-```
+The path is the project that holds `Work/novel`; without it the helper uses
+the current directory. Do not write these files by hand with shell
+redirection, which replaces a file that already exists.
 
 ## Context Efficiency
 
