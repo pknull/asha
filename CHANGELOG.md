@@ -15,6 +15,13 @@
   project-path argument (checked; no helper change). New
   `tests/python/test_write_novel_state.py` keeps existing files byte for byte,
   runs from another directory and pins the skill text.
+- write 1.12.4: revision-pass step 7's old-value proof excluded all of `Work`,
+  so a manuscript under `Work/novel` (the novel-state layout) was never
+  searched, and it matched the `DECISIONS.md` that step 5 writes. The
+  documented command now adds `Work/novel` when it exists, still skips the
+  other `Work` notes, `.git` and `.jj`, and excludes every `DECISIONS.md`. New
+  `tests/python/test_write_revision_pass.py` runs the documented block on a
+  fixture.
 
 ## Unreleased — session: a component publisher keeps the pair it replaces (#136)
 
