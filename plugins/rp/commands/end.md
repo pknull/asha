@@ -115,7 +115,7 @@ Before any canon is promoted to `Lore/`, the Keeper ratifies each proposed addit
 
 **Preconditions**:
 
-- `Memory/invariants.md` should exist. If absent, log a warning and skip ratification (canon-writer in Step 6 will run unguarded as fallback). Recommend running `/rp:extract-invariants` after the session.
+- `Memory/invariants.md` should exist. If it is absent, log a warning and still spawn the rp-ratifier: it skips only the invariant-conflict check, labels each item `unchecked: no invariants`, and still asks the Keeper per item to accept, reject or defer. Canon-writer in Step 6 never runs without the Keeper's per-item decisions. Recommend running `/rp:extract-invariants` after the session.
 
 **Spawn the rp-ratifier agent**:
 
