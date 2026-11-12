@@ -226,8 +226,6 @@ Use the included scripts in `scripts/` directory:
 
 - `check_text.py` - Check a text string
 - `check_file.py` - Check a file and show issues
-- `batch_check.py` - Check multiple files
-- `apply_fixes.py` - Automatically apply suggestions
 
 ## Integration Patterns
 

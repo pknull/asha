@@ -56,6 +56,9 @@
   never to write around the validator are unchanged.
   `learnings_manager.SESSION_PLUGIN_VERSION`, which mirrors the README version
   as the learnings writer's actor, moves with it.
+- write 1.12.4: the languagetool skill listed two helper scripts that do not
+  exist; its helper list now names only the two in `scripts/`, `check_text.py`
+  and `check_file.py`.
 
 ## Unreleased — session: a component publisher keeps the pair it replaces (#136)
 
