@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — skill audit fixes
+
+- code 1.7.1: `verify.py --file PATH` alone kept the standard level, which never
+  uses the file, so the file was silently ignored. `--file` now selects the
+  quick level, and `--file` with `--full` or `--level standard|full` exits
+  non-zero with an error naming the conflict. `/code:verify` and the code README
+  say so. New `tests/python/test_code_verify_cli.py` drives the CLI against a
+  fake checker.
+
 ## Unreleased — session: a component publisher keeps the pair it replaces (#136)
 
 - #136's observed trial (2026-11-09, the first real `handoff --component` use:

@@ -1,6 +1,6 @@
 # Code Plugin
 
-**Version**: 1.7.0
+**Version**: 1.7.1
 
 Development workflows for implementation, debugging, review, refactoring,
 verification, PostgreSQL work, and guarded issue processing.
@@ -62,14 +62,14 @@ and run the final review phase.
 Use it before a commit or after a risky implementation. Split diffs larger
 than roughly 1,000 lines when possible so findings remain attributable.
 
-### `/code:verify [--quick|--full] [--file PATH]`
+### `/code:verify [--quick|--full|--file PATH]`
 
 | Mode | Intended use |
 |---|---|
 | `--quick` | Post-edit type and format checks |
 | default | Types, lint, and tests before commit |
 | `--full` | Security and dependency checks before a PR or release |
-| `--file PATH` | Narrow check while editing one file |
+| `--file PATH` | Quick checks on one file while editing; an error with `--full` or a standard or full `--level` |
 
 The verifier detects TypeScript, Python, Go, Java, and Rust projects from
 their project files. It reads no configuration file; when detection does not
