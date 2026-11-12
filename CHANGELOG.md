@@ -48,6 +48,14 @@
   rule that does not exist, and the contract is named as the `reviewer` agent,
   the form other commands use, rather than a repository path that does not
   resolve in a user's project.
+- session 3.0.1: the memory-maintenance skill said only an explicit
+  `/session:save` publishes `activeContext.md` or `decisions.md`. It now names
+  both supported routes, each through the same Memory v2 validator: explicit
+  `/session:save`, and the Control handoff (`asha control session handoff`,
+  used by the project-memory skill). The digest compare-and-swap and the rule
+  never to write around the validator are unchanged.
+  `learnings_manager.SESSION_PLUGIN_VERSION`, which mirrors the README version
+  as the learnings writer's actor, moves with it.
 
 ## Unreleased — session: a component publisher keeps the pair it replaces (#136)
 

@@ -26,10 +26,14 @@ unpublished recovery. Candidate learnings have no SessionStart authority.
 `Memory/decisions.md` has only `# Decisions` and current binding decisions. It
 is not a log or archive.
 
-Only explicit `/session:save` publishes either file. Draft outside `Memory/`
-read `tools/memory_v2.py read --format json` before drafting and retain its coherent
-digests. Call `tools/memory_v2.py publish --expected-active DIGEST
---expected-decisions DIGEST`; on conflict reread and merge. Never write around the validator. The
+Two routes publish either file, both through the same Memory v2 validator:
+explicit `/session:save`, and the Control handoff (`asha control session
+handoff`, which the project-memory skill uses). Draft outside `Memory/`. For
+`/session:save`, read `tools/memory_v2.py read --format json` before drafting
+and retain its coherent digests, then call `tools/memory_v2.py publish
+--expected-active DIGEST --expected-decisions DIGEST`; the handoff takes its
+digests from `handoff --read --json` before rereading the pair and passes them
+the same way. On conflict reread and merge. Never write around the validator. The
 publisher holds a project lock and uses a private recovery journal so the pair
 cannot interleave or remain partially replaced. Shipped readers use
 `memory_v2.py read --project-dir PROJECT` and acquire the same lock; direct
