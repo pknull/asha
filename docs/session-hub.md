@@ -385,7 +385,17 @@ A Claude turn can end while its own background work is still running: a
 `run_in_background` shell, a Monitor, a background agent. Claude's Stop payload
 lists that work in `background_tasks` (running or pending, backgrounded; an
 empty array when nothing is in flight; verified on Claude Code 2.1.283). The
-hook bridge forwards only the count, and the hub records such a Stop as
+hook bridge forwards only the count, leaving out WebSocket monitors (#151):
+entries labelled `monitor` without an MCP `server` or `tool`, or raw
+`monitor_ws`. An Artifact live watch is one, with no timeout, so every Stop
+after a publish or a resume listed it and the session never read idle
+(labels, watch registration and Claude's own "not activity" rule for a
+live-update watcher read from the Claude Code 2.1.319-2.1.325 binaries; the
+live payload was not captured). It is a standing subscription, like a session
+cron; a turn a comment wakes reports like any other. An agent's WebSocket
+Monitor is left out too: the payload cannot tell it from a watch. An MCP
+monitor and the Monitor tool's command form (labelled `shell`) still count.
+The hub records such a Stop as
 `working` with `background_tasks: N`, reason `Turn ended; waiting on N
 background task(s)` and next step `Working: background tasks` (#99). It is not
 an idle boundary: a close does not type its pointer there, and the five-minute

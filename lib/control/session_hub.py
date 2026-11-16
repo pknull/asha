@@ -1376,7 +1376,8 @@ class Hub:
         now = time.time()
         # #99: Claude's Stop payload lists background work (shells, Monitors,
         # agents) still running or pending. Such a turn ended, but the session
-        # waits for that work to wake it: it is not an idle boundary.
+        # waits for that work to wake it: it is not an idle boundary. The
+        # bridge leaves WebSocket monitors, such as an Artifact watch, out (#151).
         outstanding = background_tasks if event == 'turn-stopped' and background_tasks else None
         if outstanding:
             activity = 'working'

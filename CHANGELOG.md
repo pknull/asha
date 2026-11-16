@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — session: a standing watch is not background work a close waits on (#151)
+
+- Claude's Stop lists its running or pending background tasks in
+  `background_tasks`, and an Artifact live watch is one: a `monitor_ws` task
+  with no timeout, labelled `monitor`, armed by a publish and re-armed by
+  `--resume` (read from the Claude Code 2.1.319-2.1.325 binaries). Room
+  8b455929 published an artifact at 11:18 UTC; its Stops from then on, and
+  the first after its resume, carried a count of 1, so Control read `idle
+  with 1 background task` and both closes withheld the pointer and ended
+  unsaved. The codex task the issue suspected had ended at 06:02 the day
+  before. Room 3f92ec57 (2026-10-19) ended the same way with an armed watch
+  and no background launch at all. The hook bridge now leaves WebSocket
+  monitors (label `monitor` without an MCP `server` or `tool`, or raw
+  `monitor_ws`) out of the forwarded count: Claude calls a live-update
+  watcher "not activity", and it is a standing subscription, like a session
+  cron. An agent's WebSocket Monitor is left out with it; the payload cannot
+  tell them apart. Shells (the Monitor tool's command form among them),
+  agents, workflows, MCP tasks, MCP monitors and unlabelled entries still
+  count, so #141's withholding is unchanged for them. New
+  `tests/python/test_session_background_watch.py` drives the real bridge into
+  the hub; `tests/test-session-hub-hooks.sh` uses the labels Claude sends.
+
 ## Unreleased — skill audit fixes
 
 - code 1.7.1: `verify.py --file PATH` alone kept the standard level, which never

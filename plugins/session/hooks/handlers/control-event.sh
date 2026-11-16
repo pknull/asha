@@ -147,12 +147,22 @@ fi
 # or pending; such a turn ended but is not idle (#99). Only a payload read
 # whole and parsed can prove it; anything else forwards no count, which keeps
 # the plain Stop meaning. The count alone is forwarded, never the entries.
+# A WebSocket monitor is left out (#151): label "monitor" with no MCP
+# server or tool, or raw monitor_ws. An Artifact live watch is one, with no
+# timeout, so every Stop after a publish or resume listed it and the session
+# never read idle; Claude itself calls a live-update watcher "not activity"
+# (2.1.325). It is a standing subscription, like a session cron. An MCP
+# monitor (it carries server and tool) and the Monitor tool's command form
+# (labelled shell) still count.
 BACKGROUND_TASKS=""
 if [[ -n "$HUB_SESSION" && "$CONTROL_EVENT" == "turn-stopped" && -z "$INPUT_TRUNCATED" && -n "$INPUT" ]] \
     && command -v jq >/dev/null 2>&1; then
   BACKGROUND_TASKS="$(printf '%s' "$INPUT" | jq -r '
     select(type == "object" and (.background_tasks | type) == "array")
-    | .background_tasks | length' 2>/dev/null || true)"
+    | .background_tasks
+    | map(select((type == "object" and (.type == "monitor_ws"
+        or (.type == "monitor" and (has("server") or has("tool") | not)))) | not))
+    | length' 2>/dev/null || true)"
   [[ "$BACKGROUND_TASKS" =~ ^[1-9][0-9]{0,3}$ ]] || BACKGROUND_TASKS=""
 fi
 SESSION_ID="${SESSION_ID:-${ASHA_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}}"

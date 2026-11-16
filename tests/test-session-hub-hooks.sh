@@ -382,12 +382,31 @@ if [[ "$(captured)" == "control session event --event turn-stopped --native-id n
 else
   fail "stop_hook_active is forwarded so the hub never chains a second block ($(captured))"
 fi
-run_control Stop '{"session_id":"native-bg","stop_hook_active":false,"background_tasks":[{"id":"b1","type":"local_bash","status":"running","description":"suite"},{"id":"m1","type":"monitor_mcp","status":"running","description":"watch"}]}' \
+# Entries as Claude sends them: `type` is a friendly label (shell, subagent,
+# workflow, monitor, MCP task, ...), falling back to the raw discriminant.
+run_control Stop '{"session_id":"native-bg","stop_hook_active":false,"background_tasks":[{"id":"b1","type":"shell","status":"running","description":"suite"},{"id":"a1","type":"subagent","status":"running","description":"review"},{"id":"f1","type":"workflow","status":"running","description":"sweep"},{"id":"t1","type":"MCP task","status":"pending","description":"export"},{"id":"r1","type":"local_bash","status":"running","description":"raw"},{"id":"u1","status":"running"},"odd"]}' \
   ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
-if [[ "$(captured)" == "control session event --event turn-stopped --native-id native-bg --background-tasks 2" ]]; then
+if [[ "$(captured)" == "control session event --event turn-stopped --native-id native-bg --background-tasks 7" ]]; then
   ok "Stop forwards the count of outstanding background tasks (#99)"
 else
   fail "Stop forwards the count of outstanding background tasks ($(captured))"
+fi
+# #151: a WebSocket monitor (an Artifact live watch among them) is a standing
+# subscription that never ends on its own, not work a close waits on. An MCP
+# monitor carries server and tool and still counts.
+run_control Stop '{"session_id":"native-bg","stop_hook_active":false,"background_tasks":[{"id":"w1","type":"monitor","status":"running","description":"Live updates"}]}' \
+  ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
+if [[ "$(captured)" == "control session event --event turn-stopped --native-id native-bg" ]]; then
+  ok "a Stop whose only background work is a standing watch forwards no count (#151)"
+else
+  fail "a Stop whose only background work is a standing watch forwards no count ($(captured))"
+fi
+run_control Stop '{"session_id":"native-bg","stop_hook_active":false,"background_tasks":[{"id":"w1","type":"monitor","status":"running","description":"Live updates"},{"id":"b1","type":"shell","status":"running","description":"suite"},{"id":"w2","type":"monitor_ws","status":"running","description":"raw"},{"id":"m1","type":"monitor","status":"running","description":"mcp","server":"s","tool":"t"},{"id":"m2","type":"monitor_mcp","status":"running","description":"raw"}]}' \
+  ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
+if [[ "$(captured)" == "control session event --event turn-stopped --native-id native-bg --background-tasks 3" ]]; then
+  ok "WebSocket monitors, by label or raw type, are left out; MCP monitors count (#151)"
+else
+  fail "WebSocket monitors, by label or raw type, are left out; MCP monitors count ($(captured))"
 fi
 NO_COUNT_OK=1
 for payload in '{"session_id":"native-bg","stop_hook_active":false,"background_tasks":[]}' \

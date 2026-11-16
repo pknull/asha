@@ -355,7 +355,8 @@ def dispatch(argv, *, env):
             parser.add_argument('--emitted-at', type=float, help='when the native hook fired (epoch seconds)')
             parser.add_argument('--cwd', help="native hook payload cwd; refused outside the session's project")
             parser.add_argument('--background-tasks', type=int,
-                                help='background tasks the native Stop reported still running (#99)')
+                                help='background tasks the native Stop reported still running, WebSocket '
+                                     'monitors left out (#99, #151)')
             parser.add_argument('--source', help='native SessionStart payload source; clear may rebind the session (F6)')
             # Accepted and ignored for one release (D11): hooks in live Rooms still pass them.
             for obsolete in ('--tool-kind', '--tool-token', '--sequence', '--sequence-pane', '--order', '--attempts'):
