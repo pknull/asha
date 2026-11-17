@@ -1,6 +1,6 @@
 ---
 name: devops-change
-description: "Plan and execute explicitly authorized infrastructure changes with identity gates, preflight, recovery and live verification. Use when changing server workloads, host configuration, exporters, monitoring or network services; not for read-only health inspections."
+description: "Plan and execute explicitly authorized infrastructure changes with identity gates, preflight, recovery and live verification. Use when changing server workloads, host configuration, exporters, monitoring or network services, or live state on the local desktop (audio devices, compositor, themes, cameras, displays); not for read-only health inspections."
 ---
 
 # Controlled infrastructure changes
