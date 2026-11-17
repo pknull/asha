@@ -76,10 +76,11 @@ case "$EXT" in
         fi
         ;;
 
-    # Markdown
+    # Markdown: report only, never rewrite. Prose and Memory are not code, and
+    # fixers misread them (a line-leading "#131" became a heading) (#153).
     md)
         if command -v prettier &>/dev/null; then
-            TOOL_OUTPUT=$(prettier --write "$FILE_PATH" 2>&1)
+            TOOL_OUTPUT=$(prettier --check "$FILE_PATH" 2>&1) || true
         elif command -v markdownlint &>/dev/null; then
             TOOL_OUTPUT=$(markdownlint "$FILE_PATH" 2>&1) || true
         fi
