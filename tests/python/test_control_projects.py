@@ -113,31 +113,31 @@ class ProjectIndexTests(unittest.TestCase):
     def test_non_colocated_project_container_does_not_hide_nested_repository(self) -> None:
         bots = self.root / "bots"
         write_member(bots, "bots-container")
-        nested = bots / "redacted845"
-        write_member(nested, "pk-zalgo-project")
+        nested = bots / "pk.ditto"
+        write_member(nested, "pk-ditto-project")
         (nested / ".jj").mkdir()
 
         payload = list_projects(self.root)
 
-        entry = next(item for item in payload["projects"] if item["name"] == "redacted845")
+        entry = next(item for item in payload["projects"] if item["name"] == "pk.ditto")
         self.assertTrue(entry["jj_colocated"])
-        self.assertEqual(entry["relative_path"], "bots/redacted845")
+        self.assertEqual(entry["relative_path"], "bots/pk.ditto")
         rc, out, _err = self.run_cli("--root", str(self.root))
         self.assertEqual(rc, 0)
-        self.assertIn(f"redacted845  {nested}", out)
+        self.assertIn(f"pk.ditto  {nested}", out)
 
     def test_match_resolves_a_nested_project_by_relative_path(self) -> None:
         bots = self.root / "bots"
         write_member(bots, "bots-container")
-        nested = bots / "redacted845"
-        write_member(nested, "pk-zalgo-project")
+        nested = bots / "pk.ditto"
+        write_member(nested, "pk-ditto-project")
         (nested / ".jj").mkdir()
 
-        payload = list_projects(self.root, match="BOTS/redacted845")
+        payload = list_projects(self.root, match="BOTS/pk.ditto")
 
         self.assertEqual(
             [item["relative_path"] for item in payload["projects"]],
-            ["bots/redacted845"],
+            ["bots/pk.ditto"],
         )
 
     def test_start_inside_a_project_lists_that_project_first(self) -> None:
@@ -231,36 +231,36 @@ class FriendlyNameTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.base = Path(self.temporary.name).resolve()
-        write_member(self.base / "redacted99", "redacted99-project")
+        write_member(self.base / "tide", "tide-project")
 
     def named(self, value) -> str:
-        path = self.base / "redacted99" / ".asha" / "config.json"
+        path = self.base / "tide" / ".asha" / "config.json"
         config = json.loads(path.read_text())
         config["name"] = value
         path.write_text(json.dumps(config))
-        return display_name(self.base / "redacted99", "redacted99")
+        return display_name(self.base / "tide", "tide")
 
     def test_a_stated_name_is_used_and_the_directory_is_the_fallback(self) -> None:
-        self.assertEqual(display_name(self.base / "redacted99", "redacted99"), "redacted99")
-        self.assertEqual(self.named("Redacted152"), "Redacted152")
+        self.assertEqual(display_name(self.base / "tide", "tide"), "tide")
+        self.assertEqual(self.named("Rusk and Tallow"), "Rusk and Tallow")
         self.assertEqual(self.named("  spaced   out  "), "spaced out")
 
     def test_an_unusable_name_falls_back_rather_than_reaching_the_terminal(self) -> None:
         # Rendered straight into a terminal row, so it is bounded and printable.
         for value in (None, 42, "", "   ", "x" * 49, "bad\u0007bell", "re\u202everse"):
-            self.assertEqual(self.named(value), "redacted99", repr(value))
+            self.assertEqual(self.named(value), "tide", repr(value))
         self.assertEqual(display_name(self.base / "missing", "fallback"), "fallback")
 
     def test_the_index_carries_both_the_name_and_its_directory(self) -> None:
-        self.named("Redacted152")
+        self.named("Rusk and Tallow")
         entry = list_projects(self.base)["projects"][0]
-        self.assertEqual(entry["name"], "Redacted152")
-        self.assertEqual(entry["directory"], "redacted99")
+        self.assertEqual(entry["name"], "Rusk and Tallow")
+        self.assertEqual(entry["directory"], "tide")
         # Exact match stays exact (the index resolves an intent to one repo),
         # but now answers to the stated name as well as the directory.
-        self.assertEqual(len(list_projects(self.base, match="Redacted152")["projects"]), 1)
-        self.assertEqual(len(list_projects(self.base, match="redacted99")["projects"]), 1)
-        self.assertEqual(list_projects(self.base, match="ashes")["projects"], [])
+        self.assertEqual(len(list_projects(self.base, match="Rusk and Tallow")["projects"]), 1)
+        self.assertEqual(len(list_projects(self.base, match="tide")["projects"]), 1)
+        self.assertEqual(list_projects(self.base, match="rusk")["projects"], [])  # a name's first word is not the name
 
 
 class RootResolutionTests(unittest.TestCase):
@@ -314,7 +314,7 @@ class MultiRootIndexTests(unittest.TestCase):
             root.mkdir()
         write_member(self.code / "termart", "termart-project")
         (self.code / "termart" / ".jj").mkdir()
-        write_member(self.notes / "redacted99", "redacted99-project")
+        write_member(self.notes / "tide", "tide-project")
 
     def test_each_root_keeps_its_own_group_and_the_totals_are_flat(self) -> None:
         payload = list_projects_across([str(self.code), str(self.notes)])

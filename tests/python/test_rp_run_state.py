@@ -19,7 +19,7 @@ spec.loader.exec_module(rp_gate)
 
 LEGACY = "Work/rp/rp_session_2026-10-24.md"
 LOG_DIR = "Work/rp/test/log"
-STATE_FILE = "Work/rp/test/redacted123.md"
+STATE_FILE = "Work/rp/test/wystan.md"
 DAY_197 = f"{LOG_DIR}/day-0197.md"
 DAY_198 = f"{LOG_DIR}/day-0198.md"
 SUMMARY_DIR = "Work/rp/summaries/test"
@@ -30,50 +30,50 @@ RUN_BLOCK = """run:
     HP: "20/20"
     Luck: 25
   body:
-    antlers: "stumps (B3328, B3709)"
-    hooves: "feathered draught hooves, shod (T21, B3549)"
+    hands: "calloused (B228, B309)"
+    boots: "hobnailed boots, worn (T21, B3549)"
   workings:
-    FIGHTS THE BIT: on
-    HOMING: off
+    HOLDS THE LINE: on
+    WARDING: off
   clocks:
-    vine-test: {day: 198, fires: "the vine test at the wall"}
-    cure: {day: 225, fires: "THE CURE ends: the post is oak"}
+    toll-test: {day: 198, fires: "the toll test at the wall"}
+    fair: {day: 225, fires: "the harvest fair closes"}
 """
 
 FRONTMATTER = """---
 campaign: "Test Run"
 log_dir: "Work/rp/test/log"
-run_state: "Work/rp/test/redacted123.md#Run state"
+run_state: "Work/rp/test/wystan.md#Run state"
 currentDate: "Day 196 (Monday)"
 startDate: "Day 195 (Sunday)"
 currentLocation: "the kitchen"
 currentTime: "19:00"
-participants: ["Redacted123", "Redacted648"]
+participants: ["Wystan", "Sabe"]
 scene:
   time: "19:00"
   location: "the kitchen"
   participants:
-    - name: "Redacted123"
+    - name: "Wystan"
       role: "PC (calm)"
-    - name: "Redacted648"
+    - name: "Sabe"
       role: "NPC"
-      profile_file: "Lore/World/Characters/Redacted648.md"
+      profile_file: "Canon/Characters/Sabe.md"
   mood: "calm"
   pending_rolls: []
 {run}---
 """
 
 HEADER = """
-# RP Session 2026-10-24: Redacted123, Day 195 afternoon onward
+# RP Session 2026-10-24: Wystan, Day 195 afternoon onward
 
 **Tier:** live beats delegated. Register: plain sentences.
 
 ## What is on him
 
-- FIGHTS THE BIT (Redacted648's).
+- HOLDS THE LINE (Sabe's).
 """
 
-STATE_TEXT = """# Redacted123
+STATE_TEXT = """# Wystan
 
 ## Run state (one page — the GM updates this, nothing else)
 
@@ -88,9 +88,9 @@ STATE_TEXT = """# Redacted123
 
 
 def beat(n, day, extra=""):
-    return (f"### Beat {n} PRE-COMMIT (GM, binding): REDACTED648: \"SHED.\"\n\n"
+    return (f"### Beat {n} PRE-COMMIT (GM, binding): SABE: \"STAND.\"\n\n"
             f"### Beat {n}: Day {day}, ~08:{n % 60:02d} (Monday). (Tier 1){extra}\n"
-            f"**PC move (B{n}):** \"I go.\"\n\nRedacted648 sets down the axe.\n\n")
+            f"**PC move (B{n}):** \"I go.\"\n\nSabe sets down the axe.\n\n")
 
 
 def legacy_body():
@@ -101,13 +101,13 @@ def legacy_body():
     return "".join(parts)
 
 
-def turn_text(delta="none", anchor="Scene: Day 196, ~19:05, calm | Location: the kitchen | Present: Redacted648"):
-    return (f"KEEPER_INPUT:\nI go.\n\nDRAFT:\nRedacted648 sets down the axe.\n\n{anchor}\n\n"
-            f"GM_SPAWN_LOG:\n- redacted648: NOT spawned\n\nSOURCE_LOG:\npriced_stake_touched: false\n\n"
+def turn_text(delta="none", anchor="Scene: Day 196, ~19:05, calm | Location: the kitchen | Present: Sabe"):
+    return (f"KEEPER_INPUT:\nI go.\n\nDRAFT:\nSabe sets down the axe.\n\n{anchor}\n\n"
+            f"GM_SPAWN_LOG:\n- sabe: NOT spawned\n\nSOURCE_LOG:\npriced_stake_touched: false\n\n"
             f"SCENE_STATE_DELTA:\n{delta}\n")
 
 
-NEXT_DAY_ANCHOR = "Scene: Day 197, ~06:00, calm | Location: the kitchen | Present: Redacted648"
+NEXT_DAY_ANCHOR = "Scene: Day 197, ~06:00, calm | Location: the kitchen | Present: Sabe"
 NEXT_DAY = turn_text('currentDate: "Day 197 (Tuesday)"\nscene.time: "06:00"', NEXT_DAY_ANCHOR)
 
 
@@ -117,9 +117,9 @@ class Project:
         self._tmp = tempfile.TemporaryDirectory()
         testcase.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
-        for d in ("Work/markers", "Work/rp/test", "Memory", "Lore/World/Characters"):
+        for d in ("Work/markers", "Work/rp/test", "Memory", "Canon/Characters"):
             (self.root / d).mkdir(parents=True, exist_ok=True)
-        (self.root / "Lore/World/Characters/Redacted648.md").write_text("# Redacted648\n")
+        (self.root / "Canon/Characters/Sabe.md").write_text("# Sabe\n")
         (self.root / STATE_FILE).write_text(state_text, encoding="utf-8")
         (self.root / LEGACY).write_text(FRONTMATTER.format(run=run) + HEADER + legacy_body(), encoding="utf-8")
         self.marker(f"session_file: {LEGACY}\nsession_opened: {LEGACY}\n")
@@ -143,13 +143,13 @@ class Project:
         kw.setdefault("today", "2026-10-26")
         return rp_gate.rotate(self.root, rp_gate.resolve_session_file(self.root)["path"], turn_text=text, **kw)
 
-    def ship(self, text, append: "str | None" = "### Beat 4131: Day 196, ~19:05 (Monday).\n\nRedacted648 sets down the axe.\n",
+    def ship(self, text, append: "str | None" = "### Beat 4131: Day 196, ~19:05 (Monday).\n\nSabe sets down the axe.\n",
              session=None, beat="4131", **kw):
         session = session or rp_gate.resolve_session_file(self.root)["path"]
         kw.setdefault("today", "2026-10-26")
         return rp_gate.ship(self.root, session, turn_text=text, append_text=append, beat=beat, **kw)
 
-    def lint(self, delta, anchor="Scene: Day 196, ~19:00, calm | Location: the kitchen | Present: Redacted648",
+    def lint(self, delta, anchor="Scene: Day 196, ~19:00, calm | Location: the kitchen | Present: Sabe",
              session=LEGACY):
         scene = rp_gate.load_scene(self.root, session)
         config = rp_gate.load_config(self.root)
@@ -176,11 +176,11 @@ class YamlTests(unittest.TestCase):
     def test_emitted_yaml_round_trips(self):
         value = {
             "stats": {"POW": "54/60", "Luck": 25},
-            "body": {"antlers": 'stumps ("broken" D160) # not a comment', "tail": "horse's tail: swishes \\ lifts",
+            "body": {"hands": 'scarred ("burned" D160) # not a comment', "arm": "the smith's scar: pulls \\ itches",
                      "café": "naïve — ünïcode", "note": "line one\nline two"},
-            "workings": {"FIGHTS THE BIT": "on", "T18 (D119 tell)": "off"},
-            "clocks": {"vine-test": {"day": 198, "fires": "the vine test, at the wall"}, "gone": None},
-            "list": ["a", 'b "c"', 3, None, {"name": "Redacted648", "role": "NPC # x"}],
+            "workings": {"HOLDS THE LINE": "on", "T18 (D119 tell)": "off"},
+            "clocks": {"toll-test": {"day": 198, "fires": "the toll test, at the wall"}, "gone": None},
+            "list": ["a", 'b "c"', 3, None, {"name": "Sabe", "role": "NPC # x"}],
             "empty": [], "none": {}, "flag": True,
         }
         lines = rp_gate.emit_yaml("run", value)
@@ -198,9 +198,9 @@ class YamlTests(unittest.TestCase):
 class RunLintTests(unittest.TestCase):
     def test_a_valid_run_delta_is_clean(self):
         p = Project(self)
-        delta = ('run.stats.POW: "53/60"\nrun.stats.Luck: 22\nrun.workings.HOMING: on\n'
-                 'run.body.antlers: "stumps, velvet over them (B4131)"\n'
-                 'run.clocks.wheels: {day: 200, fires: "Redacted583\'s wheels"}\nrun.clocks.vine-test: null')
+        delta = ('run.stats.POW: "53/60"\nrun.stats.Luck: 22\nrun.workings.WARDING: on\n'
+                 'run.body.hands: "calloused, a fresh cut across them (B131)"\n'
+                 'run.clocks.cart: {day: 200, fires: "Kett\'s cart"}\nrun.clocks.toll-test: null')
         result, *_ = p.lint(delta)
         self.assertEqual(run_checks(result), [])
         self.assertNotIn("delta_unknown_key", [f["check"] for f in result["findings"]])
@@ -208,8 +208,8 @@ class RunLintTests(unittest.TestCase):
 
     def test_nested_and_flat_forms_agree(self):
         p = Project(self)
-        flat, *_ = p.lint('run.workings.HOMING: on\nrun.stats.POW: "53/60"')
-        nested, *_ = p.lint('run:\n  workings:\n    HOMING: on\n  stats:\n    POW: "53/60"')
+        flat, *_ = p.lint('run.workings.WARDING: on\nrun.stats.POW: "53/60"')
+        nested, *_ = p.lint('run:\n  workings:\n    WARDING: on\n  stats:\n    POW: "53/60"')
         self.assertEqual(flat["delta"], nested["delta"])
         self.assertEqual(run_checks(nested), [])
 
@@ -232,28 +232,28 @@ class RunLintTests(unittest.TestCase):
         p = Project(self)
         for value in ("lifted", "true", "null", "SPENT", "[on]"):
             with self.subTest(value=value):
-                result, *_ = p.lint(f"run.workings.HOMING: {value}")
+                result, *_ = p.lint(f"run.workings.WARDING: {value}")
                 self.assertEqual(run_checks(result), ["run_bad_value"])
 
     def test_a_new_working_lands_on_and_a_new_one_off_is_a_misspelling(self):
         p = Project(self)
-        result, *_ = p.lint("run.workings.SURE-FOOTED: on")
+        result, *_ = p.lint("run.workings.STEADY: on")
         self.assertEqual(run_checks(result), [])
-        self.assertIn({"kind": "run_added", "key": "run.workings.SURE-FOOTED"}, result["events"])
-        result, *_ = p.lint("run.workings.Homing: off")
+        self.assertIn({"kind": "run_added", "key": "run.workings.STEADY"}, result["events"])
+        result, *_ = p.lint("run.workings.Warding: off")
         finding = next(f for f in result["findings"] if f["check"] == "run_unknown_field")
-        self.assertIn("HOMING", finding["detail"])
+        self.assertIn("WARDING", finding["detail"])
 
     def test_a_clock_day_must_be_in_range(self):
         p = Project(self)
         cases = {
-            'run.clocks.wheels: {day: 190, fires: "Redacted583\'s wheels"}': "run_clock_day",  # before the beat's day
-            'run.clocks.wheels: {day: 900, fires: "Redacted583\'s wheels"}': "run_clock_day",  # past the horizon
-            'run.clocks.wheels: {day: "soon", fires: "Redacted583\'s wheels"}': "run_bad_value",
-            "run.clocks.wheels: {day: 200}": "run_bad_value",  # nothing fires
-            'run.clocks.wheels: {day: 200, fires: "x", when: "noon"}': "run_bad_value",  # unknown field
-            'run.clocks.wheels: "Day 200"': "run_bad_value",
-            "run.clocks.wheels: null": "run_unknown_field",  # clears a clock that does not exist
+            'run.clocks.cart: {day: 190, fires: "Kett\'s cart"}': "run_clock_day",  # before the beat's day
+            'run.clocks.cart: {day: 900, fires: "Kett\'s cart"}': "run_clock_day",  # past the horizon
+            'run.clocks.cart: {day: "soon", fires: "Kett\'s cart"}': "run_bad_value",
+            "run.clocks.cart: {day: 200}": "run_bad_value",  # nothing fires
+            'run.clocks.cart: {day: 200, fires: "x", when: "noon"}': "run_bad_value",  # unknown field
+            'run.clocks.cart: "Day 200"': "run_bad_value",
+            "run.clocks.cart: null": "run_unknown_field",  # clears a clock that does not exist
         }
         for delta, check in cases.items():
             with self.subTest(delta=delta):
@@ -263,17 +263,17 @@ class RunLintTests(unittest.TestCase):
     def test_a_clock_day_is_held_to_the_beats_day_not_the_files(self):
         p = Project(self)
         delta = ('currentDate: "Day 197 (Tuesday)"\nscene.time: "06:00"\n'
-                 'run.clocks.wheels: {day: 196, fires: "Redacted583\'s wheels"}')
+                 'run.clocks.cart: {day: 196, fires: "Kett\'s cart"}')
         result, *_ = p.lint(delta, anchor=NEXT_DAY_ANCHOR)
         self.assertEqual(run_checks(result), ["run_clock_day"])
 
     def test_body_facts_are_text(self):
         p = Project(self)
-        result, *_ = p.lint("run.body.tail: 3")
+        result, *_ = p.lint("run.body.arm: 3")
         self.assertEqual(run_checks(result), ["run_bad_value"])
-        result, *_ = p.lint('run.body.tail: "a horse\'s tail (B4131)"')  # a new part may appear
+        result, *_ = p.lint('run.body.arm: "a burn scar (B4131)"')  # a new part may appear
         self.assertEqual(run_checks(result), [])
-        result, *_ = p.lint("run.body.antlers: null")  # a part may go
+        result, *_ = p.lint("run.body.hands: null")  # a part may go
         self.assertEqual(run_checks(result), [])
 
     def test_an_unknown_section_and_a_bad_name(self):
@@ -291,7 +291,7 @@ class RunLintTests(unittest.TestCase):
 
     def test_run_findings_never_send_a_beat_to_review(self):
         p = Project(self)
-        result, scene, config, turn = p.lint("run.workings.HOMING: lifted")
+        result, scene, config, turn = p.lint("run.workings.WARDING: lifted")
         triggers = rp_gate.beat_triggers(turn, result, scene, config)
         self.assertEqual(triggers, [])
         self.assertEqual(rp_gate.route(result, triggers, config)["next"], "fix")
@@ -301,17 +301,17 @@ class RunLintTests(unittest.TestCase):
     def test_an_overdue_clock_is_a_note_not_a_finding(self):
         p = Project(self)
         delta = 'currentDate: "Day 199 (Thursday)"\nscene.time: "06:00"'
-        result, *_ = p.lint(delta, anchor="Scene: Day 199, ~06:00, calm | Location: the kitchen | Present: Redacted648")
+        result, *_ = p.lint(delta, anchor="Scene: Day 199, ~06:00, calm | Location: the kitchen | Present: Sabe")
         self.assertEqual(run_checks(result), [])
-        self.assertEqual(result["run_notes"], [{"key": "run.clocks.vine-test", "day": 198}])  # terse: read every turn
-        result, *_ = p.lint(delta + "\nrun.clocks.vine-test: null",
-                            anchor="Scene: Day 199, ~06:00, calm | Location: the kitchen | Present: Redacted648")
+        self.assertEqual(result["run_notes"], [{"key": "run.clocks.toll-test", "day": 198}])  # terse: read every turn
+        result, *_ = p.lint(delta + "\nrun.clocks.toll-test: null",
+                            anchor="Scene: Day 199, ~06:00, calm | Location: the kitchen | Present: Sabe")
         self.assertEqual(result["run_notes"], [])
 
 
 class ShipTests(unittest.TestCase):
-    DELTA = ('scene.time: "19:05"\nscene.mood: "tense"\nrun.stats.POW: "53/60"\nrun.workings.HOMING: on\n'
-             'run.clocks.vine-test: null')
+    DELTA = ('scene.time: "19:05"\nscene.mood: "tense"\nrun.stats.POW: "53/60"\nrun.workings.WARDING: on\n'
+             'run.clocks.toll-test: null')
 
     def test_ship_writes_beat_and_state_in_one_replace(self):
         p = Project(self)
@@ -321,17 +321,17 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(got["action"], "shipped")
         self.assertEqual(spy.call_count, 1)
         text = p.read(LEGACY)
-        self.assertTrue(text.rstrip().endswith("Redacted648 sets down the axe."))
+        self.assertTrue(text.rstrip().endswith("Sabe sets down the axe."))
         self.assertEqual(text.count("### Beat 4131: Day 196, ~19:05"), 1)
         data = p.frontmatter(LEGACY)
         self.assertEqual(data["scene"]["time"], "19:05")
         self.assertEqual(data["currentTime"], "19:05")  # the mirror follows scene.time
         self.assertEqual(data["scene"]["mood"], "tense")
         self.assertEqual(data["run"]["stats"]["POW"], "53/60")
-        self.assertEqual(data["run"]["workings"]["HOMING"], "on")
-        self.assertNotIn("vine-test", data["run"]["clocks"])
+        self.assertEqual(data["run"]["workings"]["WARDING"], "on")
+        self.assertNotIn("toll-test", data["run"]["clocks"])
         self.assertTrue(str(data["shipped"]).startswith("4131@"))
-        self.assertEqual(data["run_state"], "Work/rp/test/redacted123.md#Run state")  # untouched lines stay
+        self.assertEqual(data["run_state"], "Work/rp/test/wystan.md#Run state")  # untouched lines stay
 
     def test_ship_keeps_untouched_frontmatter_lines_as_written(self):
         p = Project(self)
@@ -393,11 +393,11 @@ class ShipTests(unittest.TestCase):
 
     def test_ship_drops_invalid_run_entries(self):
         p = Project(self)
-        got = p.ship(turn_text('run.stats.POW: "abc"\nrun.workings.HOMING: on\ncurrentTime: "19:05"'))
+        got = p.ship(turn_text('run.stats.POW: "abc"\nrun.workings.WARDING: on\ncurrentTime: "19:05"'))
         self.assertEqual(sorted(d["key"] for d in got["dropped"]), ["currentTime", "run.stats.POW"])
         data = p.frontmatter(LEGACY)
         self.assertEqual(data["run"]["stats"]["POW"], "54/60")
-        self.assertEqual(data["run"]["workings"]["HOMING"], "on")
+        self.assertEqual(data["run"]["workings"]["WARDING"], "on")
         self.assertEqual(data["currentTime"], "19:00")
 
     def test_ship_never_touches_the_marker(self):
@@ -412,7 +412,7 @@ class ShipTests(unittest.TestCase):
         got = p.rotate(beat="4131")
         self.assertEqual(got["path"], DAY_197)
         closed = p.read(LEGACY)
-        append = ("## Day Plan: Day 197 (Tuesday)\n\n### Clocks\n\n- noon: Redacted583\n\n"
+        append = ("## Day Plan: Day 197 (Tuesday)\n\n### Clocks\n\n- noon: Kett\n\n"
                   "### Beat 4131: Day 196, ~21:00 to Day 197, ~06:00 (Tuesday).\n\nMorning.\n")
         p.ship(NEXT_DAY, append=append, session=got["path"])
         self.assertEqual(p.read(LEGACY), closed)
@@ -513,7 +513,7 @@ class StateBlockTests(unittest.TestCase):
             with self.subTest(target=target):
                 p = Project(self)
                 p.write("Memory/invariants.md", "# Invariants\n\n## Run state\n\nold\n")
-                text = p.read(LEGACY).replace("Work/rp/test/redacted123.md#Run state", f"{target}#Run state")
+                text = p.read(LEGACY).replace("Work/rp/test/wystan.md#Run state", f"{target}#Run state")
                 p.write(LEGACY, text)
                 before = p.read(LEGACY)
                 got = rp_gate.refresh_state(p.root, LEGACY, today="2026-10-26")
@@ -544,11 +544,11 @@ class StateBlockTests(unittest.TestCase):
         self.assertFalse(got["state_block"]["stale"])
 
     def test_session_reports_a_malformed_standing_run_block(self):
-        bad = RUN_BLOCK.replace("HOMING: off", "HOMING: lifted").replace("Luck: 25", 'Luck: "lots"')
+        bad = RUN_BLOCK.replace("WARDING: off", "WARDING: lifted").replace("Luck: 25", 'Luck: "lots"')
         p = Project(self, run=bad)
         got = json.loads(run("session", "--project-dir", str(p.root))[1])
         warnings = " ".join(got["run"]["warnings"])
-        self.assertIn("run.workings.HOMING", warnings)
+        self.assertIn("run.workings.WARDING", warnings)
         self.assertIn("run.stats.Luck", warnings)
 
     def test_session_output_stays_small_without_a_schema(self):
@@ -565,7 +565,7 @@ class RotationCarriesStateTests(unittest.TestCase):
         p.rotate(beat="4132")
         data = p.frontmatter(DAY_197)
         self.assertEqual(data["run"]["stats"]["POW"], "53/60")
-        self.assertEqual(data["run"]["workings"], {"FIGHTS THE BIT": "on", "HOMING": "off"})
+        self.assertEqual(data["run"]["workings"], {"HOLDS THE LINE": "on", "WARDING": "off"})
         self.assertNotIn("shipped", data)
         self.assertIn("shipped", p.frontmatter(LEGACY))
 
@@ -574,7 +574,7 @@ def close_day(p, plan_early=True):
     """Day 196 closes: its last beat, then (often) the next day's Day Plan written early, then rotation."""
     if plan_early:
         with open(p.root / LEGACY, "a", encoding="utf-8") as fh:
-            fh.write("## Day Plan: Day 197 (Tuesday)\n\n### Clocks\n\n- noon: Redacted583\n\n"
+            fh.write("## Day Plan: Day 197 (Tuesday)\n\n### Clocks\n\n- noon: Kett\n\n"
                      "### Beat 4131 PRE-COMMIT (GM, binding): MORNING\n\n")
     got = p.rotate(beat="4131")
     p.ship(NEXT_DAY, append="### Beat 4131: Day 196, ~21:00 to Day 197, ~06:00 (Tuesday).\n\nMorning.\n",
@@ -615,7 +615,7 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(got["summaries_due"], [])
 
     def summary_text(self, extra=""):
-        return f"## Day 196 (Monday)\n\n- **~08:10, the yard (B4110):** Redacted648 set down the axe.{extra}\n"
+        return f"## Day 196 (Monday)\n\n- **~08:10, the yard (B4110):** Sabe set down the axe.{extra}\n"
 
     def test_summary_publish_never_overwrites(self):
         p = Project(self)
@@ -643,7 +643,7 @@ class SummaryTests(unittest.TestCase):
         p.write("Work/rp/.gate/day-summary.md", self.summary_text(" (rp_session_2026-10-24.md:99999)"))
         with self.assertRaises(ValueError):
             rp_gate.publish_summary(p.root, DAY_197, 196, draft, today="2026-10-26")
-        p.write("Work/rp/.gate/day-summary.md", self.summary_text(" (rp_session_2026-10-24.md:40; Redacted648.md:3)"))
+        p.write("Work/rp/.gate/day-summary.md", self.summary_text(" (rp_session_2026-10-24.md:40; Sabe.md:3)"))
         self.assertEqual(rp_gate.publish_summary(p.root, DAY_197, 196, draft, today="2026-10-26")["action"],
                          "published")
 
@@ -704,7 +704,7 @@ class SummaryTests(unittest.TestCase):
         p = Project(self)
         self.closed_day(p)
         p.rotate(turn_text('currentDate: "Day 198 (Wednesday)"\nscene.time: "06:00"',
-                           "Scene: Day 198, ~06:00, calm | Location: the kitchen | Present: Redacted648"), beat="4132")
+                           "Scene: Day 198, ~06:00, calm | Location: the kitchen | Present: Sabe"), beat="4132")
         p.marker(f"session_file: {DAY_198}\nsession_opened: {DAY_197}\n")  # a later session, opened on Day 197
         draft = p.write("Work/rp/.gate/day-summary.md", "## Day 196\n\n- Axe (B4110).\n")  # the earlier session's
         rp_gate.publish_summary(p.root, DAY_198, 196, draft, today="2026-10-26")
@@ -724,7 +724,7 @@ class SummaryTests(unittest.TestCase):
 class ReviewPassOneTests(unittest.TestCase):
     """Defects the first cold review found (review-pass1.md), each red before its fix."""
 
-    SHIP = 'scene.mood: "tense"\nscene.time: "19:05"\nrun.workings.HOMING: on\nrun.stats.POW: "50/60"'
+    SHIP = 'scene.mood: "tense"\nscene.time: "19:05"\nrun.workings.WARDING: on\nrun.stats.POW: "50/60"'
 
     def edited(self, old, new, **kw):
         p = Project(self, **kw)
@@ -746,10 +746,10 @@ class ReviewPassOneTests(unittest.TestCase):
                 p.ship(turn_text(self.SHIP))
                 data = p.frontmatter(LEGACY)
                 self.assertEqual(data["scene"]["mood"], "tense")
-                self.assertEqual(data["run"]["workings"]["HOMING"], "on")
+                self.assertEqual(data["run"]["workings"]["WARDING"], "on")
                 self.assertEqual(data["run"]["stats"]["POW"], "50/60")
                 head = p.read(LEGACY).split("\n---\n", 1)[0]
-                for key in ("  mood:", "  pending_rolls:", "    HOMING:", "    POW:", "  workings:", "  clocks:"):
+                for key in ("  mood:", "  pending_rolls:", "    WARDING:", "    POW:", "  workings:", "  clocks:"):
                     self.assertEqual(head.count("\n" + key), 1, key)
 
     def test_ship_keeps_untouched_lines_of_a_block_as_written(self):  # M1
@@ -814,7 +814,7 @@ class ReviewPassOneTests(unittest.TestCase):
         self.assertEqual(p.frontmatter(LEGACY)["scene"]["mood"], "a\u2028b")
 
     def test_a_name_with_quotes_or_a_backslash_is_written_back(self):  # m2
-        run_block = RUN_BLOCK.replace("    HOMING: off\n", "    HOMING: off\n    'T18 \"the tell\"': on\n    'C:\\dir': off\n")
+        run_block = RUN_BLOCK.replace("    WARDING: off\n", "    WARDING: off\n    'T18 \"the tell\"': on\n    'C:\\dir': off\n")
         p = Project(self, run=run_block)
         self.assertEqual(rp_gate.standing_run_warnings(p.frontmatter(LEGACY)["run"]), [])
         got = p.ship(turn_text('run:\n  workings:\n    \'T18 "the tell"\': off\nrun.stats.POW: "50/60"'))
@@ -826,7 +826,7 @@ class ReviewPassOneTests(unittest.TestCase):
         self.assertEqual((code, json.loads(out)["action"]), (0, "unchanged"))
 
     def test_a_name_that_cannot_be_written_is_refused_not_raised(self):  # m2
-        p = Project(self, run=RUN_BLOCK.replace("    HOMING: off\n", '    HOMING: off\n    "tab\\there": on\n'))
+        p = Project(self, run=RUN_BLOCK.replace("    WARDING: off\n", '    WARDING: off\n    "tab\\there": on\n'))
         self.assertIn("cannot be written", " ".join(rp_gate.standing_run_warnings(p.frontmatter(LEGACY)["run"])))
         self.assertEqual(rp_gate.refresh_state(p.root, LEGACY, today="2026-10-26")["action"], "refused")
         code, _out, err = run("state", "--refresh", "--project-dir", str(p.root))
@@ -850,15 +850,15 @@ class ReviewPassOneTests(unittest.TestCase):
 
     def test_ship_takes_the_beats_day_from_the_anchor_like_the_lint(self):  # m4
         p = Project(self)
-        text = turn_text('run.clocks.wheels: {day: 196, fires: "Redacted583\'s wheels"}', NEXT_DAY_ANCHOR)
-        result, *_ = p.lint('run.clocks.wheels: {day: 196, fires: "Redacted583\'s wheels"}', anchor=NEXT_DAY_ANCHOR)
+        text = turn_text('run.clocks.cart: {day: 196, fires: "Kett\'s cart"}', NEXT_DAY_ANCHOR)
+        result, *_ = p.lint('run.clocks.cart: {day: 196, fires: "Kett\'s cart"}', anchor=NEXT_DAY_ANCHOR)
         self.assertIn("run_clock_day", run_checks(result))
         got = p.ship(text)
-        self.assertEqual([(d["key"], d["check"]) for d in got["dropped"]], [("run.clocks.wheels", "run_clock_day")])
+        self.assertEqual([(d["key"], d["check"]) for d in got["dropped"]], [("run.clocks.cart", "run_clock_day")])
 
     def test_a_body_fact_is_one_line(self):  # m5
         p = Project(self)
-        result, *_ = p.lint("run.body.tail: |\n  a horse's tail\n  that swishes")
+        result, *_ = p.lint("run.body.arm: |\n  a burn scar\n  that pulls")
         self.assertEqual(run_checks(result), ["run_bad_value"])
 
     def stitched(self, extra_text):
@@ -912,16 +912,16 @@ class ReviewPassOneTests(unittest.TestCase):
 
     def test_ship_syncs_every_mirror(self):  # m13
         p = Project(self)
-        p.ship(turn_text('scene.location: "the yard"\nscene.participants:\n  - name: "Redacted123"\n    role: "PC"\n'
-                         '  - name: "Redacted695"\n    role: "NPC"',
-                         "Scene: Day 196, ~19:00, calm | Location: the yard | Present: Redacted695"))
+        p.ship(turn_text('scene.location: "the yard"\nscene.participants:\n  - name: "Wystan"\n    role: "PC"\n'
+                         '  - name: "Tova"\n    role: "NPC"',
+                         "Scene: Day 196, ~19:00, calm | Location: the yard | Present: Tova"))
         data = p.frontmatter(LEGACY)
-        self.assertEqual((data["currentLocation"], data["participants"]), ("the yard", ["Redacted123", "Redacted695"]))
+        self.assertEqual((data["currentLocation"], data["participants"]), ("the yard", ["Wystan", "Tova"]))
 
     def test_a_day_that_ends_on_an_insert_beat_allows_its_highest_beat(self):  # m10
         p = Project(self)
         with open(p.root / LEGACY, "a", encoding="utf-8") as fh:
-            fh.write("### Beat 4120A (INSERT, a missed line): Day 196, ~08:20.\n\nRedacted648 nods.\n\n")
+            fh.write("### Beat 4120A (INSERT, a missed line): Day 196, ~08:20.\n\nSabe nods.\n\n")
         close_day(p, plan_early=False)
         draft = p.write("Work/rp/.gate/day-summary.md", "## Day 196\n\n- The last beat (B4130).\n")
         self.assertEqual(rp_gate.publish_summary(p.root, DAY_197, 196, draft, today="2026-10-26")["action"],
@@ -937,7 +937,7 @@ class ReviewPassOneTests(unittest.TestCase):
     def test_a_log_is_known_by_its_frontmatter_too(self):  # m13
         p = Project(self)
         p.write("Work/rp/test/notes.md", "---\nscene:\n  time: \"19:00\"\n---\n\n## Run state\n\nx\n")
-        p.write(LEGACY, p.read(LEGACY).replace("Work/rp/test/redacted123.md#Run state", "Work/rp/test/notes.md#Run state"))
+        p.write(LEGACY, p.read(LEGACY).replace("Work/rp/test/wystan.md#Run state", "Work/rp/test/notes.md#Run state"))
         self.assertEqual(rp_gate.refresh_state(p.root, LEGACY, today="2026-10-26")["action"], "refused")
 
     def test_a_second_summariser_publishing_first_is_handled(self):  # m13
@@ -976,7 +976,7 @@ class ReviewPassTwoTests(unittest.TestCase):
         got = rp_gate.stitch_summary(p.root, DAY_197, out, extra, today="2026-10-26")
         return p.read(out), got
 
-    GM_STATE = "## State at close\n\n| Place | the barn |\n| Gear | the breastcollar |\n"
+    GM_STATE = "## State at close\n\n| Place | the mill |\n| Gear | the satchel |\n"
 
     def test_stitch_keeps_the_gms_state_at_close(self):  # N1
         extra = "## Day 197, so far\n\n- Morning (B4131).\n\n" + self.GM_STATE + "\n## Threads open\n\n- The vine.\n"
@@ -984,7 +984,7 @@ class ReviewPassTwoTests(unittest.TestCase):
             with self.subTest(schema=bool(run)):
                 text, got = self.stitch(run, extra)
                 self.assertEqual(text.count("## State at close"), 1)
-                self.assertIn("| Gear | the breastcollar |", text)
+                self.assertIn("| Gear | the satchel |", text)
                 self.assertLess(text.index("## Threads open"), text.index("## State at close"))
                 self.assertEqual(got["days"], [196, 197])
                 self.assertEqual('POW: "54/60"' in text, bool(run))
@@ -1025,7 +1025,7 @@ class ReviewPassTwoTests(unittest.TestCase):
         p = Project(self)
         close_day(p)  # Day 196 closes; its summary fails
         p.rotate(turn_text('currentDate: "Day 198 (Wednesday)"\nscene.time: "06:00"',
-                           "Scene: Day 198, ~06:00, calm | Location: the kitchen | Present: Redacted648"), beat="4132")
+                           "Scene: Day 198, ~06:00, calm | Location: the kitchen | Present: Sabe"), beat="4132")
         draft = p.write("Work/rp/.gate/day-summary.md", "## Day 197\n\n- Morning (B4131).\n")
         rp_gate.publish_summary(p.root, DAY_198, 197, draft, today="2026-10-26")
         p.marker(f"session_file: {DAY_198}\nsession_opened: {DAY_198}\n")  # resumed without /rp:end
@@ -1043,17 +1043,17 @@ class ReviewPassTwoTests(unittest.TestCase):
 
     def test_clearing_the_last_clock_leaves_an_empty_mapping(self):  # N6
         p = Project(self)
-        p.ship(turn_text("run.clocks.vine-test: null\nrun.clocks.cure: null"))
+        p.ship(turn_text("run.clocks.toll-test: null\nrun.clocks.fair: null"))
         self.assertEqual(p.frontmatter(LEGACY)["run"]["clocks"], {})
 
     def test_a_list_at_its_keys_own_indent_is_replaced_whole(self):  # N7
         p = Project(self)
-        p.write(LEGACY, p.read(LEGACY).replace('participants: ["Redacted123", "Redacted648"]\n',
-                                               'participants:\n- "Redacted123"\n- "Redacted648"\n'))
-        p.ship(turn_text('scene.participants:\n  - name: "Redacted123"\n    role: "PC"\n  - name: "Redacted695"\n    role: "NPC"',
-                         "Scene: Day 196, ~19:00, calm | Location: the kitchen | Present: Redacted695"))
-        self.assertEqual(p.frontmatter(LEGACY)["participants"], ["Redacted123", "Redacted695"])
-        self.assertNotIn('- "Redacted648"', p.read(LEGACY).split("\n---\n", 1)[0])
+        p.write(LEGACY, p.read(LEGACY).replace('participants: ["Wystan", "Sabe"]\n',
+                                               'participants:\n- "Wystan"\n- "Sabe"\n'))
+        p.ship(turn_text('scene.participants:\n  - name: "Wystan"\n    role: "PC"\n  - name: "Tova"\n    role: "NPC"',
+                         "Scene: Day 196, ~19:00, calm | Location: the kitchen | Present: Tova"))
+        self.assertEqual(p.frontmatter(LEGACY)["participants"], ["Wystan", "Tova"])
+        self.assertNotIn('- "Sabe"', p.read(LEGACY).split("\n---\n", 1)[0])
 
     def test_a_raw_separator_already_in_the_frontmatter_stays_in_its_line(self):  # N7
         p = Project(self)
@@ -1081,15 +1081,15 @@ class ReviewPassThreeTests(unittest.TestCase):
         return p
 
     def test_items_written_dash_tab_are_replaced_whole_and_run_stays_read(self):  # P1, P2
-        p = self.edited('participants: ["Redacted123", "Redacted648"]\n', 'participants:\n-\t"Redacted123"\n-\t"Redacted648"\n')
-        p.ship(turn_text('scene.participants:\n  - name: "Redacted123"\n    role: "PC"\n  - name: "Redacted695"\n    role: "NPC"',
-                         "Scene: Day 196, ~19:00, calm | Location: the kitchen | Present: Redacted695"))
+        p = self.edited('participants: ["Wystan", "Sabe"]\n', 'participants:\n-\t"Wystan"\n-\t"Sabe"\n')
+        p.ship(turn_text('scene.participants:\n  - name: "Wystan"\n    role: "PC"\n  - name: "Tova"\n    role: "NPC"',
+                         "Scene: Day 196, ~19:00, calm | Location: the kitchen | Present: Tova"))
         data = p.frontmatter(LEGACY)
-        self.assertEqual(data["participants"], ["Redacted123", "Redacted695"])
+        self.assertEqual(data["participants"], ["Wystan", "Tova"])
         self.assertEqual(data["run"]["stats"]["POW"], "54/60")
 
     def test_a_tab_inside_a_name_is_found_not_duplicated(self):  # P2
-        p = self.edited("    HOMING: off\n", "    HOMING: off\n    THE\tGRIP: on\n")
+        p = self.edited("    WARDING: off\n", "    WARDING: off\n    THE\tGRIP: on\n")
         p.ship(turn_text("run.workings.THE  GRIP: off"))
         head = p.read(LEGACY).split("\n---\n", 1)[0]
         self.assertEqual(head.count("GRIP"), 1)
@@ -1114,7 +1114,7 @@ class ReviewPassThreeTests(unittest.TestCase):
         before = p.read(LEGACY)
         with self.assertRaises(ValueError) as caught:
             p.ship(turn_text('scene.location: "the yard"',
-                             "Scene: Day 196, ~19:00, calm | Location: the yard | Present: Redacted648"))
+                             "Scene: Day 196, ~19:00, calm | Location: the yard | Present: Sabe"))
         self.assertIn("currentTime", str(caught.exception))
         self.assertEqual(p.read(LEGACY), before)
 
@@ -1129,8 +1129,8 @@ class ReviewPassThreeTests(unittest.TestCase):
 
     def test_a_list_item_whose_first_key_needs_quotes_ships(self):  # P3
         p = Project(self)
-        p.ship(turn_text('scene.pending_rolls: [{"Redacted648\'s check": "DC 12", who: "Redacted648"}]'))
-        self.assertEqual(p.frontmatter(LEGACY)["scene"]["pending_rolls"], [{"Redacted648's check": "DC 12", "who": "Redacted648"}])
+        p.ship(turn_text('scene.pending_rolls: [{"Sabe\'s check": "DC 12", who: "Sabe"}]'))
+        self.assertEqual(p.frontmatter(LEGACY)["scene"]["pending_rolls"], [{"Sabe's check": "DC 12", "who": "Sabe"}])
 
     def test_a_list_value_becomes_a_mapping_through_a_delta_key(self):  # P8
         p = self.edited('campaign: "Test Run"\n', 'campaign: "Test Run"\ntracker:\n  - "a"\n  - "b"\n')
@@ -1143,7 +1143,7 @@ class ReviewPassThreeTests(unittest.TestCase):
         got = {"path": None}
         for day in days:
             text = turn_text(f'currentDate: "Day {day} (X)"\nscene.time: "06:00"',
-                             f"Scene: Day {day}, ~06:00, calm | Location: the kitchen | Present: Redacted648")
+                             f"Scene: Day {day}, ~06:00, calm | Location: the kitchen | Present: Sabe")
             got = p.rotate(text, beat=str(4200 + day))
             p.ship(text, append=f"### Beat {4200 + day}: Day {day}, ~06:00.\n\nMorning.\n", session=got["path"])
         return got["path"]
@@ -1181,7 +1181,7 @@ class ReviewPassThreeTests(unittest.TestCase):
         with mock.patch.object(rp_gate, "_swap_marker", side_effect=OSError("killed")):
             with self.assertRaises(OSError):
                 p.rotate(beat="4131")
-        got = p.rotate(turn_text("none", "Scene: Day 196, ~19:05, calm | Location: the kitchen | Present: Redacted648"))
+        got = p.rotate(turn_text("none", "Scene: Day 196, ~19:05, calm | Location: the kitchen | Present: Sabe"))
         self.assertEqual(got["set_aside"], [DAY_197])
 
 
@@ -1202,10 +1202,10 @@ class ReviewPassFourTests(unittest.TestCase):
 
     def test_a_flow_item_escapes_line_separators(self):  # F2
         p = Project(self)
-        p.ship(turn_text('scene.pending_rolls: [{"Redacted648\'s check": "a\\u2028b", who: "x\\u0085y"}]'))
+        p.ship(turn_text('scene.pending_rolls: [{"Sabe\'s check": "a\\u2028b", who: "x\\u0085y"}]'))
         text = p.read(LEGACY)
         self.assertEqual(len(text.splitlines()), text.count("\n"))  # no line the gate's counts would split
-        self.assertEqual(p.frontmatter(LEGACY)["scene"]["pending_rolls"], [{"Redacted648's check": "a\u2028b", "who": "x\x85y"}])
+        self.assertEqual(p.frontmatter(LEGACY)["scene"]["pending_rolls"], [{"Sabe's check": "a\u2028b", "who": "x\x85y"}])
 
     def test_a_mapping_written_as_a_dash_tab_list_is_replaced_whole(self):  # F3
         p = Project(self)
@@ -1239,7 +1239,7 @@ class ContractTests(unittest.TestCase):
                 self.assertIn(text, step3)
 
     def test_agents_know_run_state(self):
-        self.assertIn("run.workings.HOMING: on", self.read("plugins/rp/agents/roleplay-gm.md"))
+        self.assertIn("run.workings.WARDING: on", self.read("plugins/rp/agents/roleplay-gm.md"))
         self.assertIn("`run.*` entries", self.read("plugins/write/agents/continuity-reviewer.md"))
         self.assertIn("DAY SUMMARY", self.read("plugins/rp/agents/timeline-search.md"))
         self.assertIn("run:", self.read("plugins/rp/commands/start.md"))
@@ -1249,13 +1249,13 @@ class CliTests(unittest.TestCase):
     def test_check_prints_run_findings_events_and_notes(self):
         p = Project(self)
         turn = p.write("Work/rp/.gate/turn.md", turn_text(
-            'currentDate: "Day 199 (Thursday)"\nscene.time: "06:00"\nrun.workings.HOMING: lifted',
-            "Scene: Day 199, ~06:00, calm | Location: the kitchen | Present: Redacted648"))
+            'currentDate: "Day 199 (Thursday)"\nscene.time: "06:00"\nrun.workings.WARDING: lifted',
+            "Scene: Day 199, ~06:00, calm | Location: the kitchen | Present: Sabe"))
         code, out, _err = run("check", "--project-dir", str(p.root), "--turn-file", str(turn), "--no-log")
         got = json.loads(out)
         self.assertEqual(code, 0)
         self.assertIn("run_bad_value", [f["check"] for f in got["lint"]["findings"]])
-        self.assertEqual([n["key"] for n in got["lint"]["run_notes"]], ["run.clocks.vine-test"])
+        self.assertEqual([n["key"] for n in got["lint"]["run_notes"]], ["run.clocks.toll-test"])
         self.assertEqual(got["route"]["next"], "fix")
 
     def test_ship_state_and_summary_commands(self):

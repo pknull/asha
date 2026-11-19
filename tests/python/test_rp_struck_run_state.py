@@ -13,12 +13,12 @@ rp_gate = fx.rp_gate  # the module the fixtures drive
 Project, LEGACY, DAY_197, NEXT_DAY, turn_text = fx.Project, fx.LEGACY, fx.DAY_197, fx.NEXT_DAY, fx.turn_text
 
 TODAY = "2026-10-26"
-NEXT_DAY_PLAN = "## Day Plan: Day 197 (Tuesday)\n\n- Redacted648: the shed\n\n"
+NEXT_DAY_PLAN = "## Day Plan: Day 197 (Tuesday)\n\n- Sabe: the shed\n\n"
 
 
 def strike(p, prose, beat_label, session=None):
     session = session or rp_gate.resolve_session_file(p.root)["path"]
-    text = turn_text().replace("Redacted648 sets down the axe.", prose)
+    text = turn_text().replace("Sabe sets down the axe.", prose)
     return rp_gate.strike(p.root, session, turn_text=text, attempt=1, beat=beat_label, reason="presence",
                           today=TODAY)
 
@@ -34,10 +34,10 @@ def read_lines(entry):
 
 def play_into_day_197(p):
     """Beat 4131 on Day 196 after a struck draft; then a struck draft for 4132, the beat that opens Day 197."""
-    strike(p, "Redacted1264 hangs the door on its new hinges.", "4131")
+    strike(p, "Orm hangs the door on its new hinges.", "4131")
     p.rotate(text=turn_text(), beat="4131")  # same day: the struck draft lands before the beat
     p.ship(turn_text())
-    strike(p, "Redacted1264 sends word: the hinges are ready.", "4132")
+    strike(p, "Orm sends word: the hinges are ready.", "4132")
     got = p.rotate(beat="4132")
     p.ship(NEXT_DAY, append=NEXT_DAY_PLAN + "### Beat 4132: Day 197, ~06:00 (Tuesday).\n\nMorning.\n",
            session=got["path"], beat="4132")
@@ -70,7 +70,7 @@ class DaySpanTests(unittest.TestCase):
     def test_the_open_days_range_leaves_out_a_struck_draft_written_at_rp_end(self):
         p = Project(self)
         play_into_day_197(p)
-        strike(p, "Redacted1264 turns away from the gate.", "4133")
+        strike(p, "Orm turns away from the gate.", "4133")
         self.assertTrue(rp_gate.rotate(p.root, DAY_197, repair_only=True, today=TODAY)["struck"])
         opened = rp_gate.summary_plan(p.root, DAY_197)["open"]
         self.assertEqual(opened["beats"]["last_beat"], "4132")
@@ -95,7 +95,7 @@ class PlacementTests(unittest.TestCase):
         self.assertEqual([x["start"] for x in opened["plans"]], [plan])
         self.assertGreater(opened["beats"]["start"], plan)
         p.rotate(text=turn_text('currentDate: "Day 198 (Wednesday)"\nscene.time: "06:00"',
-                                "Scene: Day 198, ~06:00, calm | Location: the kitchen | Present: Redacted648"), beat="4133")
+                                "Scene: Day 198, ~06:00, calm | Location: the kitchen | Present: Sabe"), beat="4133")
         self.assertNotIn("[!struck]", p.read(f"{fx.LOG_DIR}/day-0198.md"))  # never copied as header
 
 
@@ -113,14 +113,14 @@ class CitationTests(unittest.TestCase):
                      f"{struck[0] - 1}-{story}", f"{struck[0] - 2}-{struck[-1] + 1}",  # one end on a blank line
                      f"{struck[-1] + 1}-{struck[0] - 1}"):  # written backwards
             with self.subTest(cite=cite):
-                p.write(path, f"## Day 196 (Monday)\n\n- Redacted1264 hung the door ({name}:{cite}).\n")
+                p.write(path, f"## Day 196 (Monday)\n\n- Orm hung the door ({name}:{cite}).\n")
                 with self.assertRaises(ValueError) as caught:
                     rp_gate.publish_summary(p.root, DAY_197, 196, draft, today=TODAY)
                 self.assertIn("struck", str(caught.exception))
         lines = p.read(LEGACY).split("\n")
         lines[struck[0] - 2] = " \t"  # a hand-edited blank line is blank too
         p.write(LEGACY, "\n".join(lines))
-        p.write(path, f"## Day 196 (Monday)\n\n- Redacted1264 hung the door ({name}:{struck[0] - 1}-{story}).\n")
+        p.write(path, f"## Day 196 (Monday)\n\n- Orm hung the door ({name}:{struck[0] - 1}-{story}).\n")
         with self.assertRaises(ValueError) as caught:
             rp_gate.publish_summary(p.root, DAY_197, 196, draft, today=TODAY)
         self.assertIn("struck", str(caught.exception))
@@ -138,7 +138,7 @@ class CitationTests(unittest.TestCase):
         p = Project(self)
         play_into_day_197(p)
         p.rotate(text=turn_text('currentDate: "Day 198 (Wednesday)"\nscene.time: "06:00"',
-                                "Scene: Day 198, ~06:00, calm | Location: the kitchen | Present: Redacted648"), beat="4133")
+                                "Scene: Day 198, ~06:00, calm | Location: the kitchen | Present: Sabe"), beat="4133")
         day_197 = sorted(struck_lines(p, DAY_197))
         self.assertTrue(day_197)
         self.assertFalse(set(day_197) & struck_lines(p, LEGACY))  # a line struck in one file is story in the other

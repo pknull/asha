@@ -306,8 +306,8 @@ class SessionHubTests(unittest.TestCase):
 
     def test_room_resumed_first_after_reboot_takes_ids_another_row_records(self):
         # The live ordering: life resumed first and its new Room took the IDs
-        # REDACTED1208's record still named. REDACTED1208 must recover without touching it.
-        redacted1208 = self.launch()
+        # BRIAR's record still named. BRIAR must recover without touching it.
+        briar = self.launch()
         self.tmux.next_ids = [('%43', '$8')]
         life = self.launch()
         self.tmux.sessions.clear()
@@ -318,16 +318,16 @@ class SessionHubTests(unittest.TestCase):
         self.tmux.next_ids = [('%42', '$7')]
         self.assertEqual(self.hub.resume(life['session_id'], prompt='Continue')['generation'], 2)
         self.assertEqual(self.hub.show(life['session_id'])['process_state'], 'live')
-        stopped = self.hub.stop(redacted1208['session_id'])
+        stopped = self.hub.stop(briar['session_id'])
         self.assertEqual(stopped['lifecycle'], 'stopped')
         self.assertIn('nothing was killed', stopped['reason'])
         self.assertEqual(self.tmux.kill_attempts, [])
         self.assertEqual(self.tmux.sent, [])
         self.assertEqual(self.hub.show(life['session_id'])['process_state'], 'live')
         self.tmux.next_ids = [('%44', '$9')]
-        resumed = self.hub.resume(redacted1208['session_id'], prompt='Continue after the reboot')
+        resumed = self.hub.resume(briar['session_id'], prompt='Continue after the reboot')
         self.assertEqual(resumed['generation'], 2)
-        self.assertEqual(resumed['room_history'], [redacted1208['room_id']])
+        self.assertEqual(resumed['room_history'], [briar['room_id']])
         self.assertEqual(self.tmux.killed, [])
 
     def test_repeated_friendly_names_create_distinct_sessions(self):

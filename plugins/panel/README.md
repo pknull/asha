@@ -1,6 +1,6 @@
 # Panel Plugin
 
-**Version**: 5.1.0
+**Version**: 5.1.1
 
 Recorded multi-perspective analysis with decomposition, clarification,
 specialist recruitment, adversarial examination, and decision synthesis.

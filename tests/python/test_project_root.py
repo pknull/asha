@@ -166,7 +166,7 @@ class DetectWorkspaceTests(unittest.TestCase):
             os.environ["HOME"] = self._home
 
     def test_workspace_found_from_nested_cwd(self):
-        ws = self.home / "Code" / "Redacted1106"
+        ws = self.home / "Code" / "Foundry"
         child = ws / "egregore" / "src"
         child.mkdir(parents=True)
         _write_manifest(ws)
@@ -214,7 +214,7 @@ class DetectWorkspaceTests(unittest.TestCase):
         # Fail closed: a broken workspace surfaces as a verdict; the walk
         # must NOT keep climbing to a higher (valid) workspace.
         outer = self.home / "Code"
-        inner = outer / "Redacted1106"
+        inner = outer / "Foundry"
         child = inner / "egregore"
         child.mkdir(parents=True)
         _write_manifest(outer)                      # valid, above

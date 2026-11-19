@@ -14,8 +14,8 @@ _spec.loader.exec_module(fx)
 rp_gate = fx.rp_gate
 Project, LEGACY, NEXT_DAY, beat, run = fx.Project, fx.LEGACY, fx.NEXT_DAY, fx.beat, fx.run
 
-TURN = ("KEEPER_INPUT:\nI wait.\n\nDRAFT:\nRedacted648 hangs the kettle on its hook.\n\n"
-        "Scene: Day 196, ~19:05, calm | Location: the kitchen | Present: Redacted648\n\nGM_SPAWN_LOG:\n- redacted648: no\n\n"
+TURN = ("KEEPER_INPUT:\nI wait.\n\nDRAFT:\nSabe hangs the kettle on its hook.\n\n"
+        "Scene: Day 196, ~19:05, calm | Location: the kitchen | Present: Sabe\n\nGM_SPAWN_LOG:\n- sabe: no\n\n"
         "SOURCE_LOG:\npriced_stake_touched: true\n\nSCENE_STATE_DELTA:\nscene.time: \"19:05\"\n")
 
 

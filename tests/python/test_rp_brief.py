@@ -17,7 +17,7 @@ rp_gate = fx.rp_gate
 Project, LEGACY, beat, run = fx.Project, fx.LEGACY, fx.beat, fx.run
 
 TABLE = "Work/rp/test/keyed-entries.md"
-NOTES = "Lore/World/Notes.md"
+NOTES = "Canon/Notes.md"
 KEYED = f"""# Keyed entries
 
 ## Gate
@@ -88,7 +88,7 @@ class BriefTests(unittest.TestCase):
         lines = report["live_state"].splitlines()
         fm, header = state["frontmatter"], state["header"]
         self.assertEqual(lines[1], f"  session: {LEGACY} lines {fm['start']}-{header['end']}")
-        self.assertTrue(lines[2].startswith("  run_state: Work/rp/test/redacted123.md lines "))
+        self.assertTrue(lines[2].startswith("  run_state: Work/rp/test/wystan.md lines "))
         self.assertTrue(any(x.startswith(f"  day: {LEGACY} lines ") and "(Day 196: so far; B4125-B4130)" in x
                             for x in lines))
         self.assertTrue(any(x.startswith(f"  earlier: {LEGACY} lines ") and "(14 beats, B4111-B4124)" in x
@@ -113,8 +113,8 @@ class BriefTests(unittest.TestCase):
         self.assertLess(order.index("Gate"), order.index("Axe"))
 
     def test_the_priced_stakes_rule_rides_the_brief_on_every_harness(self):
-        for layout in ("| Register | Path | Role |\n|---|---|---|\n| `priced_stakes` | `Lore/Rules/prices.md` | x |\n",
-                       "## priced_stakes\n\n`Lore/Rules/prices.md` the router.\n\n## campaigns\n"):
+        for layout in ("| Register | Path | Role |\n|---|---|---|\n| `priced_stakes` | `Canon/Rules/prices.md` | x |\n",
+                       "## priced_stakes\n\n`Canon/Rules/prices.md` the router.\n\n## campaigns\n"):
             with self.subTest(layout=layout[:12]):
                 p = project(self)
                 (p.root / "Memory").mkdir(exist_ok=True)
@@ -122,7 +122,7 @@ class BriefTests(unittest.TestCase):
                 text, report = brief(p, keeper="Is there a way out of the cellar?")
                 self.assertTrue(report["priced_input"])
                 self.assertEqual(report["keyed"]["matched"][0]["id"], "Priced stake")
-                self.assertIn("source: Lore/Rules/prices.md", text)
+                self.assertIn("source: Canon/Rules/prices.md", text)
                 self.assertIn("PRICED STAKE", text)
                 self.assertNotIn("system-reminder", text)
         _text, report = brief(project(self), keeper="I open the door.")
@@ -173,8 +173,8 @@ class BriefTests(unittest.TestCase):
     def test_brief_reports_a_provisional_beat(self):
         # O19: the brief is built after Step 1b; if a provisional beat is still there, it says so
         p = project(self)
-        turn = (f"KEEPER_INPUT:\nI wait.\n\nDRAFT:\nRedacted648 hangs the kettle on its hook.\n\n"
-                f"Scene: Day 196, ~19:05, calm | Location: the kitchen | Present: Redacted648\n\nGM_SPAWN_LOG:\n- redacted648: no\n\n"
+        turn = (f"KEEPER_INPUT:\nI wait.\n\nDRAFT:\nSabe hangs the kettle on its hook.\n\n"
+                f"Scene: Day 196, ~19:05, calm | Location: the kitchen | Present: Sabe\n\nGM_SPAWN_LOG:\n- sabe: no\n\n"
                 f"SOURCE_LOG:\npriced_stake_touched: true\n\nSCENE_STATE_DELTA:\nscene.time: \"19:05\"\n")
         key = rp_gate.ship(p.root, LEGACY, turn_text=turn, append_text=beat(4131, 196), beat="4131",
                            provisional=True, max_rewrites=3)["key"]
@@ -184,15 +184,15 @@ class BriefTests(unittest.TestCase):
 
     def test_the_keyed_table_comes_from_the_canon_register(self):
         p = project(self, table=None)
-        (p.root / "Lore/Keys").mkdir(parents=True)
-        (p.root / "Lore/Keys/a.md").write_text("## Lantern\n- keys: door\n- note: from the register\n",
+        (p.root / "Canon/Keys").mkdir(parents=True)
+        (p.root / "Canon/Keys/a.md").write_text("## Lantern\n- keys: door\n- note: from the register\n",
                                                 encoding="utf-8")
         (p.root / "Memory").mkdir(exist_ok=True)
         (p.root / "Memory/canon-layout.md").write_text(
-            "| Register | Path | Role |\n|---|---|---|\n| `keyed_entries` | `Lore/Keys/*.md` | keys |\n",
+            "| Register | Path | Role |\n|---|---|---|\n| `keyed_entries` | `Canon/Keys/*.md` | keys |\n",
             encoding="utf-8")
         _text, report = brief(p)
-        self.assertEqual(report["keyed"]["tables"], ["Lore/Keys/a.md"])
+        self.assertEqual(report["keyed"]["tables"], ["Canon/Keys/a.md"])
         self.assertEqual([m["id"] for m in report["keyed"]["matched"]], ["Lantern"])
         (p.root / "Memory/canon-layout.md").unlink()
         self.assertEqual(brief(p)[1]["keyed"]["tables"], [])  # the default beside log_dir does not exist
@@ -235,9 +235,9 @@ class ViaTests(unittest.TestCase):
     def check(self, p, keeper, sourced):
         tf = p.root / "Work/rp/.gate/turn.md"
         tf.parent.mkdir(parents=True, exist_ok=True)
-        tf.write_text(f"KEEPER_INPUT:\n{keeper}\n\nDRAFT:\nRedacted648 sets down the axe.\n\n"
-                      f"Scene: Day 196, ~08:30, calm | Location: the kitchen | Present: Redacted648\n\n"
-                      f"GM_SPAWN_LOG:\n- redacted648: no\n\nSOURCE_LOG:\nsourced:\n{sourced}\npriced_stake_touched: false\n\n"
+        tf.write_text(f"KEEPER_INPUT:\n{keeper}\n\nDRAFT:\nSabe sets down the axe.\n\n"
+                      f"Scene: Day 196, ~08:30, calm | Location: the kitchen | Present: Sabe\n\n"
+                      f"GM_SPAWN_LOG:\n- sabe: no\n\nSOURCE_LOG:\nsourced:\n{sourced}\npriced_stake_touched: false\n\n"
                       f"SCENE_STATE_DELTA:\nscene.time: \"08:30\"\n", encoding="utf-8")
         with mock.patch.dict(os.environ, {"ASHA_HARNESS": "claude"}):
             code, out, err = run("check", "--project-dir", str(p.root), "--turn-file", str(tf))
@@ -246,9 +246,9 @@ class ViaTests(unittest.TestCase):
 
     SOURCED = (f'  - claim: "the gate"\n    file: "{NOTES}"\n    quote: "opens only at dusk"\n'
                f'  - claim: "the lantern"\n    file: "{NOTES}"\n    quote: "A lantern burns all night"\n')
-    TURN_SAME = (f"KEEPER_INPUT:\nI open the door.\n\nDRAFT:\nRedacted648 sets down the axe.\n\n"
-                 f"Scene: Day 196, ~08:40, calm | Location: the kitchen | Present: Redacted648\n\n"
-                 f"GM_SPAWN_LOG:\n- redacted648: no\n\nSOURCE_LOG:\npriced_stake_touched: false\n\n"
+    TURN_SAME = (f"KEEPER_INPUT:\nI open the door.\n\nDRAFT:\nSabe sets down the axe.\n\n"
+                 f"Scene: Day 196, ~08:40, calm | Location: the kitchen | Present: Sabe\n\n"
+                 f"GM_SPAWN_LOG:\n- sabe: no\n\nSOURCE_LOG:\npriced_stake_touched: false\n\n"
                  f"SCENE_STATE_DELTA:\nscene.time: \"08:40\"\n")
 
     def test_check_marks_each_quote_carried_or_opened(self):
@@ -269,8 +269,8 @@ class ViaTests(unittest.TestCase):
 
     def test_the_pending_review_keeps_the_brief_with_the_copys_live_state(self):
         p = project(self)
-        turn = (f"KEEPER_INPUT:\nI wait.\n\nDRAFT:\nRedacted648 hangs the kettle on its hook.\n\n"
-                f"Scene: Day 196, ~19:05, calm | Location: the kitchen | Present: Redacted648\n\nGM_SPAWN_LOG:\n- redacted648: no\n\n"
+        turn = (f"KEEPER_INPUT:\nI wait.\n\nDRAFT:\nSabe hangs the kettle on its hook.\n\n"
+                f"Scene: Day 196, ~19:05, calm | Location: the kitchen | Present: Sabe\n\nGM_SPAWN_LOG:\n- sabe: no\n\n"
                 f"SOURCE_LOG:\npriced_stake_touched: true\n\nSCENE_STATE_DELTA:\nscene.time: \"19:05\"\n")
         rp_gate.write_brief(p.root, LEGACY, "I wait.")
         live = (p.root / rp_gate.BRIEF_FILE).read_text(encoding="utf-8")
@@ -324,9 +324,9 @@ class ViaCountsAsOpenedTests(unittest.TestCase):
 
     def test_a_keyed_quote_not_found_in_its_source_carries_nothing_for_another_file(self):
         p = project(self, KEYED + f"\n## Hook\n- keys: door\n- source: {NOTES}\n- quote: the key stays with the hook\n")
-        (p.root / "Lore/World/Other.md").write_text("Elsewhere the key stays with the hook, they say.\n",
+        (p.root / "Canon/Other.md").write_text("Elsewhere the key stays with the hook, they say.\n",
                                                    encoding="utf-8")
-        got = self.sources(p, "I open the door.", self.entry("Lore/World/Other.md", "the key stays with the hook"))
+        got = self.sources(p, "I open the door.", self.entry("Canon/Other.md", "the key stays with the hook"))
         self.assertIn("NOT FOUND", (p.root / rp_gate.BRIEF_FILE).read_text(encoding="utf-8"))
         self.assertEqual(got["quotes"][0]["via"], "opened")
 
@@ -348,7 +348,7 @@ class ViaCountsAsOpenedTests(unittest.TestCase):
     def test_a_history_quote_gets_no_via(self):
         # play is not a source, so whether it was opened says nothing
         p = project(self)
-        got = self.sources(p, "I wait.", self.entry(LEGACY, "Redacted648 sets down the axe"))
+        got = self.sources(p, "I wait.", self.entry(LEGACY, "Sabe sets down the axe"))
         self.assertIsNotNone(got["quotes"][0]["history"])
         self.assertNotIn("via", got["quotes"][0])
         self.assertEqual(got["opened"], 0)
@@ -361,8 +361,8 @@ class ReviewRoundOneTests(unittest.TestCase):
         # S1, M8: the review brief comes from the copy and the turn, never from a brief that may be stale
         p = project(self)
         rp_gate.write_brief(p.root, LEGACY, "I wait.")
-        turn = (f"KEEPER_INPUT:\nI open the door.\n\nDRAFT:\nRedacted648 hangs the kettle on its hook.\n\n"
-                f"Scene: Day 196, ~19:05, calm | Location: the kitchen | Present: Redacted648\n\nGM_SPAWN_LOG:\n- redacted648: no\n\n"
+        turn = (f"KEEPER_INPUT:\nI open the door.\n\nDRAFT:\nSabe hangs the kettle on its hook.\n\n"
+                f"Scene: Day 196, ~19:05, calm | Location: the kitchen | Present: Sabe\n\nGM_SPAWN_LOG:\n- sabe: no\n\n"
                 f"SOURCE_LOG:\npriced_stake_touched: true\n\nSCENE_STATE_DELTA:\nscene.time: \"19:05\"\n")
         rp_gate.ship(p.root, LEGACY, turn_text=turn, append_text=beat(4131, 196), beat="4131", provisional=True,
                      max_rewrites=3)
@@ -459,20 +459,20 @@ class ReviewRoundOneTests(unittest.TestCase):
 
 
 def heavy_beat(n):
-    """A beat shaped like the live Redacted477 log of B4352-B4354: a long SOURCED line and GM DECISIONS line in its
+    """A beat shaped like a live log's: a long SOURCED line and GM DECISIONS line in its
     PRE-COMMIT, a few KB of prose, and a STATE line of about 9 KB, each naming a ruling."""
     cite = f"Notes.md l.{n} (GM RULING B{n - 1}, FLAG); " * 40
     decisions = f"the shed reading {n} stands; " * 150
-    prose = "Redacted648 sets down the axe and looks along the yard. " * 60
-    state = f"the kitchen at the hearth; WARM (GM RULING B{n - 2}, FLAG); the rope on his collar; " * 100
-    return (f"### Beat {n} PRE-COMMIT (GM, binding): REDACTED648: \"SHED.\"\n\nSOURCED: {cite}\n"
+    prose = "Sabe sets down the axe and looks along the yard. " * 60
+    state = f"the kitchen at the hearth; WARM (GM RULING B{n - 2}, FLAG); the lamp on its hook; " * 100
+    return (f"### Beat {n} PRE-COMMIT (GM, binding): SABE: \"STAND.\"\n\nSOURCED: {cite}\n"
             f"GM DECISIONS / RULINGS (FLAG FOR RATIFICATION): {decisions}\n\n"
             f"### Beat {n}: Day 196, ~08:{n % 60:02d} (Monday). (Tier 1, roleplay-gm)\n"
             f"**PC move (B{n}):** \"I go.\"\n\n{prose}\n\nSTATE: ~08:{n % 60:02d} Day 196, {state}\n\n")
 
 
 class GmStepsTests(unittest.TestCase):
-    """The brief within its budget with its keyed entries (B4355: 107,696 bytes of 80,000, every keyed entry
+    """The brief within its budget with its keyed entries (a live brief: 107,696 bytes of 80,000, every keyed entry
     dropped): superseded STATE lines and source records stay out, history sections are pointers, and the keyed
     entries go in before the two beats before the last."""
 
@@ -485,7 +485,7 @@ class GmStepsTests(unittest.TestCase):
     def test_superseded_state_lines_stay_out_and_the_governing_one_is_carried_once(self):
         p = project(self)
         for n in (4128, 4129, 4130):
-            self.state(p, n, f"after beat {n}, the lantern lit; " + "the rope on his collar; " * 20)
+            self.state(p, n, f"after beat {n}, the lantern lit; " + "the lamp on its hook; " * 20)
         text, report = brief(p)
         self.assertEqual(report["state_line"]["beat"], "4130")
         self.assertEqual(report["beats"]["carried"][-3:], ["4128", "4129", "4130"])
@@ -543,7 +543,7 @@ class GmStepsTests(unittest.TestCase):
         p = project(self)
         old = "## What was on him at D190 (history; superseded by the section above)"
         resume = "## Resume point (history: B4099, verbatim from the old log)"
-        hist = (f"{old}\n\n- OLD-A the old collar\n- OLD-B\n\n### Its notes\n\n- OLD-C\n\n"
+        hist = (f"{old}\n\n- OLD-A the old lamp\n- OLD-B\n\n### Its notes\n\n- OLD-C\n\n"
                 f"{resume}\n\nOLD-D resume\n\n## Family history\n\n- KEPT-E\n\n")
         body = p.read(LEGACY).replace("## Open threads", hist + "## Open threads", 1)
         (p.root / LEGACY).write_text(body, encoding="utf-8")
@@ -554,8 +554,8 @@ class GmStepsTests(unittest.TestCase):
             with self.subTest(gone=gone):
                 self.assertNotIn(gone, text)
         header = text.split("== Header (", 1)[1].split("\n== ", 1)[0]
-        for kept in (old, resume, "## Family history", "- KEPT-E", "## What is on him", "T30 | Fed by a hand",
-                     "### RULING T16", "- THE NORTH VAULT: a finger a day."):
+        for kept in (old, resume, "## Family history", "- KEPT-E", "## What is on him", "T30 | Hears the bell",
+                     "### RULING T16", "- THE SEA WALL: a stone a week."):
             with self.subTest(kept=kept):
                 self.assertIn(kept, header)
         self.assertEqual(report["header_history"], [{"heading": old, "lines": f"{a + 2}-{a + 7}"},
@@ -581,9 +581,9 @@ class GmStepsTests(unittest.TestCase):
 
     def test_state_lines_and_source_records_are_never_decision_lines(self):
         # review 1 F2, review 2 F1: a STATE line is superseded whatever it says (the live log carries a ruling in
-        # force forward in each, "GM DECISION (B4345, FLAG): ..." from B4345 on, so the governing one holds it), and
-        # every SOURCED record of day-0199 to day-0201 that names a ruling with its label cites it ("l.436 GM RULING:
-        # the collar answers ..."). A ruling is written on its own line.
+        # force forward in each, "GM DECISION (B12, FLAG): ..." from one beat on, so the governing one holds it), and
+        # every SOURCED record of three live day files that names a ruling with its label cites it ("l.436 GM RULING:
+        # the tide bell sounds ..."). A ruling is written on its own line.
         p = project(self)
         body = p.read(LEGACY).replace(
             "### Beat 4112: Day 195", "STATE: ~08:12 GM RULING: the cellar ward holds until the bell rings.\n"
@@ -613,12 +613,12 @@ class GmStepsTests(unittest.TestCase):
         p = project(self)
         body = p.read(LEGACY).replace("---\n", '---\nnote: "the kettle sings at dusk"\n', 1)
         hist = ("## Old ward (history, before D190)\n\n- OLD WARD: the ward holds until the bell rings at dusk.\n"
-                "- OLD-B: the gate stays barred at night, Marr's rule from before the thaw.\n"
+                "- OLD-B: the gate stays barred at night, Pask's rule from before the thaw.\n"
                 "- OLD-C: the lantern hangs by the door.\n- OLD-D: the kettle sings at dusk, the old way.\n\n")
         body = body.replace("## Open threads", hist + "## Open threads\n\n- The bell rings at noon in the yard; "
                             "the ward holds.", 1)
         body = body.replace("| NPC | Goal |", "the gate stays barred at night\n\n| NPC | Goal |", 1)
-        body = body.replace("Redacted648 sets down the axe.\n\n", "Redacted648 sets down the axe.\n\nthe lantern hangs by the door\n\n")
+        body = body.replace("Sabe sets down the axe.\n\n", "Sabe sets down the axe.\n\nthe lantern hangs by the door\n\n")
         (p.root / LEGACY).write_text(body, encoding="utf-8")
         keeper = "the gate stays barred at night"
         rp_gate.write_brief(p.root, LEGACY, keeper)
@@ -657,7 +657,7 @@ class GmStepsTests(unittest.TestCase):
         p = project(self)
         for n in (4128, 4129, 4130):
             self.state(p, n, f"~08:{n % 60} the kitchen at the hearth; WARM (GM RULING B4126, FLAG); the rope on "
-                             f"his collar, {n - 4127} turns")
+                             f"his lamp, {n - 4127} turns")
         lines = p.read(LEGACY).splitlines()
         first = next(i for i, x in enumerate(lines, 1) if "the kitchen at the hearth; WARM" in x)
         rp_gate.write_brief(p.root, LEGACY, "I wait.")
@@ -670,9 +670,9 @@ class GmStepsTests(unittest.TestCase):
         # review 3: a level-1 title, a parenthesis that only begins with the word, a fenced heading
         p = project(self)
         body = p.read(LEGACY).replace(
-            "# RP Session 2026-10-24: Redacted123, Day 195 afternoon onward",
-            "# RP Session 2026-10-24: Redacted123 (superseded by the day files)", 1).replace(
-            "## Open threads", "## Redacted648 (history and current standing)\n\n- KEPT-F her current line\n\n"
+            "# RP Session 2026-10-24: Wystan, Day 195 afternoon onward",
+            "# RP Session 2026-10-24: Wystan (superseded by the day files)", 1).replace(
+            "## Open threads", "## Sabe (history and current standing)\n\n- KEPT-F her current line\n\n"
             "```\n## Old (history: inside a fence)\n```\n\n- KEPT-G after the fence\n\n"
             "## Old marks (superseded by the section above)\n\n- OLD-H\n\n## Open threads", 1)
         (p.root / LEGACY).write_text(body, encoding="utf-8")
@@ -693,7 +693,7 @@ class GmStepsTests(unittest.TestCase):
         (p.root / LEGACY).write_text(body, encoding="utf-8")
         text, _report = brief(p)
         self.assertNotIn("OLD-J", text)
-        self.assertIn("- THE NORTH VAULT: a finger a day.", text)
+        self.assertIn("- THE SEA WALL: a stone a week.", text)
 
     def test_reads_count_each_line_with_its_newline(self):
         text = "abcdefghi\n" * 25  # ten bytes a line
@@ -703,7 +703,7 @@ class GmStepsTests(unittest.TestCase):
                          [{"offset": 1, "limit": 1}, {"offset": 2, "limit": 1}])  # a longer line goes alone
 
     def test_the_report_splits_the_brief_into_reads_the_gm_issues_together(self):
-        # a 79,098-byte live brief (B4355) was 33,091 tokens: one Read of it is refused
+        # a 79,098-byte live brief was 33,091 tokens: one Read of it is refused
         # past 25,000 tokens, and a Read with no limit returns only its first part
         p = project(self)
         body = p.read(LEGACY)
@@ -744,23 +744,23 @@ class GmStepsTests(unittest.TestCase):
         self.assertEqual({m["id"] for m in report["keyed"]["matched"]}, {"Gate", "Axe", "Kettle", "Custom"})
         self.assertEqual(report["keyed"]["dropped"], [])
         self.assertEqual(report["beats"]["carried"][-3:], ["4128", "4129", "4130"])
-        self.assertIn('quote (verified, Lore/World/Notes.md line 3): "opens only at dusk"', text)
+        self.assertIn('quote (verified, Canon/Notes.md line 3): "opens only at dusk"', text)
 
 
 class FollowUpTests(unittest.TestCase):
     """The follow-ups of the GM brief fix (master 38dcc3ed): the reviewer reads the brief as the GM does, a plural
     decision line is a source as a singular one is, and the Keeper's input gives no quote."""
 
-    TURN = (f"KEEPER_INPUT:\nI wait.\n\nDRAFT:\nRedacted648 hangs the kettle on its hook.\n\n"
-            f"Scene: Day 196, ~19:05, calm | Location: the kitchen | Present: Redacted648\n\nGM_SPAWN_LOG:\n- redacted648: no\n\n"
+    TURN = (f"KEEPER_INPUT:\nI wait.\n\nDRAFT:\nSabe hangs the kettle on its hook.\n\n"
+            f"Scene: Day 196, ~19:05, calm | Location: the kitchen | Present: Sabe\n\nGM_SPAWN_LOG:\n- sabe: no\n\n"
             f"SOURCE_LOG:\npriced_stake_touched: true\n\nSCENE_STATE_DELTA:\nscene.time: \"19:05\"\n")
-    OTHER = "Lore/World/Other.md"
+    OTHER = "Canon/Other.md"
 
     @staticmethod
     def in_beat(p, n, text):
         """text as a line of beat n's body, after its heading (where play is history)."""
         body = p.read(LEGACY)
-        at = body.index("Redacted648 sets down the axe.\n\n", body.index(f"### Beat {n}: ")) + len("Redacted648 sets down the axe.\n\n")
+        at = body.index("Sabe sets down the axe.\n\n", body.index(f"### Beat {n}: ")) + len("Sabe sets down the axe.\n\n")
         (p.root / LEGACY).write_text(body[:at] + text + "\n\n" + body[at:], encoding="utf-8")
 
     def sources(self, p, keeper, file, quote, **kw):
@@ -844,7 +844,7 @@ class FollowUpTests(unittest.TestCase):
                 line = f"{label} (FLAG): the shed stays locked."
                 self.assertTrue(rp_gate._brief_decision(line))
                 self.assertIsNone(rp_gate._history(lines + [line], 1))
-        for line in ("Redacted648 sets down the axe.", "Marr reads the rulings of the moot aloud.",
+        for line in ("Sabe sets down the axe.", "Pask reads the rulings of the moot aloud.",
                      "The RULINGSTONE stands in the yard."):
             with self.subTest(line=line):  # play stays history, whatever its words
                 self.assertEqual(rp_gate._history(lines + [line], 1), "4112")
@@ -967,7 +967,7 @@ class ContractTests(unittest.TestCase):
             self.assertNotRegex(text, r"(?:not|never|n't) counts? as opened")
 
     def test_the_gm_reads_the_brief_in_one_call_and_batches_its_tools(self):
-        # B4340-B4354: 16-38 model turns a draft, 1.3 tool calls a turn; the first Read of the brief, with no
+        # live turns: 16-38 model turns a draft, 1.3 tool calls a turn; the first Read of the brief, with no
         # limit, came back cut by the harness's token cap (truncatedByTokenCap), and every capped read had none
         gm = self.read("plugins/rp/agents/roleplay-gm.md")
         integration = gm.split("\n# /rp:turn Integration", 1)[1]
@@ -998,34 +998,33 @@ class ContractTests(unittest.TestCase):
 
 
 
-BUNDLE = "Lore"
+BUNDLE = "Canon"
 
 
 def bundle(p, root=BUNDLE, config=True):
     """A small OKF vault: generated-shaped indexes under root, concept notes beside them."""
     base = p.root / root
-    chars = base / "World/Characters"
+    chars = base / "Characters"
     chars.mkdir(parents=True, exist_ok=True)
-    (base / "World/Places").mkdir(parents=True, exist_ok=True)
+    (base / "Places").mkdir(parents=True, exist_ok=True)
     if config:
         (base / ".okfconfig").write_text('{"links": "obsidian"}', encoding="utf-8")
-    (base / "index.md").write_text("---\nokf_version: \"0.2\"\n---\n# Lore\n\n## Directories\n\n- [World](./World/index.md)\n",
+    (base / "index.md").write_text("---\nokf_version: \"0.2\"\n---\n# Canon\n\n## Concepts\n\n"
+                                   "- [Edits](./Edits.md): An editing dashboard\n\n"
+                                   "## Directories\n\n- [Characters](./Characters/index.md)\n- [Places](./Places/index.md)\n",
                                    encoding="utf-8")
-    (base / "World/index.md").write_text("# World\n\n## Concepts\n\n- [Edits](./Edits.md): An editing dashboard\n\n"
-                                         "## Directories\n\n- [Characters](./Characters/index.md)\n- [Places](./Places/index.md)\n",
-                                         encoding="utf-8")
-    (base / "World/Edits.md").write_text("---\ntitle: Edits\ntype: doc\n---\n# Edits\n", encoding="utf-8")
+    (base / "Edits.md").write_text("---\ntitle: Edits\ntype: doc\n---\n# Edits\n", encoding="utf-8")
     (chars / "index.md").write_text("# Characters\n\n## Concepts\n\n"
-                                    "- [Redacted221](./Redacted221.md): Redacted221's role in the Redacted485 household and his need to be needed\n"
-                                    "- [Redacted648](./Redacted648.md): Redacted648, the household's forge hand\n"
+                                    "- [Tobb](./Tobb.md): Tobb's role in the Copper Kettle household and his need to be needed\n"
+                                    "- [Sabe](./Sabe.md): Sabe, the household's forge hand\n"
                                     "- [Ora](./Ora.md): too short a name to match\n", encoding="utf-8")
-    for name in ("Redacted221", "Redacted648", "Ora"):
+    for name in ("Tobb", "Sabe", "Ora"):
         (chars / f"{name}.md").write_text(f"---\ntitle: {name}\ntype: character\n---\n# {name}\n", encoding="utf-8")
-    (base / "World/Places/index.md").write_text("# Places\n\n## Concepts\n\n"
-                                                "- [Redacted1146](./Redacted1146.md): The household's house on the border road\n",
-                                                encoding="utf-8")
-    (base / "World/Places/Redacted1146.md").write_text("---\ntitle: Redacted1146\ntype: place\n---\n# Redacted1146\n",
-                                                         encoding="utf-8")
+    (base / "Places/index.md").write_text("# Places\n\n## Concepts\n\n"
+                                          "- [The Copper Kettle](./The%20Copper%20Kettle.md): The household's house on the border road\n",
+                                          encoding="utf-8")
+    (base / "Places/The Copper Kettle.md").write_text("---\ntitle: The Copper Kettle\ntype: place\n---\n# The Copper Kettle\n",
+                                                   encoding="utf-8")
 
 
 class CanonIndexTests(unittest.TestCase):
@@ -1034,14 +1033,14 @@ class CanonIndexTests(unittest.TestCase):
         bundle(p)
         self.assertEqual(Path(BUNDLE), rp_gate.canon_bundle_root(p.root))
         entries, indexes = rp_gate.canon_index_entries(p.root, Path(BUNDLE))
-        self.assertEqual(4, indexes)
-        self.assertEqual(["Lore/World/Edits.md", "Lore/World/Characters/Redacted221.md", "Lore/World/Characters/Redacted648.md",
-                          "Lore/World/Characters/Ora.md", "Lore/World/Places/Redacted1146.md"], [e["path"] for e in entries])
+        self.assertEqual(3, indexes)
+        self.assertEqual(["Canon/Edits.md", "Canon/Characters/Tobb.md", "Canon/Characters/Sabe.md",
+                          "Canon/Characters/Ora.md", "Canon/Places/The Copper Kettle.md"], [e["path"] for e in entries])
         self.assertEqual("The household's house on the border road", entries[-1]["description"])
 
     def test_no_bundle_means_no_section_and_no_warning(self):
         p = project(self)
-        text, report = brief(p, keeper="I ask Redacted221 about the gate.")
+        text, report = brief(p, keeper="I ask Tobb about the gate.")
         self.assertNotIn("=== Canon index", text)
         self.assertEqual({"bundle": None, "indexes": 0, "entries": 0, "matched": [], "carried": False}, report["canon"])
         self.assertFalse([w for w in report["warnings"] if "canon" in w.lower()])
@@ -1049,16 +1048,16 @@ class CanonIndexTests(unittest.TestCase):
     def test_titles_named_in_the_input_or_the_last_beats_are_carried_with_their_notes(self):
         p = project(self)
         bundle(p)
-        text, report = brief(p, keeper="I ask Redacted221 where the gilt thorn keeps its ledger; I never edits anything.")
+        text, report = brief(p, keeper="I ask Tobb where the copper kettle keeps its ledger; I never edits anything.")
         section = text.split("=== Canon index", 1)[1].split("\n=== ", 1)[0]
-        self.assertIn("(3 of 5 entries in Lore, by title", section)
-        self.assertIn("- Redacted221 (Lore/World/Characters/Redacted221.md; the Keeper's input): Redacted221's role in the Redacted485 household", section)
-        self.assertIn("- Redacted1146 (Lore/World/Places/Redacted1146.md; the Keeper's input): The household's house", section)
-        self.assertIn("- Redacted648 (Lore/World/Characters/Redacted648.md; the last beats): Redacted648, the household's forge hand", section)
+        self.assertIn("(3 of 5 entries in Canon, by title", section)
+        self.assertIn("- Tobb (Canon/Characters/Tobb.md; the Keeper's input): Tobb's role in the Copper Kettle household", section)
+        self.assertIn("- The Copper Kettle (Canon/Places/The Copper Kettle.md; the Keeper's input): The household's house", section)
+        self.assertIn("- Sabe (Canon/Characters/Sabe.md; the last beats): Sabe, the household's forge hand", section)
         self.assertNotIn("Edits", section)  # a single-word title matches only as written
         self.assertNotIn("Ora", section)  # too short to be a name
-        self.assertLess(section.index("Redacted221 ("), section.index("Redacted648 ("))  # the input's matches first
-        self.assertEqual([("Redacted221", True, False), ("Redacted1146", True, False), ("Redacted648", False, True)],
+        self.assertLess(section.index("Tobb ("), section.index("Sabe ("))  # the input's matches first
+        self.assertEqual([("Tobb", True, False), ("The Copper Kettle", True, False), ("Sabe", False, True)],
                          [(m["title"], m["in_input"], m["in_beats"]) for m in report["canon"]["matched"]])
         self.assertTrue(report["canon"]["carried"])
         self.assertEqual(5, report["canon"]["entries"])
@@ -1068,43 +1067,68 @@ class CanonIndexTests(unittest.TestCase):
 
     def test_the_register_may_name_the_bundle(self):
         p = project(self)
-        bundle(p, root="Canon")
+        bundle(p, root="Setting")  # not where the default character glob looks: only the row finds it
+        self.assertIsNone(rp_gate.canon_bundle_root(p.root))
         (p.root / "Memory").mkdir(exist_ok=True)
         (p.root / "Memory/canon-layout.md").write_text("# Canon Layout\n\n| Register | Path |\n|---|---|\n"
-                                                      "| `canon_index` | `Canon/index.md` |\n", encoding="utf-8")
-        self.assertEqual(Path("Canon"), rp_gate.canon_bundle_root(p.root))
-        text, report = brief(p, keeper="Redacted221.")
-        self.assertIn("entries in Canon, by title", text)
-        self.assertEqual("Canon", report["canon"]["bundle"])
+                                                      "| `canon_index` | `Setting/index.md` |\n", encoding="utf-8")
+        self.assertEqual(Path("Setting"), rp_gate.canon_bundle_root(p.root))
+        text, report = brief(p, keeper="Tobb.")
+        self.assertIn("entries in Setting, by title", text)
+        self.assertEqual("Setting", report["canon"]["bundle"])
         (p.root / "Memory/canon-layout.md").write_text("# Canon Layout\n\n| Register | Path |\n|---|---|\n"
                                                       "| `canon_index` | `Nowhere/index.md` |\n", encoding="utf-8")
         self.assertIsNone(rp_gate.canon_bundle_root(p.root))
 
+    def test_the_bundle_is_found_two_levels_up_and_walked_two_levels_down(self):
+        # The register's character glob sits two levels below the bundle root: discovery climbs past an
+        # unmarked folder, and the index walk descends through it to the entries.
+        p = project(self)
+        base = p.root / "Canon"
+        chars = base / "World/Characters"
+        chars.mkdir(parents=True)
+        (base / ".okfconfig").write_text('{"links": "obsidian"}', encoding="utf-8")
+        (base / "index.md").write_text("---\nokf_version: \"0.2\"\n---\n# Canon\n\n## Directories\n\n"
+                                       "- [World](./World/index.md)\n", encoding="utf-8")
+        (base / "World/index.md").write_text("# World\n\n## Directories\n\n- [Characters](./Characters/index.md)\n",
+                                             encoding="utf-8")
+        (chars / "index.md").write_text("# Characters\n\n## Concepts\n\n- [Tobb](./Tobb.md): a deep entry\n",
+                                        encoding="utf-8")
+        (chars / "Tobb.md").write_text("---\ntitle: Tobb\ntype: character\n---\n# Tobb\n", encoding="utf-8")
+        (p.root / "Memory").mkdir(exist_ok=True)
+        (p.root / "Memory/canon-layout.md").write_text("# Canon Layout\n\n| Kind | Path glob(s) | Notes |\n|---|---|---|\n"
+                                                      "| `character` | `Canon/World/Characters/*.md` | |\n",
+                                                      encoding="utf-8")
+        self.assertEqual(Path("Canon"), rp_gate.canon_bundle_root(p.root))
+        entries, indexes = rp_gate.canon_index_entries(p.root, Path("Canon"))
+        self.assertEqual(3, indexes)
+        self.assertEqual(["Canon/World/Characters/Tobb.md"], [e["path"] for e in entries])
+
     def test_an_unmarked_tree_is_not_a_bundle(self):
         p = project(self)
         bundle(p, config=False)
-        (p.root / BUNDLE / "index.md").write_text("# Lore\n", encoding="utf-8")  # no okf_version, no markers
+        (p.root / BUNDLE / "index.md").write_text("# Canon\n", encoding="utf-8")  # no okf_version, no markers
         self.assertIsNone(rp_gate.canon_bundle_root(p.root))
 
     def test_the_canon_index_yields_to_the_budget_before_the_last_beat(self):
         p = project(self)
         bundle(p)
-        full, _ = brief(p, keeper="I ask Redacted221.")
+        full, _ = brief(p, keeper="I ask Tobb.")
         beats = full.split("=== Recent beats")[1]
         must = len(full.encode("utf-8")) - len(beats.encode("utf-8"))
-        text, report = brief(p, keeper="I ask Redacted221.", budget=must - 2000)
+        text, report = brief(p, keeper="I ask Tobb.", budget=must - 2000)
         self.assertNotIn("=== Canon index", text)
         self.assertIn("- canon index (2 matched entries)", text.split("=== Not carried ===", 1)[1])
         self.assertFalse(report["canon"]["carried"])
-        self.assertEqual(["Redacted221", "Redacted648"], [m["title"] for m in report["canon"]["matched"]])  # Redacted648: the last beats
+        self.assertEqual(["Tobb", "Sabe"], [m["title"] for m in report["canon"]["matched"]])  # Sabe: the last beats
         self.assertIn("<!-- Beat 4130: ", text)
 
     def test_a_possessive_names_the_title(self):
         p = project(self)
         bundle(p)
-        _text, report = brief(p, keeper="I look for Redacted221's ledger in the Redacted485's cellar.")
-        self.assertEqual(["Redacted221", "Redacted1146", "Redacted648"], [m["title"] for m in report["canon"]["matched"]])
-        self.assertFalse(rp_gate._title_names("Redacted221", "Brenda left.", "brenda left."))
+        _text, report = brief(p, keeper="I look for Tobb's ledger in the Copper Kettle's cellar.")
+        self.assertEqual(["Tobb", "The Copper Kettle", "Sabe"], [m["title"] for m in report["canon"]["matched"]])
+        self.assertFalse(rp_gate._title_names("Tobb", "Tobbin left.", "tobbin left."))
         self.assertFalse(rp_gate._title_names("Edits", "I never edits anything", "i never edits anything"))
         self.assertTrue(rp_gate._title_names("Edits", "Open Edits first", "open edits first"))
 
@@ -1114,24 +1138,24 @@ class CanonIndexTests(unittest.TestCase):
         (p.root / BUNDLE / ".okfignore").write_text("# drafts\nBooks/*/work/\n", encoding="utf-8")
         work = p.root / BUNDLE / "Books/Tale/work"
         work.mkdir(parents=True)
-        (work / "index.md").write_text("# work\n\n## Concepts\n\n- [Redacted221](./Redacted221.md): a draft about Redacted221\n", encoding="utf-8")
-        (work / "Redacted221.md").write_text("---\ntitle: Redacted221\ntype: draft\n---\n", encoding="utf-8")
-        (p.root / BUNDLE / "World/index.md").write_text((p.root / BUNDLE / "World/index.md").read_text()
-                                                        + "- [Escape](./../../Work/escape.md): outside the bundle\n", encoding="utf-8")
+        (work / "index.md").write_text("# work\n\n## Concepts\n\n- [Tobb](./Tobb.md): a draft about Tobb\n", encoding="utf-8")
+        (work / "Tobb.md").write_text("---\ntitle: Tobb\ntype: draft\n---\n", encoding="utf-8")
+        (p.root / BUNDLE / "Places/index.md").write_text((p.root / BUNDLE / "Places/index.md").read_text()
+                                                         + "- [Escape](./../../Work/escape.md): outside the bundle\n", encoding="utf-8")
         entries, indexes = rp_gate.canon_index_entries(p.root, Path(BUNDLE))
-        self.assertEqual(4, indexes)
-        self.assertEqual(1, sum(1 for e in entries if e["title"] == "Redacted221"))
+        self.assertEqual(3, indexes)
+        self.assertEqual(1, sum(1 for e in entries if e["title"] == "Tobb"))
         self.assertFalse([e for e in entries if "Escape" in e["title"]])
 
     def test_the_project_itself_may_be_the_bundle(self):
         p = project(self)
         (p.root / "index.md").write_text("---\nokf_version: \"0.2\"\n---\n# Project\n", encoding="utf-8")
         self.assertEqual(Path("."), rp_gate.canon_bundle_root(p.root))
-        bundle(p, config=False)  # Lore/index.md declares okf_version too: the nearest marked ancestor wins
+        bundle(p, config=False)  # Canon/index.md declares okf_version too: the nearest marked ancestor wins
         self.assertEqual(Path(BUNDLE), rp_gate.canon_bundle_root(p.root))
-        (p.root / BUNDLE / "index.md").write_text("# Lore\n", encoding="utf-8")
+        (p.root / BUNDLE / "index.md").write_text("# Canon\n", encoding="utf-8")
         self.assertEqual(Path("."), rp_gate.canon_bundle_root(p.root))
-        text, report = brief(p, keeper="Redacted221.")
+        text, report = brief(p, keeper="Tobb.")
         self.assertEqual(".", report["canon"]["bundle"])
         self.assertIn("entries in the project root, by title", text)
 
@@ -1140,15 +1164,15 @@ class CanonIndexTests(unittest.TestCase):
         (p.root / "Memory").mkdir(exist_ok=True)
         (p.root / "Memory/canon-layout.md").write_text("# Canon Layout\n\n| Register | Path |\n|---|---|\n"
                                                       "| `canon_index` | `Nowhere/index.md` |\n", encoding="utf-8")
-        _text, report = brief(p, keeper="Redacted221.")
+        _text, report = brief(p, keeper="Tobb.")
         self.assertIsNone(report["canon"]["bundle"])
         self.assertTrue([w for w in report["warnings"] if "canon_index row names Nowhere/index.md" in w])
 
     def test_the_canon_index_outranks_the_optional_beats(self):
         p = project(self)
         bundle(p)
-        full, _ = brief(p, keeper="I ask Redacted221.")
-        text, report = brief(p, keeper="I ask Redacted221.", budget=len(full.encode("utf-8")) - 4000)
+        full, _ = brief(p, keeper="I ask Tobb.")
+        text, report = brief(p, keeper="I ask Tobb.", budget=len(full.encode("utf-8")) - 4000)
         self.assertTrue(report["canon"]["carried"])
         self.assertLess(len(report["beats"]["carried"]), 20)  # beats fell first
         self.assertEqual("4130", report["beats"]["carried"][-1])
@@ -1161,7 +1185,7 @@ class CanonIndexTests(unittest.TestCase):
         try:
             self.assertEqual(Path(BUNDLE), rp_gate.canon_bundle_root("."))
             entries, _ = rp_gate.canon_index_entries(".", Path(BUNDLE))
-            self.assertIn("Lore/World/Characters/Redacted221.md", [e["path"] for e in entries])
+            self.assertIn("Canon/Characters/Tobb.md", [e["path"] for e in entries])
         finally:
             os.chdir(cwd)
 
@@ -1169,14 +1193,14 @@ class CanonIndexTests(unittest.TestCase):
         p = project(self)
         bundle(p)
         # a note whose body line equals its index description: carrying the index must not count as carrying the line
-        note = p.root / "Lore/World/Characters/Redacted648.md"
-        note.write_text("---\ntitle: Redacted648\ntype: character\n---\n# Redacted648\n\nRedacted648, the household's forge hand\n", encoding="utf-8")
-        text, _report = brief(p, keeper="Redacted648.")
+        note = p.root / "Canon/Characters/Sabe.md"
+        note.write_text("---\ntitle: Sabe\ntype: character\n---\n# Sabe\n\nSabe, the household's forge hand\n", encoding="utf-8")
+        text, _report = brief(p, keeper="Sabe.")
         self.assertIn("=== Canon index", text)
-        rp_gate.write_brief(p.root, LEGACY, "Redacted648.")
-        gave = rp_gate._brief_for(p.root, {"KEEPER_INPUT": "Redacted648."})
+        rp_gate.write_brief(p.root, LEGACY, "Sabe.")
+        gave = rp_gate._brief_for(p.root, {"KEEPER_INPUT": "Sabe."})
         self.assertIsNotNone(gave)
-        self.assertNotIn("redacted648, the household's forge hand", gave["text"].lower())
+        self.assertNotIn("sabe, the household's forge hand", gave["text"].lower())
         self.assertFalse(any("forge hand" in line for line in gave["lines"]))
 
 

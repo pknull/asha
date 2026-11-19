@@ -26,25 +26,25 @@ campaign: "Test Run"
 startDate: "Day 195 (Sunday)"
 currentLocation: "the kitchen"
 currentTime: "19:00"
-participants: ["Redacted123", "Redacted648"]
+participants: ["Wystan", "Sabe"]
 scene:
   time: "19:00"
   location: "the kitchen"
   participants:
-    - name: "Redacted123"
+    - name: "Wystan"
       role: "PC (calm)"
-    - name: "Redacted648"
+    - name: "Sabe"
       role: "NPC"
-      profile_file: "Lore/World/Characters/Redacted648.md"
+      profile_file: "Canon/Characters/Sabe.md"
   mood: "calm"
   pending_rolls: []
 ---
 """
 
 LEGACY_HEADER = """
-# RP Session 2026-10-24: Redacted123, Day 195 afternoon onward
+# RP Session 2026-10-24: Wystan, Day 195 afternoon onward
 
-Continues `Work/rp/rp_session_2026-10-17.md` (closed at B4099). State: `Work/rp/test/redacted123.md`
+Continues `Work/rp/rp_session_2026-10-17.md` (closed at B4099). State: `Work/rp/test/wystan.md`
 § Run state. Beat numbering resumes at 4100.
 
 **Tier:** live beats delegated (Tier 1, `roleplay-gm`). Register: plain sentences.
@@ -55,24 +55,24 @@ Continues `Work/rp/rp_session_2026-10-17.md` (closed at B4099). State: `Work/rp/
 
 | # | Trigger | Effect |
 |---|---|---|
-| T30 | Fed by a hand | He kisses the feeding hand, once per feeding |
+| T30 | Hears the bell | He stops and counts the strokes, once per ringing |
 
 ### RULING T16, fixed before any bell
 
-- The trigger is the bell, not her.
+- The trigger is the bell, not the ringer.
 
 ## Open threads
 
-- THE NORTH VAULT: a finger a day.
+- THE SEA WALL: a stone a week.
 """
 
 
 def beat(n, day, extra=""):
     when = f"Day {day}, ~08:{n % 60:02d}" if isinstance(day, int) else day
-    return (f"### Beat {n} PRE-COMMIT (GM, binding): REDACTED648: \"SHED.\"\n"
+    return (f"### Beat {n} PRE-COMMIT (GM, binding): SABE: \"STAND.\"\n"
             f"SOURCE_LOG (priced_stake_touched: false)\n\n"
             f"### Beat {n}: {when} (Monday). (Tier 1, roleplay-gm){extra}\n"
-            f"**PC move (B{n}):** \"I go.\"\n\nRedacted648 sets down the axe.\n\n")
+            f"**PC move (B{n}):** \"I go.\"\n\nSabe sets down the axe.\n\n")
 
 
 def legacy_body():
@@ -85,9 +85,9 @@ def legacy_body():
 
 
 def turn_text(delta="none", anchor_day=197):
-    return (f"KEEPER_INPUT:\nI go.\n\nDRAFT:\nRedacted648 sets down the axe.\n\n"
-            f"Scene: Day {anchor_day}, ~06:00, calm | Location: the kitchen | Present: Redacted648\n\n"
-            f"GM_SPAWN_LOG:\n- redacted648: NOT spawned\n\nSOURCE_LOG:\npriced_stake_touched: false\n\n"
+    return (f"KEEPER_INPUT:\nI go.\n\nDRAFT:\nSabe sets down the axe.\n\n"
+            f"Scene: Day {anchor_day}, ~06:00, calm | Location: the kitchen | Present: Sabe\n\n"
+            f"GM_SPAWN_LOG:\n- sabe: NOT spawned\n\nSOURCE_LOG:\npriced_stake_touched: false\n\n"
             f"SCENE_STATE_DELTA:\n{delta}\n")
 
 
@@ -103,7 +103,7 @@ class Project:
         (self.root / "Work/markers").mkdir(parents=True)
         (self.root / "Work/rp").mkdir(parents=True)
         (self.root / "Work/rp/test").mkdir(parents=True)
-        (self.root / "Work/rp/test/redacted123.md").write_text("# Redacted123\n\n## Run state\n\n**Closed: Day 196.**\n")
+        (self.root / "Work/rp/test/wystan.md").write_text("# Wystan\n\n## Run state\n\n**Closed: Day 196.**\n")
         extra = f'log_dir: "{LOG_DIR}"\n' if log_dir else ""
         self.legacy = self.root / LEGACY
         self.legacy.write_text(LEGACY_FRONTMATTER.format(extra=extra) + LEGACY_HEADER + legacy_body(),
@@ -183,7 +183,7 @@ class FictionDayTests(unittest.TestCase):
             with self.subTest(line=line):
                 got = rp_gate.parse_beat_heading(line)
                 self.assertEqual((got["beat"], got["day"]), (label, day))
-        for line in ("### Beat 4100 PRE-COMMIT (GM, binding): REDACTED695", "### Beat 3466 SPEC (GM, binding)",
+        for line in ("### Beat 4100 PRE-COMMIT (GM, binding): TOVA", "### Beat 3466 SPEC (GM, binding)",
                      "### Beat 3705 AMENDMENT (before posting)", "## Beats", "Beat 4100: Day 195"):
             with self.subTest(line=line):
                 self.assertIsNone(rp_gate.parse_beat_heading(line))
@@ -217,7 +217,7 @@ class RotationTests(unittest.TestCase):
         self.assertEqual(data["opened"], "2026-10-26")
         self.assertEqual(data["currentDate"], "Day 197 (Tuesday)")
         self.assertEqual(data["startDate"], "Day 195 (Sunday)")
-        self.assertEqual(data["scene"]["participants"][1]["profile_file"], "Lore/World/Characters/Redacted648.md")
+        self.assertEqual(data["scene"]["participants"][1]["profile_file"], "Canon/Characters/Sabe.md")
         self.assertNotIn("status", data)
         for line in LEGACY_HEADER.splitlines()[3:]:  # the legacy title is replaced, the rest copied as written
             self.assertIn(line + "\n", new)
@@ -225,7 +225,7 @@ class RotationTests(unittest.TestCase):
         self.assertIn(f"Continues `{LEGACY}`", new)
         self.assertNotIn("### Beat", new)  # no beats yet
         state = rp_gate.live_state(p.root, DAY_197, today="2026-10-26")
-        self.assertEqual(state["run_state"]["path"], "Work/rp/test/redacted123.md")  # the copied State: line
+        self.assertEqual(state["run_state"]["path"], "Work/rp/test/wystan.md")  # the copied State: line
         self.assertIsNotNone(state["header"])
 
     def test_new_file_carries_the_beat_day(self):
@@ -251,7 +251,7 @@ class RotationTests(unittest.TestCase):
         self.assertEqual(new.count("<!-- rp-day-file"), 1)
         self.assertEqual(new.count("Continues `"), 2)  # the generated one and the copied legacy sentence
         self.assertIn(f"Continues `{DAY_197}`", new)
-        self.assertIn("| T30 | Fed by a hand |", new)
+        self.assertIn("| T30 | Hears the bell |", new)
         self.assertEqual(rp_gate.read_frontmatter(p.root / f"{LOG_DIR}/day-0198.md")["continues"], DAY_197)
 
     def test_same_day_does_nothing(self):
@@ -682,7 +682,7 @@ class SplitTests(unittest.TestCase):
            + "## Day Plan: Day 196 (Monday)\n\n"
            + beat(4102, "Day 195, ~22:00 to Day 196, ~05:50")
            + beat(4103, 196)
-           + "### Beat 4104 (INSERT, before the hood in B4103: ~06:00 Monday). (Tier 1)\n\nAn insert.\n\n"
+           + "### Beat 4104 (INSERT, before the bell in B4103: ~06:00 Monday). (Tier 1)\n\nAn insert.\n\n"
            + beat(4105, "Day 195, ~08:00")
            + beat(4106, "Day 196→197, ~09:00")
            + "## PAUSE (2026-10-25)\n\n"
@@ -848,7 +848,7 @@ class ReviewFindingTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 p.rotate()
         with open(p.root / DAY_197, "a", encoding="utf-8") as fh:
-            fh.write("## Day Plan: Day 197 (Tuesday)\n\n- the felling\n")
+            fh.write("## Day Plan: Day 197 (Tuesday)\n\n- the caulking\n")
         p.rotate()
         self.assertIn("## Day Plan: Day 197 (Tuesday)", p.read(DAY_197))
 
@@ -857,7 +857,7 @@ class ReviewFindingTests(unittest.TestCase):
         (p.root / "Work/markers/rp-active").unlink()
         rp_gate.rotate(p.root, LEGACY, start=True, today="2026-10-26")
         before = len(p.read(LEGACY).splitlines())  # the opening comment is the last line
-        p.legacy.write_text(p.read(LEGACY).replace("  mood:", "    - name: \"Redacted695\"\n      role: \"NPC\"\n  mood:", 1),
+        p.legacy.write_text(p.read(LEGACY).replace("  mood:", "    - name: \"Tova\"\n      role: \"NPC\"\n  mood:", 1),
                             encoding="utf-8")
         code, out, _err = run("session", "--project-dir", str(p.root))
         self.assertEqual(json.loads(out)["session_opened_line"], before + 2)
@@ -922,10 +922,10 @@ class SecondPassTests(unittest.TestCase):
         return {f["check"]: f["fix"] for f in result["findings"] if f["check"].startswith("delta_day")}
 
     def test_a_clock_later_in_the_scene_field_is_not_the_anchor_day(self):
-        # N1: the run keeps a live clock written "THE CURE Day 3 of 30".
+        # N1: a run may keep a clock written "THE RITE Day 4 of 12".
         p = Project(self)
         text = turn_text('currentDate: "Day 196 (Monday)"', anchor_day=196).replace(
-            "~06:00, calm |", "~19:12, merry; THE CURE Day 3 of 30 |")
+            "~06:00, calm |", "~19:12, merry; THE RITE Day 4 of 12 |")
         self.assertEqual(self.lint_days(p, text), {})
         night = turn_text('currentDate: "Day 197"').replace("Scene: Day 197, ~06:00", "Scene: Day 196, ~22:00 to Day 197, ~05:50")
         self.assertEqual(self.lint_days(p, night), {})
@@ -937,11 +937,11 @@ class SecondPassTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 p.rotate()
         with open(p.root / DAY_197, "a", encoding="utf-8") as fh:
-            fh.write("### Scene: the felling\n\nRedacted648 sets the axe.\n\n## END (2026-10-26)\n")
+            fh.write("### Scene: the caulking\n\nSabe sets the axe.\n\n## END (2026-10-26)\n")
         p.marker(f"session_file: {LEGACY}\n")
         got = p.rotate(text=SAME_DAY)
         self.assertEqual(got["set_aside"], [])
-        self.assertIn("Redacted648 sets the axe.", p.read(DAY_197))
+        self.assertIn("Sabe sets the axe.", p.read(DAY_197))
 
     def test_a_long_chain_is_followed_to_its_end(self):
         # N3: more than 64 rotations is two weeks of play.
@@ -975,7 +975,7 @@ class SecondPassTests(unittest.TestCase):
         self.assertEqual(rp_gate.resolve_session_file(p.root, today="2026-10-26")["path"], DAY_197)
 
     def test_only_the_newest_legacy_log_is_ever_offered(self):
-        # Campaign names change within one run ("redacted477", then "Redacted477 at the Redacted485"), so the
+        # Campaign names change within one run ("osmund", then "Osmund at the Copper Kettle"), so the
         # fallback cannot tell an older log of another campaign from a superseded one of this run.
         # It offers neither; /rp:start opens another campaign's log with load <session>.
         p = Project(self)
@@ -1045,10 +1045,10 @@ class ThirdPassTests(unittest.TestCase):
         self.assertEqual(rp_gate.resolve_session_file(p.root, today="2026-10-26")["source"], "new")
 
     def test_an_older_log_under_another_campaign_name_is_not_offered(self):
-        # 09-24 to 09-27 say campaign: "redacted477"; later logs "Redacted477 at the Redacted485".
+        # A campaign name can change within one run: older logs say "osmund", later ones "Osmund at the Copper Kettle".
         p = Project(self)
         older = p.root / "Work/rp/rp_session_2026-09-27.md"
-        older.write_text('---\ncampaign: "redacted477"\ncurrentDate: "Day 60"\n---\n\n### Beat 343: Day 60, ~18:43\n',
+        older.write_text('---\ncampaign: "osmund"\ncurrentDate: "Day 41"\n---\n\n### Beat 211: Day 41, ~11:18\n',
                          encoding="utf-8")
         p.rotate()
         os.utime(p.root / DAY_197, (1, 1))
@@ -1090,7 +1090,7 @@ class FourthPassTests(unittest.TestCase):
 
     def test_a_log_dir_with_a_space_keeps_one_readable_footer(self):
         p = Project(self)
-        spaced = "Work/rp/Redacted485/log"
+        spaced = "Work/rp/Copper Kettle/log"
         p.legacy.write_text(p.read(LEGACY).replace(LOG_DIR, spaced), encoding="utf-8")
         got = p.rotate()
         self.assertEqual(got["path"], f"{spaced}/day-0197.md")
@@ -1102,7 +1102,7 @@ class FourthPassTests(unittest.TestCase):
         self.assertEqual(rp_gate.resolve_session_file(p.root, today="2026-10-26")["path"], f"{spaced}/day-0197.md")
 
     def test_an_old_marker_spans_back_to_the_legacy_log_it_opened(self):
-        # The live Redacted477 marker was written by the old /rp:start: session_file only.
+        # A live marker was written by the old /rp:start: session_file only.
         p = Project(self)
         p.marker(f"session_file: {LEGACY}\n")
         p.rotate()
@@ -1294,7 +1294,7 @@ class AmendmentReviewTests(unittest.TestCase):
         p.rotate()
         with open(p.root / DAY_197, "a", encoding="utf-8") as fh:
             fh.write("## Day Plan: Day 197 (Tuesday)\n\n```\n### Beat 9999: Day 197, ~01:00\n```\n\n- ~09:00 the cart\n\n"
-                     + beat(4131, 197).replace("Redacted648 sets down the axe.", "```\n## Day Plan: Day 197 (fake)\n```") + beat(4132, 197))
+                     + beat(4131, 197).replace("Sabe sets down the axe.", "```\n## Day Plan: Day 197 (fake)\n```") + beat(4132, 197))
         got = self.window(p)["continuity"]
         self.assertEqual(self.plans(got), [(DAY_197, self.line_of(p, DAY_197, "## Day Plan: Day 197 (Tuesday)"),
                                             self.line_of(p, DAY_197, "- ~09:00 the cart"))])

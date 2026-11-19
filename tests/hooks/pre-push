@@ -1,0 +1,20 @@
+#!/bin/sh
+# asha is public: refuse a push whose commits name a private project of the
+# owner's. Install once per clone, as a copy (a symlink vanishes on an old checkout):
+#   cp tests/hooks/pre-push .git/hooks/pre-push
+# The guard runs from the checked-out working copy, else origin/master: pushing a
+# fetched branch that is not checked out runs none of its code.
+# jj git push runs no git hooks: push asha with git push.
+input=$(cat)
+top=$(git rev-parse --show-toplevel) || exit 0
+code=""
+if [ -f "$top/tests/check-private-names.py" ]; then
+    code=$(cat "$top/tests/check-private-names.py")
+else
+    code=$(git show "origin/master:tests/check-private-names.py" 2>/dev/null) || code=""
+fi
+if [ -z "$code" ]; then
+    echo "pre-push: no trusted tests/check-private-names.py (working copy or origin/master); check skipped" >&2
+    exit 0
+fi
+printf '%s\n' "$input" | python3 -I -c "$code" --root "$top" --pre-push --remote "$1" --url "$2"

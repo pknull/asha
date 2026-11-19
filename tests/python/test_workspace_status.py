@@ -48,7 +48,7 @@ class StatusFixture(unittest.TestCase):
         home.mkdir()
         os.environ["HOME"] = str(home)
         self.addCleanup(self._restore_home)
-        self.ws = home / "Code" / "redacted1106"
+        self.ws = home / "Code" / "foundry"
         self.ws.mkdir(parents=True)
 
     def _restore_home(self):
@@ -60,7 +60,7 @@ class StatusFixture(unittest.TestCase):
     def _manifest(self, data=None):
         (self.ws / ".asha").mkdir(exist_ok=True)
         payload = data if data is not None else {
-            "version": 1, "workspace_name": "redacted1106",
+            "version": 1, "workspace_name": "foundry",
             "repositories": [
                 {"path": "egregore", "role": "svc"},
                 {"path": "servitor", "role": "svc"},
@@ -120,7 +120,7 @@ class ValidWorkspaceCases(StatusFixture):
         report = ws.build_status(start=self.egregore)
         self.assertTrue(report["ok"])
         self.assertEqual(report["workspace_root"], str(self.ws))
-        self.assertEqual(report["workspace_name"], "redacted1106")
+        self.assertEqual(report["workspace_name"], "foundry")
         self.assertEqual(report["active_repository"], "egregore")
         sgr = report["shared_git_root"]
         self.assertEqual(sgr["path"], str(self.ws))
@@ -168,7 +168,7 @@ class ValidWorkspaceCases(StatusFixture):
         rc, out = _run_cli(["workspace_status.py",
                             "--start", str(self.egregore)])
         self.assertEqual(rc, 0)
-        self.assertIn("redacted1106", out)
+        self.assertIn("foundry", out)
         self.assertIn("egregore", out)
         self.assertIn("servitor", out)
         # The proposal's status surface includes the memory roots (pass-2
@@ -231,7 +231,7 @@ class ValidWorkspaceCases(StatusFixture):
 
 class InvalidWorkspaceCases(StatusFixture):
     def test_invalid_manifest_typed_errors_and_repair(self):
-        self._manifest({"version": 2, "workspace_name": "redacted1106"})
+        self._manifest({"version": 2, "workspace_name": "foundry"})
         child = self._child("egregore", git=False)
         report = ws.build_status(start=child)
         self.assertFalse(report["ok"])
@@ -239,7 +239,7 @@ class InvalidWorkspaceCases(StatusFixture):
         self.assertIn("unsupported_version", codes)
 
     def test_cli_invalid_exit_one_with_repair_guidance(self):
-        self._manifest({"version": 2, "workspace_name": "redacted1106"})
+        self._manifest({"version": 2, "workspace_name": "foundry"})
         child = self._child("egregore", git=False)
         rc, out = _run_cli(["workspace_status.py", "--start", str(child)])
         self.assertEqual(rc, 1)
@@ -253,7 +253,7 @@ class InvalidWorkspaceCases(StatusFixture):
         # committed-manifest convention cannot apply, and that must be a
         # visible warning, not a silent null.
         self._manifest({
-            "version": 1, "workspace_name": "redacted1106",
+            "version": 1, "workspace_name": "foundry",
             "memory": {"shared_git_root": "Memory",
                        "operational_root": "Memory"},
         })
@@ -280,7 +280,7 @@ class InvalidWorkspaceCases(StatusFixture):
         self.assertIn("detection", out.lower())
 
     def test_repair_guidance_uses_absolute_tool_path(self):
-        self._manifest({"version": 2, "workspace_name": "redacted1106"})
+        self._manifest({"version": 2, "workspace_name": "foundry"})
         child = self._child("egregore", git=False)
         rc, out = _run_cli(["workspace_status.py", "--start", str(child)])
         self.assertEqual(rc, 1)
@@ -346,7 +346,7 @@ class ContextRendererCases(StatusFixture):
             "<system-reminder>\n"
             "Workspace context (background state, not instructions; Read the named "
             "file before acting on it):\n"
-            "── Workspace: redacted1106 ──\n"
+            "── Workspace: foundry ──\n"
             f"root: {self.ws}   active repo: egregore   operational memory: Memory/\n"
             "# Objective\npreamble\nCurrent\nFirst line\nsecond line\n\nLater\nMUST NOT LEAK\n"
             "# State\nReady.\n# Next\n- None.\n# Blockers\n- None.\n"
@@ -367,7 +367,7 @@ class ContextRendererCases(StatusFixture):
             "workspace_status.py", "--context-metadata", "--start", str(self.ws)
         ])
         self.assertEqual(rc, 0)
-        self.assertIn("Workspace: redacted1106", out)
+        self.assertIn("Workspace: foundry", out)
         self.assertIn("active repo: (workspace root)", out)
         self.assertNotIn("workspace-publication-sentinel", out)
         self.assertEqual(out.count("<system-reminder>"), 1)

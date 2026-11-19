@@ -218,7 +218,7 @@ class IndexerTests(unittest.TestCase):
             concept(root / "with space.md", "Space")
             concept(root / "frag#ment.md", "Frag")
             concept(root / "brack]et.md", "Bracket")
-            concept(root / "Redacted455.md", "Founders")
+            concept(root / "Harvest's-End.md", "Harvest")
             concept(root / "plain.md", "Plain")
             # Standard grammar: names are written as they are (the upstream validator
             # decodes nothing), and the ones its grammar cannot address are named.
@@ -228,7 +228,7 @@ class IndexerTests(unittest.TestCase):
             self.assertIn("UNLINKABLE  with space.md", result.stdout)
             self.assertIn("UNLINKABLE  frag#ment.md", result.stdout)
             index = (root / "index.md").read_text()
-            self.assertIn("(./Redacted455.md)", index)
+            self.assertIn("(./Harvest's-End.md)", index)
             self.assertIn("(./with space.md)", index)
             self.assertNotIn("%", index)
             # Obsidian grammar: encoded targets, only ']' is unaddressable.
@@ -237,7 +237,7 @@ class IndexerTests(unittest.TestCase):
             index = (root / "index.md").read_text()
             self.assertIn("(./with%20space.md)", index)
             self.assertIn("(./frag%23ment.md)", index)
-            self.assertIn("(./Founder%27s-Day.md)", index)
+            self.assertIn("(./Harvest%27s-End.md)", index)
             self.assertEqual(["brack]et.md"], [p.name for p in okf_index.unlinkable(root)])
             self.assertEqual(0, okf_validate.run(str(root), strict=True)["rc"])
 
@@ -382,17 +382,17 @@ class BundleScopeTests(unittest.TestCase):
 
 
 class VaultLinkTests(unittest.TestCase):
-    """A vault like REDACTED99: space-named notes, wikilinks, an .okfconfig selecting Obsidian's grammar."""
+    """A canon vault: space-named notes, wikilinks, an .okfconfig selecting Obsidian's grammar."""
 
     def make_vault(self, tmp: Path) -> Path:
-        vault = Path(tmp) / "Lore"
-        concept(vault / "World/Places/Redacted524.md", "Redacted524", "See [[Redacted1088]] and [[Places/Redacted1088|the archipelago]].")
-        concept(vault / "World/Places/Redacted1088.md", "Redacted1088", "Back to [[Redacted524#Hexes]] and ![[map.png]] and [[Missing Note]].")
-        concept(vault / "World/Magic/Wizardry.md", "Wizardry", "Same-dir twin resolves locally, as in Obsidian: [[Notes]].")
-        concept(vault / "World/Magic/Notes.md", "Notes", "")
-        concept(vault / "World/Places/Notes.md", "Notes", "")
-        concept(vault / "Docs/Redacted161.md", "Redacted161", "From a third directory [[Notes]] is ambiguous; [[spellbook.pdf]] and [[Courts.canvas]] are attachments.")
-        concept(vault / "Books/Redacted1155/Redacted2/Chapter 1.md", "Chapter 1", "Standard encoded link: [island](../../../World/Places/Redacted524.md).")
+        vault = Path(tmp) / "Canon"
+        concept(vault / "Setting/Towns/Salt Marsh Island.md", "Salt Marsh Island", "See [[Mallow Isles]] and [[Towns/Mallow Isles|the archipelago]].")
+        concept(vault / "Setting/Towns/Mallow Isles.md", "Mallow Isles", "Back to [[Salt Marsh Island#Coves]] and ![[map.png]] and [[Missing Note]].")
+        concept(vault / "Setting/Crafts/Weaving.md", "Weaving", "Same-dir twin resolves locally, as in Obsidian: [[Notes]].")
+        concept(vault / "Setting/Crafts/Notes.md", "Notes", "")
+        concept(vault / "Setting/Towns/Notes.md", "Notes", "")
+        concept(vault / "Guides/Source Map.md", "Source Map", "From a third directory [[Notes]] is ambiguous; [[ledger.pdf]] and [[Charts.canvas]] are attachments.")
+        concept(vault / "Novels/A Quiet Sea/Part 1/Chapter 1.md", "Chapter 1", "Standard encoded link: [island](../../../Setting/Towns/Salt%20Marsh%20Island.md).")
         (vault / ".okfconfig").write_text('{"links": "obsidian"}\n')
         return vault
 
@@ -418,9 +418,9 @@ class VaultLinkTests(unittest.TestCase):
     def test_dotted_note_names_are_notes_when_a_note_has_that_stem(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = self.make_vault(Path(tmp))
-            concept(vault / "World/v1.2.md", "Version")
-            concept(vault / "World/Magic/Wizardry.md", "Wizardry", "See [[v1.2]] and [[workbench.archive]] and [[diagram.svg]].")
-            okf_index.write_indexes(vault, title="Lore", okf_version="0.2")
+            concept(vault / "Setting/v1.2.md", "Version")
+            concept(vault / "Setting/Crafts/Weaving.md", "Weaving", "See [[v1.2]] and [[workbench.archive]] and [[diagram.svg]].")
+            okf_index.write_indexes(vault, title="Canon", okf_version="0.2")
             joined = "\n".join(okf_validate.run(str(vault), strict=True)["asha_lints"])
             self.assertNotIn("v1.2", joined, "a note with a dotted stem is linked, not an attachment")
             self.assertIn("broken wikilink to '[[workbench.archive]]'", joined, "no such note: broken, not silently skipped")
@@ -446,60 +446,60 @@ class VaultLinkTests(unittest.TestCase):
     def test_a_note_whose_stem_ends_in_an_attachment_suffix_is_still_a_note(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = self.make_vault(Path(tmp))
-            concept(vault / "World/Courts.canvas.md", "Courts canvas note")
-            concept(vault / "World/Magic/Wizardry.md", "Wizardry", "Note, not attachment: [[Courts.canvas]]; attachment: [[other.canvas]].")
-            okf_index.write_indexes(vault, title="Lore", okf_version="0.2")
-            idx = vault / "World/index.md"
-            idx.write_text("\n".join(l for l in idx.read_text().splitlines() if "Courts" not in l) + "\n")
+            concept(vault / "Setting/Charts.canvas.md", "Charts canvas note")
+            concept(vault / "Setting/Crafts/Weaving.md", "Weaving", "Note, not attachment: [[Charts.canvas]]; attachment: [[other.canvas]].")
+            okf_index.write_indexes(vault, title="Canon", okf_version="0.2")
+            idx = vault / "Setting/index.md"
+            idx.write_text("\n".join(l for l in idx.read_text().splitlines() if "Charts" not in l) + "\n")
             joined = "\n".join(okf_validate.run(str(vault), strict=True)["asha_lints"])
-            self.assertNotIn("Courts.canvas.md: orphan", joined, "the wikilink credited the note")
+            self.assertNotIn("Charts.canvas.md: orphan", joined, "the wikilink credited the note")
             self.assertNotIn("other.canvas", joined)
 
     def test_a_source_relative_wikilink_beats_the_basename_twin(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = self.make_vault(Path(tmp))
-            concept(vault / "World/Magic/Wizardry.md", "Wizardry", "Mine: [[./Notes]].")
-            (vault / "World/Places/Notes.md").unlink()
-            concept(vault / "Books/Notes.md", "Notes")  # a twin elsewhere
-            okf_index.write_indexes(vault, title="Lore", okf_version="0.2")
+            concept(vault / "Setting/Crafts/Weaving.md", "Weaving", "Mine: [[./Notes]].")
+            (vault / "Setting/Towns/Notes.md").unlink()
+            concept(vault / "Novels/Notes.md", "Notes")  # a twin elsewhere
+            okf_index.write_indexes(vault, title="Canon", okf_version="0.2")
             joined = "\n".join(okf_validate.run(str(vault), strict=True)["asha_lints"])
-            self.assertNotIn("Wizardry.md: ambiguous", joined, "./Notes names the directory, so no twin applies")
+            self.assertNotIn("Weaving.md: ambiguous", joined, "./Notes names the directory, so no twin applies")
 
     def test_excluded_twins_never_make_an_admitted_target_ambiguous(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = self.make_vault(Path(tmp))
             concept(vault / "Private/Notes.md", "Notes")  # excluded below
             (vault / ".okfignore").write_text("Private/\n")
-            (vault / "Docs/Redacted161.md").write_text("---\ntype: Reference\ntitle: Redacted161\ndescription: d\n---\n# Map\n[[Magic/Notes]] and [[Places/Notes]] and [[Private/Notes]] and [[WIZARDRY]] and [[world/magic/wizardry]].\n")
-            okf_index.write_indexes(vault, title="Lore", okf_version="0.2")
+            (vault / "Guides/Source Map.md").write_text("---\ntype: Reference\ntitle: Source Map\ndescription: d\n---\n# Map\n[[Crafts/Notes]] and [[Towns/Notes]] and [[Private/Notes]] and [[WEAVING]] and [[setting/crafts/weaving]].\n")
+            okf_index.write_indexes(vault, title="Canon", okf_version="0.2")
             joined = "\n".join(okf_validate.run(str(vault), strict=True)["asha_lints"])
             self.assertNotIn("Private/Notes", joined, "a path-qualified link into an excluded note resolves silently")
-            self.assertNotIn("WIZARDRY", joined); self.assertNotIn("world/magic", joined)
-            concept(vault / "Books/Redacted1155/Redacted2/Chapter 1.md", "Chapter 1", "Twin outside: [[Notes]].")
+            self.assertNotIn("WEAVING", joined); self.assertNotIn("setting/crafts", joined)
+            concept(vault / "Novels/A Quiet Sea/Part 1/Chapter 1.md", "Chapter 1", "Twin outside: [[Notes]].")
             joined = "\n".join(okf_validate.run(str(vault), strict=True)["asha_lints"])
-            self.assertIn("ambiguous wikilink '[[Notes]]' matches World/Magic/Notes.md, World/Places/Notes.md", joined,
+            self.assertIn("ambiguous wikilink '[[Notes]]' matches Setting/Crafts/Notes.md, Setting/Towns/Notes.md", joined,
                           "only admitted twins are reported; the excluded one does not join the list")
 
     def test_orphans_log_exemption_and_source_relative_links_in_obsidian_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = self.make_vault(Path(tmp))
-            concept(vault / "World/Lonely.md", "Lonely")
-            concept(vault / "World/Places/Nearby.md", "Nearby", "Relative: [[./Redacted1088]] and [[../Magic/Wizardry]]; comment %% [[Nope]] %% and <!-- [[Nope2]] -->; bare [./Redacted524](./Redacted524) lacks .md.")
+            concept(vault / "Setting/Lonely.md", "Lonely")
+            concept(vault / "Setting/Towns/Nearby.md", "Nearby", "Relative: [[./Mallow Isles]] and [[../Crafts/Weaving]]; comment %% [[Nope]] %% and <!-- [[Nope2]] -->; bare [./Salt Marsh Island](./Salt%20Marsh%20Island) lacks .md.")
             (vault / "log.md").write_text("# Log\n\n## 2026-10-31\n\n- links in the log may dangle: [[Gone]]\n")
-            okf_index.write_indexes(vault, title="Lore", okf_version="0.2")
-            index = vault / "World/index.md"  # drop Lonely's own entry, by hand
+            okf_index.write_indexes(vault, title="Canon", okf_version="0.2")
+            index = vault / "Setting/index.md"  # drop Lonely's own entry, by hand
             index.write_text("\n".join(l for l in index.read_text().splitlines() if "Lonely" not in l) + "\n")
             result = okf_validate.run(str(vault), strict=True)
             joined = "\n".join(result["asha_lints"])
-            self.assertIn("World/Lonely.md: orphan concept", joined)
-            self.assertIn("World/Lonely.md: not reachable", joined)
+            self.assertIn("Setting/Lonely.md: orphan concept", joined)
+            self.assertIn("Setting/Lonely.md: not reachable", joined)
             self.assertNotIn("Gone", joined, "log.md links are exempt")
             self.assertNotIn("Nope", joined, "comments are not links")
             self.assertNotIn("Nearby.md: broken", joined, "source-relative wikilinks resolve")
-            self.assertNotIn("Wizardry.md: not reachable", joined)
+            self.assertNotIn("Weaving.md: not reachable", joined)
             self.assertIn("is missing the .md extension", joined)
             (vault / ".okfconfig").write_text('{"links": "obsidian", "waive": ["description"]}\n')
-            (vault / "World/Lonely.md").write_text("---\ntype: Reference\ntitle: Lonely\n---\n# Lonely\n")
+            (vault / "Setting/Lonely.md").write_text("---\ntype: Reference\ntitle: Lonely\n---\n# Lonely\n")
             okf_index.write_indexes(vault)
             joined = "\n".join(okf_validate.run(str(vault), strict=True)["asha_lints"])
             self.assertNotIn("missing recommended field 'description'", joined)
@@ -508,12 +508,12 @@ class VaultLinkTests(unittest.TestCase):
         import okf_links
         with tempfile.TemporaryDirectory() as tmp:
             vault = self.make_vault(Path(tmp))
-            okf_index.write_indexes(vault, title="Lore", okf_version="0.2")
-            places = (vault / "World/Places/index.md").read_text()
-            self.assertIn("- [Redacted524](./Redacted524.md): about Redacted524", places)
-            self.assertIn("- [Redacted1155/](./Redacted1155/index.md)", (vault / "Books/index.md").read_text())
-            self.assertIn("- [Redacted2/](./Redacted2/index.md)", (vault / "Books/Redacted1155/index.md").read_text())
-            self.assertEqual("./Redacted524.md", okf_links.decode_target("./Redacted524.md"))
+            okf_index.write_indexes(vault, title="Canon", okf_version="0.2")
+            places = (vault / "Setting/Towns/index.md").read_text()
+            self.assertIn("- [Salt Marsh Island](./Salt%20Marsh%20Island.md): about Salt Marsh Island", places)
+            self.assertIn("- [A Quiet Sea/](./A%20Quiet%20Sea/index.md)", (vault / "Novels/index.md").read_text())
+            self.assertIn("- [Part 1/](./Part%201/index.md)", (vault / "Novels/A Quiet Sea/index.md").read_text())
+            self.assertEqual("./Salt Marsh Island.md", okf_links.decode_target("./Salt%20Marsh%20Island.md"))
             # Reachability through the encoded entries, from the root index.
             files = [p for p in vault.rglob("*.md")]
             graph = okf_links.analyze(vault, files, "standard")
@@ -522,24 +522,24 @@ class VaultLinkTests(unittest.TestCase):
     def test_obsidian_mode_reads_wikilinks_and_reports_missing_and_ambiguous(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = self.make_vault(Path(tmp))
-            okf_index.write_indexes(vault, title="Lore", okf_version="0.2")
+            okf_index.write_indexes(vault, title="Canon", okf_version="0.2")
             result = okf_validate.run(str(vault), strict=True)
             self.assertEqual("obsidian", result["links"])
             joined = "\n".join(result["asha_lints"])
-            self.assertIn("Redacted1088.md: broken wikilink to '[[Missing Note]]'", joined)
-            self.assertIn("Redacted161.md: ambiguous wikilink '[[Notes]]' matches World/Magic/Notes.md, World/Places/Notes.md", joined)
-            self.assertNotIn("Wizardry.md", joined, "a same-directory twin resolves locally")
-            self.assertNotIn("spellbook.pdf", joined, "attachments are not concepts")
-            self.assertNotIn("Courts.canvas", joined)
+            self.assertIn("Mallow Isles.md: broken wikilink to '[[Missing Note]]'", joined)
+            self.assertIn("Source Map.md: ambiguous wikilink '[[Notes]]' matches Setting/Crafts/Notes.md, Setting/Towns/Notes.md", joined)
+            self.assertNotIn("Weaving.md", joined, "a same-directory twin resolves locally")
+            self.assertNotIn("ledger.pdf", joined, "attachments are not concepts")
+            self.assertNotIn("Charts.canvas", joined)
             self.assertNotIn("map.png", joined)
-            self.assertNotIn("Redacted524", joined, "encoded, partial-path and wikilinked targets resolve")
+            self.assertNotIn("Salt Marsh Island", joined, "encoded, partial-path and wikilinked targets resolve")
             self.assertNotIn("orphan", joined)
             self.assertEqual(1, result["rc"])
             # Fix the two problems and the vault passes strict.
-            sf = vault / "World/Places/Redacted1088.md"
+            sf = vault / "Setting/Towns/Mallow Isles.md"
             sf.write_text(sf.read_text().replace(" and [[Missing Note]]", ""))
-            am = vault / "Docs/Redacted161.md"
-            am.write_text(am.read_text().replace("[[Notes]]", "[[Magic/Notes]]"))
+            am = vault / "Guides/Source Map.md"
+            am.write_text(am.read_text().replace("[[Notes]]", "[[Crafts/Notes]]"))
             result = okf_validate.run(str(vault), strict=True)
             self.assertEqual(0, result["rc"], result["output"] + "\n".join(result["asha_lints"]))
             printed = run(TOOLS / "okf_validate.py", vault, "--strict").stdout
@@ -550,7 +550,7 @@ class VaultLinkTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             vault = self.make_vault(Path(tmp))
             (vault / ".okfconfig").unlink()
-            okf_index.write_indexes(vault, title="Lore", okf_version="0.2")
+            okf_index.write_indexes(vault, title="Canon", okf_version="0.2")
             standard = okf_validate.run(str(vault), strict=True)
             self.assertEqual("standard", standard["links"])
             self.assertEqual(1, standard["rc"])
@@ -563,22 +563,22 @@ class VaultLinkTests(unittest.TestCase):
             forced = okf_validate.run(str(vault), strict=True)
             joined = "\n".join(forced["asha_lints"])
             self.assertNotIn("orphan", joined); self.assertNotIn("missing the .md extension", joined)
-            self.assertEqual(["Docs/Redacted161.md: ambiguous wikilink '[[Notes]]' matches World/Magic/Notes.md, World/Places/Notes.md",
-                              "World/Places/Redacted1088.md: broken wikilink to '[[Missing Note]]'"], forced["asha_lints"])
+            self.assertEqual(["Guides/Source Map.md: ambiguous wikilink '[[Notes]]' matches Setting/Crafts/Notes.md, Setting/Towns/Notes.md",
+                              "Setting/Towns/Mallow Isles.md: broken wikilink to '[[Missing Note]]'"], forced["asha_lints"])
 
     def test_a_link_into_an_excluded_note_is_not_broken_and_the_note_is_not_a_concept(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = self.make_vault(Path(tmp))
-            concept(vault / "TTRPG/Notes/Redacted239/Diary.md", "Diary", "Private: [[Redacted524]].")
-            concept(vault / "TTRPG/Sessions/1895-09-05.md", "Session", "See [[Diary]] and [[TTRPG/Notes/Redacted239/Diary]].")
-            (vault / ".okfignore").write_text("TTRPG/Notes/*/\n")
-            okf_index.write_indexes(vault, title="Lore", okf_version="0.2")
-            self.assertFalse((vault / "TTRPG/Notes/Redacted239/index.md").exists())
+            concept(vault / "Players/Robbe/Diary.md", "Diary", "Private: [[Salt Marsh Island]].")
+            concept(vault / "Table/Sessions/2001-03-05.md", "Session", "See [[Diary]] and [[Players/Robbe/Diary]].")
+            (vault / ".okfignore").write_text("Players/*/\n")
+            okf_index.write_indexes(vault, title="Canon", okf_version="0.2")
+            self.assertFalse((vault / "Players/Robbe/index.md").exists())
             result = okf_validate.run(str(vault), strict=True)
             joined = "\n".join(result["asha_lints"])
             self.assertNotIn("Diary", joined, "a link into an excluded note is neither broken nor an orphan")
-            self.assertNotIn("TTRPG/Notes/Redacted239", result["output"])
-            self.assertIn("Redacted1088.md: broken wikilink to '[[Missing Note]]'", joined)  # still reported
+            self.assertNotIn("Players/Robbe", result["output"])
+            self.assertIn("Mallow Isles.md: broken wikilink to '[[Missing Note]]'", joined)  # still reported
 
     def test_wikilinks_inside_code_are_documentation_not_links(self):
         import okf_links
@@ -588,8 +588,8 @@ class VaultLinkTests(unittest.TestCase):
     def test_a_bundle_may_waive_a_field_lint_its_taxonomy_owns(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = self.make_vault(Path(tmp))
-            (vault / "World/Magic/Notes.md").write_text("---\ntype: Reference\ntitle: Notes\ndescription: d\nstatus: wip\n---\n# Notes\n")
-            okf_index.write_indexes(vault, title="Lore", okf_version="0.2")
+            (vault / "Setting/Crafts/Notes.md").write_text("---\ntype: Reference\ntitle: Notes\ndescription: d\nstatus: wip\n---\n# Notes\n")
+            okf_index.write_indexes(vault, title="Canon", okf_version="0.2")
             result = okf_validate.run(str(vault), strict=True)
             self.assertIn("Notes.md: 'status' should be one of draft|stable|deprecated (found: 'wip')", "\n".join(result["asha_lints"]))
             (vault / ".okfconfig").write_text('{"links": "obsidian", "waive": ["status"]}\n')
@@ -604,13 +604,13 @@ class VaultLinkTests(unittest.TestCase):
     def test_field_lints_still_run_in_obsidian_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
             vault = self.make_vault(Path(tmp))
-            (vault / "World/Magic/Notes.md").write_text("---\ntype: Reference\ntitle: Notes\nstatus: bogus\n---\n# Notes\n")
-            okf_index.write_indexes(vault, title="Lore", okf_version="0.2")
+            (vault / "Setting/Crafts/Notes.md").write_text("---\ntype: Reference\ntitle: Notes\nstatus: bogus\n---\n# Notes\n")
+            okf_index.write_indexes(vault, title="Canon", okf_version="0.2")
             result = okf_validate.run(str(vault), strict=True)
             joined = "\n".join(result["asha_lints"])
             self.assertIn("Notes.md: missing recommended field 'description'", joined)
             self.assertIn("'status' should be one of draft|stable|deprecated", joined)
-            (vault / "World/Magic/Notes.md").write_text("---\ntitle: no type\n---\n# Notes\n")
+            (vault / "Setting/Crafts/Notes.md").write_text("---\ntitle: no type\n---\n# Notes\n")
             result = okf_validate.run(str(vault), strict=True)
             self.assertEqual(1, result["errors"])
             self.assertIn("missing a non-empty 'type'", result["output"])
@@ -683,23 +683,23 @@ class UpdateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "lore"
             self.bundle(root, links="obsidian")  # a vault: space-named notes, wikilinks
-            concept(root / "World" / "Places" / "Ashfield House.md", "Ashfield House", "[[A]]")
-            result = run(TOOLS / "okf_update.py", root / "World/Places/Ashfield House.md",
+            concept(root / "Setting" / "Towns" / "Pewter Gull.md", "Pewter Gull", "[[A]]")
+            result = run(TOOLS / "okf_update.py", root / "Setting/Towns/Pewter Gull.md",
                          "--actor", "asha/0.5.5", "--message", "canon from session 2026-11-01", "--verb", "Canon",
                          "--date", "2026-11-01", "--json")
             self.assertEqual(0, result.returncode, result.stdout + result.stderr)
             data = json.loads(result.stdout)
             [bundle] = data["bundles"]
             self.assertEqual(str(root), bundle["root"])
-            self.assertEqual(["World/Places/Ashfield House"], bundle["concepts"])
+            self.assertEqual(["Setting/Towns/Pewter Gull"], bundle["concepts"])
             self.assertEqual(0, bundle["gate"]["rc"])
             self.assertEqual(7, bundle["gate"]["files"])  # a, b, the new note, three indexes, the log
             changed = set(bundle["changed"])
-            self.assertEqual({"index.md", "World/index.md", "World/Places/index.md", "log.md"}, changed)
-            self.assertIn("(./Ashfield%20House.md)", (root / "World/Places/index.md").read_text())
+            self.assertEqual({"index.md", "Setting/index.md", "Setting/Towns/index.md", "log.md"}, changed)
+            self.assertIn("(./Pewter%20Gull.md)", (root / "Setting/Towns/index.md").read_text())
             log = (root / "log.md").read_text()
             self.assertEqual(["## 2026-11-01", "## 2026-10-01"], re.findall(r"^## .*$", log, re.M))
-            self.assertIn("- **Canon** `World/Places/Ashfield House`: canon from session 2026-11-01 (asha/0.5.5)", log)
+            self.assertIn("- **Canon** `Setting/Towns/Pewter Gull`: canon from session 2026-11-01 (asha/0.5.5)", log)
             self.assertEqual([], data["unbundled"])
             self.assertEqual([], okf_index.check_indexes(root))
 

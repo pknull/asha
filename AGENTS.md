@@ -27,6 +27,20 @@ Implement harness support at the real seam for that harness:
 When adding or changing a primitive, update the installer, doctor checks, and
 tests for every affected harness.
 
+## Asha is public
+
+No tracked file names the owner's private projects: no campaign, vault,
+character, book or private repository names, no citations of live play (what
+happened on a beat or day, quotes from it), and no vault's directory layout as a
+default. A plain beat or day number in a fixture names nothing and may stay.
+Examples and test fixtures use invented names and text; a measurement cites "a
+live log".
+`tests/check-private-names.py` (validate-plugins Test 7, and a local git
+pre-push hook) checks the tree against a local, never-committed name list and
+skips where there is none. Install the hook once per clone with
+`cp tests/hooks/pre-push .git/hooks/pre-push` (a copy: a symlink vanishes on an
+old checkout), and push asha with `git push`: `jj git push` runs no git hooks.
+
 ## Verification
 
 Run the narrow relevant tests first. Before considering cross-harness installer

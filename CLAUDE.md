@@ -180,6 +180,15 @@ The direct install path discovers primitives by convention.
 ## Change invariants
 
 - Preserve user data. Destructive operations require explicit confirmation.
+- Asha is public. No tracked file names the owner's private projects
+  (campaigns, vaults, characters, books, private repositories), cites live play
+  (what happened on a beat or day, quotes from it) or ships a vault's directory
+  layout as a default. A plain beat or day number in a fixture may stay.
+  Examples and fixtures use invented names and text. `tests/check-private-names.py`
+  (validate-plugins Test 7, and a local git pre-push hook) checks this against a
+  local, never-committed list. Install the hook once per clone with
+  `cp tests/hooks/pre-push .git/hooks/pre-push` (a copy, not a symlink); push
+  asha with `git push`, since `jj git push` runs no git hooks.
 - Search for existing helpers before creating another implementation.
 - Make targeted fixes surgically; do not reformat unrelated code.
 - Treat symlink resolution as a portability concern. Bootstrap scripts may

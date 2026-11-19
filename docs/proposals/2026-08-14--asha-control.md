@@ -160,7 +160,7 @@ Canonical form:
 
 ```bash
 asha task start \
-  --repo ~/Code/Redacted1106 \
+  --repo ~/Code/Foundry \
   --pr 34 \
   --harness codex \
   --goal "Address the requested changes"
@@ -177,7 +177,7 @@ Ad hoc work:
 
 ```bash
 asha task start \
-  --repo ~/Code/Redacted1106 \
+  --repo ~/Code/Foundry \
   --base 'trunk()' \
   --harness codex \
   -- "Investigate the intermittent session failure"
@@ -202,12 +202,12 @@ The command defaults are:
 Successful text output names every durable identity:
 
 ```text
-Task:       redacted1106-pr-34
+Task:       foundry-pr-34
 Task ID:    5d5e0e58-...
-Workspace: ~/.local/share/asha/workspaces/Redacted1106/redacted1106-pr-34
-jj name:    asha-redacted1106-pr-34-5d5e0e58
+Workspace: ~/.local/share/asha/workspaces/Foundry/foundry-pr-34
+jj name:    asha-foundry-pr-34-5d5e0e58
 Change:     qpvuntsm
-Tmux:       asha-redacted1106-pr-34:work.0
+Tmux:       asha-foundry-pr-34:work.0
 Run:        codex-01
 ```
 
@@ -247,15 +247,15 @@ Initial layout:
  ASHA TASKS
 
  STATE       TASK                 REPOSITORY  CHANGE    HARNESS  AGE
- working     redacted1106-pr-34        Redacted1106     qpvuntsm  codex     18m
+ working     foundry-pr-34        Foundry     qpvuntsm  codex     18m
  needs-you   asha-hook-fix        asha        yostqsxw  claude     7m
  exited      servitor-issue-28    servitor    kkmpptpz  codex     42m
 
- redacted1106-pr-34
+ foundry-pr-34
  Run:        codex-01 / implementer
- Tmux:       asha-redacted1106-pr-34:work.0
+ Tmux:       asha-foundry-pr-34:work.0
  Evidence:   PostToolUse heartbeat 3s ago
- Workspace:  ~/.local/share/asha/workspaces/Redacted1106/redacted1106-pr-34
+ Workspace:  ~/.local/share/asha/workspaces/Foundry/foundry-pr-34
  Change:     qpvuntsm, last explicit refresh: 7 files changed
 ```
 
@@ -283,7 +283,7 @@ pattern:
 ```text
 [tmux, display-popup, -c, CLIENT, -E, -w, 90%, -h, 85%, --,
  SYS_EXECUTABLE, -I, -S, -c, FIXED_CHILD_EXEC,
- tmux, attach-session, -t, asha-redacted1106-pr-34]
+ tmux, attach-session, -t, asha-foundry-pr-34]
 ```
 
 The controller selects the requested window and pane before attaching. The
@@ -620,8 +620,8 @@ not an unbounded event log.
 {
   "contract": "asha.control-task.v1",
   "task_id": "uuid",
-  "slug": "redacted1106-pr-34",
-  "label": "Redacted1106 PR #34",
+  "slug": "foundry-pr-34",
+  "label": "Foundry PR #34",
   "created_at": "RFC3339 UTC",
   "updated_at": "RFC3339 UTC",
   "lifecycle": "running",
@@ -635,7 +635,7 @@ not an unbounded event log.
     "url": "bounded display URL"
   },
   "jj": {
-    "workspace_name": "asha-redacted1106-pr-34-5d5e0e58",
+    "workspace_name": "asha-foundry-pr-34-5d5e0e58",
     "workspace_path": "/canonical/workspace/path",
     "requested_base": "PR head",
     "base_commit_id": "full id",
@@ -644,7 +644,7 @@ not an unbounded event log.
   },
   "tmux": {
     "socket": "server identity",
-    "session": "asha-redacted1106-pr-34-5d5e0e58",
+    "session": "asha-foundry-pr-34-5d5e0e58",
     "window": "work"
   },
   "runs": [

@@ -107,7 +107,7 @@ The session file may be stale. SCENE_STATE is real-time.
 
 If the trigger references something your character would know about, use Grep/Glob to find relevant world files. Take the paths from `Memory/canon-layout.md` (*Entity paths*) — the `location`, `character`, and `artifact` rows. Do not guess a directory name: this project's canon may live nowhere near the default.
 
-If the register is missing, search the defaults (`Lore/World/Places/`, `Lore/World/Characters/`, `Lore/World/Magic/Artefacts/`) and note that you fell back.
+If the register is missing, search the defaults (`Canon/Places/`, `Canon/Characters/`, `Canon/Items/`) and note that you fell back.
 
 ### Step 5: Determine Your Goals
 
@@ -138,7 +138,7 @@ character: "Character Name"
 goal: |
   What does this character want RIGHT NOW in this scene?
   One sentence. Specific. Actionable.
-  NOT "observe Redacted123" — that's not a goal. "Get Redacted123 to reveal
+  NOT "observe Wystan" — that's not a goal. "Get Wystan to reveal
   what he knows about the garden" IS a goal.
 
 move: |
@@ -282,26 +282,26 @@ Before generating response:
 
 ```
 INPUT:
-  TRIGGER: "Redacted123 says: 'We need to discuss your terms.'"
+  TRIGGER: "Wystan says: 'We need to discuss your terms.'"
 
   SCENE_STATE:
-    location: "Ashfield House, private booth"
+    location: "The Pewter Gull, cellar room"
     time: "Evening"
-    present: ["Redacted123", "the Proprietor", "two attendants"]
-    observable: "Gas lamps low. Wine poured. She hasn't touched hers."
-    character_state: "the Proprietor seated, composed, waiting."
+    present: ["Wystan", "the Tapster", "two attendants"]
+    observable: "Lamps low. Rum poured. She hasn't touched hers."
+    character_state: "the Tapster seated, composed, waiting."
 
   SESSION_FILE: "Work/rp/<campaign>/log/day-0042.md"
 
 PROCESS:
-1. Parse SCENE_STATE → I'm at Ashfield House, I hold home ground
-2. Read character file → I'm the Proprietor, I want political leverage
-3. Read session history (if needed) → How did Redacted123 get here? What does he want?
+1. Parse SCENE_STATE → I'm at The Pewter Gull, I hold home ground
+2. Read character file → I'm the Tapster, I want political leverage
+3. Read session history (if needed) → How did Wystan get here? What does he want?
 4. Determine goals → I want him indebted, not informed for free
 5. Generate response → Cold amusement, make him pay first
 
 OUTPUT:
-  character: "the Proprietor"
+  character: "the Tapster"
   internal: |
     *Terms. He thinks this is a negotiation. Let him believe that
     until he's already given more than he'll receive.*

@@ -119,7 +119,7 @@ SOURCE_LOG: |  # Optional — provenance of the draft's world-claims (category 1
       basis: "<what the source does not cover>"
   priced_stake_touched: true | false
 
-PRICED_STAKES: "<path to the project's canon-source register, e.g. Lore/TTRPG/canon-sources.md>"
+PRICED_STAKES: "<path to the project's canon-source register, e.g. Canon/Rules/canon-sources.md>"
 
 SCENE_STATE_DELTA: |  # The GM's proposed frontmatter changes for this turn (schema dot-paths)
   scene.time: "23:00"
@@ -221,9 +221,9 @@ For each category, evaluate the DRAFT against INVARIANTS_FILE (static canon) and
 
 **Looks for:**
 
-- Any planned write to `Lore/` during active RP (never permitted without Keeper canon-synthesis directive)
+- Any planned write to `Canon/` during active RP (never permitted without Keeper canon-synthesis directive)
 - Any write to system files outside `Work/rp/` and `Work/markers/`
-- Edits to character canon files (`Lore/World/Characters/*.md`) instead of state files (`Work/rp/characters/*_state.md`)
+- Edits to character canon files (`Canon/Characters/*.md`) instead of state files (`Work/rp/characters/*_state.md`)
 - New canon-promotion outside the `/rp-end` ratification flow
 
 **Hard severity** always.
@@ -246,7 +246,7 @@ For each category, evaluate the DRAFT against INVARIANTS_FILE (static canon) and
 - GM_SPAWN_LOG indicates NOT spawned for an NPC who delivers a voice-critical line in the draft
 - NPC dialogue that reads in default-GM-voice rather than that NPC's distinct register
 
-The profiled NPCs are the project's characters that have character files — listed in the invariants (and the project's `Lore/World/Characters/` or equivalent canon directory).
+The profiled NPCs are the project's characters that have character files — listed in the invariants (and the project's `Canon/Characters/` or equivalent canon directory).
 
 Use judgment: routine dialogue (passing in hall, setting down a tray) does NOT need spawning. Voice-critical moments DO.
 
@@ -332,7 +332,7 @@ A character can act only where they are.
 - A dead, absent or off-scene character's line rendered as live speech rather than as a memory, a written message or something carried by someone present (LIVE_STATE says who is dead or gone)
 - The closing anchor's `Present:` list naming someone the page never brought in, or omitting someone who is still there and acting
 
-**Not a violation:** an arrival shown on the page (in through the door, up from the cellar, at the gate); word sent by a carrier (a note, a runner, "Redacted648 sends word"); someone present relaying another's message; a mention or memory of someone absent; a name inside dialogue.
+**Not a violation:** an arrival shown on the page (in through the door, up from the cellar, at the gate); word sent by a carrier (a note, a runner, "Sabe sends word"); someone present relaying another's message; a mention or memory of someone absent; a name inside dialogue.
 
 **Hard severity** when an absent character speaks, acts or decides something that moves the scene. **Soft severity** for a Present-list error that the prose itself gets right.
 
@@ -589,10 +589,10 @@ Before running, load continuity context:
 
 If the project uses a Memory Bank / Vault layout instead of `Work/novel/`, fall back to:
 
-- Character profiles: `Vault/Characters/` (or `Work/novel/bible/characters/`)
-- Location details: `Vault/World/`
-- Timeline: `Vault/Docs/timeline.md`
-- Lore systems: `Vault/World/Systems/`
+- Character profiles: the project's canon character folder (or `Work/novel/bible/characters/`)
+- Location details: the project's canon place folder
+- Timeline: the project's timeline (`Work/novel/timeline/` in the novel-state layout)
+- Lore systems: the project's canon rules folder
 
 If state files don't exist yet, note this and work from manuscript context only.
 

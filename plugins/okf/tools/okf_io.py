@@ -127,7 +127,7 @@ def load_config(root: Path) -> dict:
 def lint_waivers(root: Path) -> list[str]:
     """Field-lint prefixes the bundle waives, from .okfconfig {"waive": ["status"]}.
 
-    A bundle whose own taxonomy owns a word OKF also uses (the REDACTED99 vault's
+    A bundle whose own taxonomy owns a word OKF also uses (one canon vault's
     `status` ladder) keeps its vocabulary; the spec makes these producer lints,
     never errors, and consumers must tolerate unknown values. Waivers are
     printed with every verdict so a pass never hides them.

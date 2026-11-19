@@ -21,17 +21,17 @@ campaign: "Test"
 currentDate: "Day 4"
 currentLocation: "the yard"
 currentTime: "15:00"
-participants: ["Redacted123", "Redacted648", "Redacted695"]
+participants: ["Wystan", "Sabe", "Tova"]
 scene:
   time: "15:00"
   location: "the yard"
   participants:
-    - name: "Redacted123"
+    - name: "Wystan"
       role: "PC (calm)"
-    - name: "Redacted648"
+    - name: "Sabe"
       role: "NPC"
-      profile_file: "Lore/World/Characters/Redacted648.md"
-    - name: "Redacted695"
+      profile_file: "Canon/Characters/Sabe.md"
+    - name: "Tova"
       role: "NPC"
   mood: "work"
   pending_rolls: []
@@ -47,7 +47,7 @@ scene:
 def turn(draft, delta="none", source="priced_stake_touched: false", keeper="I keep working."):
     return (
         f"KEEPER_INPUT:\n{keeper}\n\nDRAFT:\n{draft}\n\n"
-        f"GM_SPAWN_LOG:\n- redacted648: NOT spawned (routine)\n\n"
+        f"GM_SPAWN_LOG:\n- sabe: NOT spawned (routine)\n\n"
         f"SOURCE_LOG:\n{source}\n\nSCENE_STATE_DELTA:\n{delta}\n"
     )
 
@@ -61,9 +61,9 @@ class Project:
         self.root = Path(self._tmp.name)
         (self.root / "Work/markers").mkdir(parents=True)
         (self.root / "Work/rp").mkdir(parents=True)
-        (self.root / "Lore/World/Characters").mkdir(parents=True)
-        for name in ("Redacted648", "Redacted695", "Redacted1264", "Redacted1259"):
-            (self.root / "Lore/World/Characters" / f"{name}.md").write_text(f"# {name}\n")
+        (self.root / "Canon/Characters").mkdir(parents=True)
+        for name in ("Sabe", "Tova", "Orm", "Morwenna"):
+            (self.root / "Canon/Characters" / f"{name}.md").write_text(f"# {name}\n")
 
     def session(self, name="rp_session_2026-10-17.md", body=FRONTMATTER):
         path = self.root / "Work/rp" / name
@@ -98,8 +98,8 @@ def run(*argv):
     return code, out.getvalue(), err.getvalue()
 
 
-ANCHOR = "Scene: Day 4, ~15:00, calm | Location: the yard | Present: Redacted648, Redacted695"
-LATER = "Scene: Day 4, ~15:05, calm | Location: the yard | Present: Redacted648, Redacted695"
+ANCHOR = "Scene: Day 4, ~15:00, calm | Location: the yard | Present: Sabe, Tova"
+LATER = "Scene: Day 4, ~15:05, calm | Location: the yard | Present: Sabe, Tova"
 
 
 class SessionFileTests(unittest.TestCase):
@@ -195,150 +195,150 @@ class LintTests(unittest.TestCase):
         return sorted({f["check"] for f in result["findings"]})
 
     def test_clean_routine_beat(self):
-        draft = f'Redacted648 sets down the drawknife. "Shed."\nRedacted695 watches from the step.\n\n{ANCHOR}'
+        draft = f'Sabe sets down the drawknife. "Shed."\nTova watches from the step.\n\n{ANCHOR}'
         result = self.lint(turn(draft))
         self.assertEqual(result["findings"], [])
 
     def test_missing_anchor(self):
-        result = self.lint(turn('Redacted648 sets down the drawknife. "Shed."'))
+        result = self.lint(turn('Sabe sets down the drawknife. "Shed."'))
         self.assertEqual(self.checks(result), ["anchor_missing"])
         self.assertEqual(result["findings"][0]["fix"], "edit")
 
     def test_duplicated_anchor(self):
-        result = self.lint(turn(f"{ANCHOR}\nRedacted648 nods.\n{ANCHOR}"))
+        result = self.lint(turn(f"{ANCHOR}\nSabe nods.\n{ANCHOR}"))
         self.assertIn("anchor_duplicated", self.checks(result))
 
     def test_anchor_must_close_the_draft(self):
-        result = self.lint(turn(f"Redacted648 nods.\n{ANCHOR}\nRedacted695 looks up."))
+        result = self.lint(turn(f"Sabe nods.\n{ANCHOR}\nTova looks up."))
         self.assertIn("anchor_not_last", self.checks(result))
 
     def test_absent_character_speaking_is_a_presence_miss(self):
-        # The Redacted1264 case: a named character proposes while not in the scene.
-        draft = f'Redacted648 holds the beam. Redacted1264, from nowhere: "Can you still hang a door?"\n\n{ANCHOR}'
+        # The Orm case: a named character proposes while not in the scene.
+        draft = f'Sabe holds the beam. Orm, from nowhere: "Can you still hang a door?"\n\n{ANCHOR}'
         result = self.lint(turn(draft))
         self.assertEqual(self.checks(result), ["presence"])
         finding = result["findings"][0]
-        self.assertEqual(finding["name"], "Redacted1264")
+        self.assertEqual(finding["name"], "Orm")
         self.assertEqual(finding["fix"], "review")
 
     def test_absent_character_acting_is_a_presence_miss(self):
-        result = self.lint(turn(f"Redacted1264 takes the hammer from the bench.\n\n{ANCHOR}"))
+        result = self.lint(turn(f"Orm takes the hammer from the bench.\n\n{ANCHOR}"))
         self.assertEqual(self.checks(result), ["presence"])
 
     def test_all_caps_log_style_speaker_is_recognised(self):
-        result = self.lint(turn(f'REDACTED1264: "The door."\n\n{ANCHOR}'))
+        result = self.lint(turn(f'ORM: "The door."\n\n{ANCHOR}'))
         self.assertEqual(self.checks(result), ["presence"])
 
     def test_word_sent_by_carrier_passes(self):
-        draft = f'Redacted695 comes back from the gate. Redacted1264 sends word: the hinges are ready.\n\n{ANCHOR}'
+        draft = f'Tova comes back from the gate. Orm sends word: the hinges are ready.\n\n{ANCHOR}'
         result = self.lint(turn(draft))
         self.assertEqual(result["findings"], [])
         self.assertIn("carried", {e["kind"] for e in result["events"]})
 
     def test_arrival_on_the_page_passes(self):
-        draft = f'Redacted1264 comes in from the yard and sets down the hinges. "For the door."\n\n{ANCHOR}, Redacted1264'
-        result = self.lint(turn(draft, delta='scene.participants: ["Redacted123", "Redacted648", "Redacted695", "Redacted1264"]'))
+        draft = f'Orm comes in from the yard and sets down the hinges. "For the door."\n\n{ANCHOR}, Orm'
+        result = self.lint(turn(draft, delta='scene.participants: ["Wystan", "Sabe", "Tova", "Orm"]'))
         self.assertEqual(result["findings"], [])
         self.assertIn("arrival", {e["kind"] for e in result["events"]})
 
     def test_coming_to_the_door_is_an_arrival(self):
-        draft = f'Redacted1264 came to the stair door with a candle: "I heard you." Then went back up.\n\n{ANCHOR}'
+        draft = f'Orm came to the stair door with a candle: "I heard you." Then went back up.\n\n{ANCHOR}'
         result = self.lint(turn(draft))
         self.assertNotIn("presence", self.checks(result))
         self.assertIn("arrival", {e["kind"] for e in result["events"]})
 
     def test_arrival_without_listing_passes_presence(self):
-        draft = f'Redacted1264 steps in through the door, nods once, and goes out again.\n\n{ANCHOR}'
+        draft = f'Orm steps in through the door, nods once, and goes out again.\n\n{ANCHOR}'
         result = self.lint(turn(draft))
         self.assertNotIn("presence", self.checks(result))
 
     def test_mentions_inside_dialogue_and_possessive_objects_pass(self):
         draft = (
-            'Redacted648 taps the roll under his arm. "Redacted1259 drew these. Redacted1264 wants them back."\n'
-            "Redacted1259's plans are still under his arm.\n\n" + ANCHOR
+            'Sabe taps the roll under his arm. "Morwenna drew these. Orm wants them back."\n'
+            "Morwenna's plans are still under his arm.\n\n" + ANCHOR
         )
         result = self.lint(turn(draft))
         self.assertEqual(result["findings"], [])
 
     def test_absent_character_noted_as_away_passes(self):
-        draft = f"Redacted648 nods toward the road. Redacted221 is away at the market.\n\n{ANCHOR}"
+        draft = f"Sabe nods toward the road. Tobb is away at the market.\n\n{ANCHOR}"
         project = Project(self)
-        (project.root / "Lore/World/Characters/Redacted221.md").write_text("# Redacted221\n")
+        (project.root / "Canon/Characters/Tobb.md").write_text("# Tobb\n")
         result = self.lint(turn(draft), project=project)
         self.assertEqual(result["findings"], [])
 
     def test_alias_of_a_present_full_name(self):
-        body = FRONTMATTER.replace('    - name: "Redacted695"', '    - name: "Redacted561"\n      role: "NPC"\n    - name: "Redacted695"')
-        draft = 'MARR: "Props tonight."\n\nScene: Day 4 | Location: the vault | Present: Redacted648, Redacted695, Marr'
+        body = FRONTMATTER.replace('    - name: "Tova"', '    - name: "Kester Pask"\n      role: "NPC"\n    - name: "Tova"')
+        draft = 'PASK: "Nets at noon."\n\nScene: Day 4 | Location: the vault | Present: Sabe, Tova, Pask'
         result = self.lint(turn(draft), session_body=body)
         self.assertEqual(result["findings"], [])
 
     def test_shared_surnames_are_different_people(self):
         p = Project(self)
-        p.mode("turnGate:\n  cast: [Redacted804]\n")
-        body = FRONTMATTER.replace('    - name: "Redacted695"', '    - name: "Redacted518 Brand"\n      role: "NPC"\n    - name: "Redacted695"')
-        draft = 'Redacted804 nods to her: "Hes."\n\nScene: Day 4 | Location: the yard | Present: Redacted648, Redacted695, Redacted518 Brand'
+        p.mode("turnGate:\n  cast: [Hamo Mossop]\n")
+        body = FRONTMATTER.replace('    - name: "Tova"', '    - name: "Effie Mossop"\n      role: "NPC"\n    - name: "Tova"')
+        draft = 'Hamo Mossop nods to her: "Eff."\n\nScene: Day 4 | Location: the yard | Present: Sabe, Tova, Effie Mossop'
         result = self.lint(turn(draft), project=p, session_body=body)
         self.assertEqual(self.checks(result), ["presence"])
-        self.assertEqual(result["findings"][0]["name"], "Redacted804")
+        self.assertEqual(result["findings"][0]["name"], "Hamo Mossop")
 
     def test_first_name_of_a_listed_newcomer(self):
-        body = FRONTMATTER.replace('    - name: "Redacted695"', '    - name: "Redacted518 Brand"\n      role: "NPC"\n    - name: "Redacted695"')
-        draft = ('Redacted648 and Odo cross from the barn. ODO stops at the door: "Hes."\n\n'
-                 'Scene: Day 4 | Location: the yard | Present: Redacted648, Redacted695, Redacted518 Brand, Redacted804 (the door)')
-        result = self.lint(turn(draft, delta='scene.participants: [Redacted123, Redacted648, Redacted695, Redacted518 Brand, Redacted804]'),
+        body = FRONTMATTER.replace('    - name: "Tova"', '    - name: "Effie Mossop"\n      role: "NPC"\n    - name: "Tova"')
+        draft = ('Sabe and Hamo cross from the barn. HAMO stops at the door: "Eff."\n\n'
+                 'Scene: Day 4 | Location: the yard | Present: Sabe, Tova, Effie Mossop, Hamo Mossop (the door)')
+        result = self.lint(turn(draft, delta='scene.participants: [Wystan, Sabe, Tova, Effie Mossop, Hamo Mossop]'),
                            session_body=body)
         self.assertEqual(result["findings"], [])
 
     def test_semicolon_continues_the_present_list(self):
-        draft = 'Redacted648, from the hearth: "That\'s what the pots are for."\n\nScene: Day 4 | Location: the yard | Present: Redacted695; Redacted648 by the hearth'
+        draft = 'Sabe, from the hearth: "That\'s what the pots are for."\n\nScene: Day 4 | Location: the yard | Present: Tova; Sabe by the hearth'
         result = self.lint(turn(draft))
         self.assertEqual(result["findings"], [])
-        self.assertEqual(result["present"], ["Redacted695", "Redacted648 by the hearth"])
+        self.assertEqual(result["present"], ["Tova", "Sabe by the hearth"])
 
     def test_common_word_character_names_at_sentence_start(self):
         p = Project(self)
-        (p.root / "Lore/World/Characters/Frost.md").write_text("# Frost\n")
-        draft = f"The pulse loud through the floor; frost came up in rings. Frost runs along the passage wall.\n\n{ANCHOR}"
+        (p.root / "Canon/Characters/Gorse.md").write_text("# Gorse\n")
+        draft = f"The path is narrow; gorse crowds it. Gorse runs along the passage wall.\n\n{ANCHOR}"
         result = self.lint(turn(draft), project=p)
         self.assertEqual(result["findings"], [])
 
     def test_titled_names_match_only_in_full(self):
         p = Project(self)
-        (p.root / "Lore/World/Characters/Redacted1143.md").write_text("# Redacted1143\n")
-        result = self.lint(turn(f"Frost runs along the passage wall. The Keeper waits.\n\n{ANCHOR}"), project=p)
+        (p.root / "Canon/Characters/The Ember Keeper.md").write_text("# The Ember Keeper\n")
+        result = self.lint(turn(f"Ember runs along the passage wall. The Keeper waits.\n\n{ANCHOR}"), project=p)
         self.assertEqual(result["findings"], [])
-        result = self.lint(turn(f"Redacted1143 lifts a hand.\n\n{ANCHOR}"), project=p)
+        result = self.lint(turn(f"The Ember Keeper lifts a hand.\n\n{ANCHOR}"), project=p)
         self.assertEqual(self.checks(result), ["presence"])
 
     # --- review findings (cold review, 2026-10-24) ---
 
     def test_carrier_word_after_a_quote_does_not_clear_the_speaker(self):
-        for draft in ('Redacted1264: "Hang it." Redacted695 writes the figure on the slate.',
-                      '"Hang it," Redacted1264 says, and sends the boy for nails.',
-                      'Redacted1264: "Can you still hang a door?" Redacted648 sends him a look.'):
+        for draft in ('Orm: "Hang it." Tova writes the figure on the slate.',
+                      '"Hang it," Orm says, and sends the boy for nails.',
+                      'Orm: "Can you still hang a door?" Sabe sends him a look.'):
             with self.subTest(draft=draft):
                 result = self.lint(turn(f"{draft}\n\n{ANCHOR}"))
                 self.assertEqual(self.checks(result), ["presence"])
 
     def test_plural_subject_and_dash_attribution(self):
-        for draft in ("Redacted648 and Redacted1264 lift the beam.", "Redacted1264 and Redacted648 lift the beam.", 'Redacted1264 — "Hang it."'):
+        for draft in ("Sabe and Orm lift the beam.", "Orm and Sabe lift the beam.", 'Orm — "Hang it."'):
             with self.subTest(draft=draft):
                 result = self.lint(turn(f"{draft}\n\n{ANCHOR}"))
                 self.assertEqual(self.checks(result), ["presence"])
 
     def test_irregular_past_in_a_past_tense_draft(self):
-        result = self.lint(turn(f"Redacted648 stood at the bench. Redacted1264 knelt by the door and spat.\n\n{ANCHOR}"))
+        result = self.lint(turn(f"Sabe stood at the bench. Orm knelt by the door and spat.\n\n{ANCHOR}"))
         self.assertEqual(self.checks(result), ["presence"])
 
     def test_mentions_that_are_not_actions_pass(self):
-        for draft in ("Redacted648 takes the hammer. She says the Redacted1264 brothers sold it to her.",
-                      "Redacted648 knows Redacted1264 hates the cold.", "Redacted648 says Redacted1264 must be at the mill by now.",
-                      "Redacted648 nods toward the road. Redacted1264 will be back by noon.", "Redacted1264's letter sits on the bench.",
-                      "She glances at the stool where Redacted1264 used to sit.", "Redacted123 asks whether Redacted1264 is coming back.",
-                      "~08:00 REDACTED1264'S YARD: the gate stands open.", "Redacted1264 is away at the mill.", "Redacted1264 has gone to the mill.",
-                      "Redacted648 reads Redacted1264's letter twice.", "A letter from Redacted1264 lies on the bench.", "Redacted648 thinks of Redacted1264.",
-                      "Without Redacted1264 the yard is quiet.", "Redacted648 talks about Redacted1264 all morning."):
+        for draft in ("Sabe takes the hammer. She says the Orm brothers sold it to her.",
+                      "Sabe knows Orm hates the cold.", "Sabe says Orm must be at the mill by now.",
+                      "Sabe nods toward the road. Orm will be back by noon.", "Orm's letter sits on the bench.",
+                      "She glances at the stool where Orm used to sit.", "Wystan asks whether Orm is coming back.",
+                      "~08:00 ORM'S YARD: the gate stands open.", "Orm is away at the mill.", "Orm has gone to the mill.",
+                      "Sabe reads Orm's letter twice.", "A letter from Orm lies on the bench.", "Sabe thinks of Orm.",
+                      "Without Orm the yard is quiet.", "Sabe talks about Orm all morning."):
             with self.subTest(draft=draft):
                 result = self.lint(turn(f"{draft}\n\n{ANCHOR}"))
                 self.assertEqual(result["findings"], [])
@@ -347,75 +347,75 @@ class LintTests(unittest.TestCase):
         """The core case. A false positive costs a cheap review; a miss ships unreviewed."""
         drafts = [
             # past-tense drafts, with plural nouns that look present
-            "Redacted648 stood at the bench. Redacted1264 knelt by the door and spat. The shutters banged. The others waited.",
-            "Redacted1264 took the hammer. The nails rattled in the tin.",
-            "The shutters banged. Redacted1264 laughed.",
+            "Sabe stood at the bench. Orm knelt by the door and spat. The shutters banged. The others waited.",
+            "Orm took the hammer. The nails rattled in the tin.",
+            "The shutters banged. Orm laughed.",
             # base-form plurals in present tense
-            "Redacted695 watches. Redacted648 and Redacted1264 set the beam on the trestles.",
-            "Redacted695 watches. Redacted648 and Redacted1264 lay the beam down.",
-            "Redacted695 watches. Redacted648 and Redacted1264 put the beam down.",
-            "He and Redacted1264 lift the beam.", "The boy and Redacted1264 lift the beam.",
+            "Tova watches. Sabe and Orm set the beam on the trestles.",
+            "Tova watches. Sabe and Orm lay the beam down.",
+            "Tova watches. Sabe and Orm put the beam down.",
+            "He and Orm lift the beam.", "The boy and Orm lift the beam.",
             # modals and contractions
-            "Redacted1264 will not budge.", "Redacted1264 could only stare at him.", "Redacted1264 would not look at him.",
-            "Redacted1264 must decide now.", "Redacted1264 can still hang a door, and does.", "Redacted1264 doesn't look up from the bench.",
+            "Orm will not budge.", "Orm could only stare at him.", "Orm would not look at him.",
+            "Orm must decide now.", "Orm can still hang a door, and does.", "Orm doesn't look up from the bench.",
             # speech tags in every quoting style
-            '"Hang it", said Redacted1264.', '"Hang it", says Redacted1264.', "'Hang it,' said Redacted1264.", "‘Hang it,’ said Redacted1264.",
-            '*"Hang it,"* said Redacted1264.', '**"Hang it,"** says Redacted1264.', '**Redacted1264:** "Hang it."', 'REDACTED1264 (low): "Hang it."',
-            '"Hang it" — Redacted1264, from the bench.', 'Redacted1264 — quiet — "Hang it."',
+            '"Hang it", said Orm.', '"Hang it", says Orm.', "'Hang it,' said Orm.", "‘Hang it,’ said Orm.",
+            '*"Hang it,"* said Orm.', '**"Hang it,"** says Orm.', '**Orm:** "Hang it."', 'ORM (low): "Hang it."',
+            '"Hang it" — Orm, from the bench.', 'Orm — quiet — "Hang it."',
             # words before the name that are not prepositions
-            "With that Redacted1264 takes the hammer.", "At that Redacted1264 laughs.", "Behind her Redacted1264 laughs.",
-            "He sees that Redacted1264 has the hammer already.",
+            "With that Orm takes the hammer.", "At that Orm laughs.", "Behind her Orm laughs.",
+            "He sees that Orm has the hammer already.",
             # carriers that carry nothing, or carry and then act
-            "Redacted1264 sends word: the hinges are ready. Then Redacted1264 takes the hammer from the bench.",
-            'Redacted1264 writes a note. "Hang it," says Redacted1264.', "Redacted1264 sends him a look across the bench.",
+            "Orm sends word: the hinges are ready. Then Orm takes the hammer from the bench.",
+            'Orm writes a note. "Hang it," says Orm.', "Orm sends him a look across the bench.",
             # ordinary phrases that are not arrivals
-            "Redacted1264 looks up from the bench.", "Redacted1264 takes the hammer out of the box.",
-            "Redacted1264 takes it down from the shelf.", "Redacted1264 returns the hammer to the bench.",
-            "Redacted1264 follows his gaze.", "Redacted1264 comes to a decision.",
+            "Orm looks up from the bench.", "Orm takes the hammer out of the box.",
+            "Orm takes it down from the shelf.", "Orm returns the hammer to the bench.",
+            "Orm follows his gaze.", "Orm comes to a decision.",
             # script-style speech, and negation that is not absence
-            "Redacted1264: *Hang it.*", "Redacted1264 is not happy about it.",
+            "Orm: *Hang it.*", "Orm is not happy about it.",
             # ordinary prose with no recognisable verb right after the name (third review)
-            "Redacted1264 just shrugs from the woodpile.", "Redacted1264 still has the hammer.", "Redacted1264 never looks up.",
-            "Redacted1264 then turns to Redacted695.", "Redacted1264 cannot quite hide the grin.",
-            "Redacted1264 — sweat running into his eyes — braces it.", "Redacted1264 (from the bench, not looking up) grunts.",
-            "Redacted1264's eyes narrow.", "Redacted1264's already at the bench.", "Redacted1264'll take it.",
-            "Redacted648 looks to Redacted1264, who only nods.", "Before Redacted1264 can answer, Redacted648 turns.",
-            "Redacted1264, Redacted648 and Redacted695 lift the beam.", "Redacted648 and Redacted1264 together lift the beam.",
-            '"Not yet," mutters Redacted1264.', 'Then said Redacted1264, "Hang it."', "*Hang it,* said Redacted1264.",
-            "Redacted648 asks Redacted1264 for the hammer.", "Redacted1264 and Redacted648 always argue about the hammer.",
-            "Redacted648 waits until Redacted1264 takes the hammer.", "Since Redacted1264 takes the far end, Redacted648 lifts.",
+            "Orm just shrugs from the woodpile.", "Orm still has the hammer.", "Orm never looks up.",
+            "Orm then turns to Tova.", "Orm cannot quite hide the grin.",
+            "Orm — sweat running into his eyes — braces it.", "Orm (from the bench, not looking up) grunts.",
+            "Orm's eyes narrow.", "Orm's already at the bench.", "Orm'll take it.",
+            "Sabe looks to Orm, who only nods.", "Before Orm can answer, Sabe turns.",
+            "Orm, Sabe and Tova lift the beam.", "Sabe and Orm together lift the beam.",
+            '"Not yet," mutters Orm.', 'Then said Orm, "Hang it."', "*Hang it,* said Orm.",
+            "Sabe asks Orm for the hammer.", "Orm and Sabe always argue about the hammer.",
+            "Sabe waits until Orm takes the hammer.", "Since Orm takes the far end, Sabe lifts.",
             # fourth review: excuse words across punctuation
-            "Lost in thought, Redacted1264 turns another page of the ledger.", "As Redacted648 feared, Redacted1264 is already at the table.",
-            "Whatever Redacted648 thought, Redacted1264 took the hammer.", "Nothing to worry about, Redacted1264 said, and took the hammer.",
-            "It was as Redacted648 had guessed, Redacted1264 was there before her.",
-            '"Hang it," Redacted648 said, Redacted1264 already reaching for the hammer.', "Whatever she said, Redacted1264 just shrugged.",
+            "Lost in thought, Orm turns another page of the ledger.", "As Sabe feared, Orm is already at the table.",
+            "Whatever Sabe thought, Orm took the hammer.", "Nothing to worry about, Orm said, and took the hammer.",
+            "It was as Sabe had guessed, Orm was there before her.",
+            '"Hang it," Sabe said, Orm already reaching for the hammer.', "Whatever she said, Orm just shrugged.",
             # absence phrases that are not absence
-            "Redacted1264 had left the gate open behind him and now leans on it.", "Redacted1264 was still out of breath when he took the hammer.",
-            "Redacted1264 is asleep on the bench by the hearth, mouth open.", "Redacted1264 is out in the yard, splitting wood.",
-            "Redacted1264 is off the cart before it stops.", "Redacted1264 has gone to the bench and taken the hammer.",
-            "Redacted1264 is dead on the flags at Redacted648's feet.",
+            "Orm had left the gate open behind him and now leans on it.", "Orm was still out of breath when he took the hammer.",
+            "Orm is asleep on the bench by the hearth, mouth open.", "Orm is out in the yard, splitting wood.",
+            "Orm is off the cart before it stops.", "Orm has gone to the bench and taken the hammer.",
+            "Orm is dead on the flags at Sabe's feet.",
             # speaker labels after an excuse word
-            'A shout from Redacted1264: "Shut that door!"',
+            'A shout from Orm: "Shut that door!"',
             # possessives and prepositions that are physical
-            "Redacted1264's grin is crooked as he leans on the doorframe.", "Redacted1264's smile doesn't reach his eyes.",
-            "Redacted1264's laughter rings across the yard.", "Redacted1264's tail flicks once.", "Redacted1264's knuckles whiten on the table.",
-            "Redacted1264's left hand closes on the hammer.", "Redacted1264's taken the far end of the beam.", "Redacted1264's quiet for a long moment.",
-            "Redacted1264's over by the bench.", "Redacted648 takes the cup from Redacted1264 and drinks.", "Redacted648 plants herself in front of Redacted1264.",
-            "Redacted648 pulls the hammer out of Redacted1264's hands.", "A low whistle from Redacted1264, somewhere behind the woodpile.",
+            "Orm's grin is crooked as he leans on the doorframe.", "Orm's smile doesn't reach his eyes.",
+            "Orm's laughter rings across the yard.", "Orm's tail flicks once.", "Orm's knuckles whiten on the table.",
+            "Orm's left hand closes on the hammer.", "Orm's taken the far end of the beam.", "Orm's quiet for a long moment.",
+            "Orm's over by the bench.", "Sabe takes the cup from Orm and drinks.", "Sabe plants herself in front of Orm.",
+            "Sabe pulls the hammer out of Orm's hands.", "A low whistle from Orm, somewhere behind the woodpile.",
             # carried phrases that carry nothing
-            "Redacted1264 sends the runner off with a clap on the shoulder.", "From the corner table, Redacted1264 sends for another jug.",
-            "Redacted1264 sends for the hammer, reaching across Redacted648 to take it.", "Redacted1264 sends Redacted648 a note across the table, grinning.",
-            "Redacted1264 sent for Redacted648, but he was already at the bench when she came.",
+            "Orm sends the runner off with a clap on the shoulder.", "From the corner table, Orm sends for another jug.",
+            "Orm sends for the hammer, reaching across Sabe to take it.", "Orm sends Sabe a note across the table, grinning.",
+            "Orm sent for Sabe, but he was already at the bench when she came.",
             # underscore emphasis
-            "_Redacted1264 takes the hammer._", "Redacted648 nods. _Redacted1264_ grins.",
+            "_Orm takes the hammer._", "Sabe nods. _Orm_ grins.",
             # excuse words used physically, or as nouns
-            "Redacted648 wraps her arms about Redacted1264.", "Redacted648 is taller than Redacted1264, who ducks under the beam.",
-            "Redacted648 moves like Redacted1264 does, slow and heavy.", "Deep in thought Redacted1264 stares at the fire.",
-            "Without a second thought Redacted1264 takes the hammer.", "Redacted1264 used to the weight, lifts the beam alone.",
-            "Redacted1264 is missing a tooth when he grins.", "Redacted1264 sends word with a look, and Redacted648 nods.",
-            "Redacted1264 sends the boy for nails and takes the hammer himself.", "Redacted1264 sends the boy flying with a kick.",
+            "Sabe wraps her arms about Orm.", "Sabe is taller than Orm, who ducks under the beam.",
+            "Sabe moves like Orm does, slow and heavy.", "Deep in thought Orm stares at the fire.",
+            "Without a second thought Orm takes the hammer.", "Orm used to the weight, lifts the beam alone.",
+            "Orm is missing a tooth when he grins.", "Orm sends word with a look, and Sabe nods.",
+            "Orm sends the boy for nails and takes the hammer himself.", "Orm sends the boy flying with a kick.",
             # stray or mixed quote marks, and an anchor sharing the line
-            '“Hang it," said Redacted1264, and took the hammer.', 'The beam is 12" thick. Redacted1264 takes the hammer.',
+            '“Hang it," said Orm, and took the hammer.', 'The beam is 12" thick. Orm takes the hammer.',
         ]
         for draft in drafts:
             with self.subTest(draft=draft):
@@ -423,37 +423,37 @@ class LintTests(unittest.TestCase):
                 self.assertIn("presence", self.checks(result))
 
     def test_anchor_sharing_a_line_with_prose(self):
-        result = self.lint(turn("Redacted1264 takes the hammer. " + ANCHOR))
+        result = self.lint(turn("Orm takes the hammer. " + ANCHOR))
         self.assertIn("presence", self.checks(result))
 
     def test_title_only_and_configured_common_word_names(self):
         p = Project(self)
-        (p.root / "Lore/World/Characters/Captain.md").write_text("# Captain\n")
+        (p.root / "Canon/Characters/Captain.md").write_text("# Captain\n")
         p.mode("turnGate:\n  cast: [Will]\n")
-        for draft in ("Captain takes the hammer.", 'CAPTAIN: "Hang it."', "Will takes the hammer. Redacted648 will not look at him."):
+        for draft in ("Captain takes the hammer.", 'CAPTAIN: "Hang it."', "Will takes the hammer. Sabe will not look at him."):
             with self.subTest(draft=draft):
                 result = self.lint(turn(f"{draft}\n\n{ANCHOR}"), project=p)
                 self.assertIn("presence", self.checks(result))
 
     def test_name_shapes(self):
         p = Project(self)
-        for stem in ("McAllister", "Anne-Marie", "O'Brien", "redacted561", "Bo", "Redacted1143", "Captain", "Warden",
+        for stem in ("McAllister", "Hilde-Agnet", "O'Brien", "kester-pask", "Bo", "The Ember Keeper", "Captain", "Warden",
                      "The Principal", "Sergeant"):
-            (p.root / "Lore/World/Characters" / f"{stem}.md").write_text("x\n")
-        for draft in ("McAllister takes the hammer.", "Anne-Marie takes the hammer.", "O'Brien takes the hammer.",
-                      "Redacted561 takes the hammer.", "Bo takes the hammer.", "Redacted648 turns to the Redacted463, who nods.",
+            (p.root / "Canon/Characters" / f"{stem}.md").write_text("x\n")
+        for draft in ("McAllister takes the hammer.", "Hilde-Agnet takes the hammer.", "O'Brien takes the hammer.",
+                      "Kester Pask takes the hammer.", "Bo takes the hammer.", "Sabe turns to the Ember Keeper, who nods.",
                       "The Captain takes the hammer.", 'THE WARDEN: "Hang it."', "The Principal takes the hammer.",
-                      "Redacted648 turns to the Warden, who nods.", "Redacted648 salutes the Warden.", "The Sergeant takes the hammer."):
+                      "Sabe turns to the Warden, who nods.", "Sabe salutes the Warden.", "The Sergeant takes the hammer."):
             with self.subTest(draft=draft):
                 result = self.lint(turn(f"{draft}\n\n{ANCHOR}"), project=p)
                 self.assertIn("presence", self.checks(result))
 
     def test_returning_is_an_arrival(self):
-        for draft in ("Redacted1264 is back from the mill.", "Redacted1264 is back. He takes the hammer from Redacted648 without a word.",
-                      "As Redacted648 feared, Redacted1264 comes in through the gate.", "Redacted1264 has left the mill and walks into the yard.",
-                      "Redacted1264 had gone to the well and now comes in through the gate with the buckets.",
-                      "Redacted1264 sends word ahead and comes in through the gate behind it.",
-                      "Redacted1264 sent word, then arrived on the heels of it."):
+        for draft in ("Orm is back from the mill.", "Orm is back. He takes the hammer from Sabe without a word.",
+                      "As Sabe feared, Orm comes in through the gate.", "Orm has left the mill and walks into the yard.",
+                      "Orm had gone to the well and now comes in through the gate with the buckets.",
+                      "Orm sends word ahead and comes in through the gate behind it.",
+                      "Orm sent word, then arrived on the heels of it."):
             with self.subTest(draft=draft):
                 result = self.lint(turn(f"{draft}\n\n{ANCHOR}"))
                 self.assertNotIn("presence", self.checks(result))
@@ -461,26 +461,26 @@ class LintTests(unittest.TestCase):
 
     def test_common_word_name_after_a_quote_still_counts(self):
         p = Project(self)
-        (p.root / "Lore/World/Characters/Redacted148.md").write_text("# Redacted148\n")
-        result = self.lint(turn(f'The grate is grey with ash. Redacted648 nods. "Hang it." Redacted148 takes the hammer.\n\n{ANCHOR}'),
+        (p.root / "Canon/Characters/Gorse.md").write_text("# Gorse\n")
+        result = self.lint(turn(f'The grate is grey with gorse. Sabe nods. "Hang it." Gorse takes the hammer.\n\n{ANCHOR}'),
                            project=p)
         self.assertEqual(self.checks(result), ["presence"])
 
-    # --- presence false positives (Redacted477 B4377/B4378, 2026-10-30) ---
+    # --- presence false positives seen in live play (2026-10-30) ---
 
     def test_epithet_file_names_match_only_in_full(self):
-        # "Redacted993.md" made "Fire" a person: "BY THE FIRE" was flagged.
+        # An epithet file name once made one of its words a person: "BY THE SALT" was flagged.
         p = Project(self)
-        for stem in ("Redacted993", "Redacted746", "Redacted558"):
-            (p.root / "Lore/World/Characters" / f"{stem}.md").write_text("x\n")
-        for draft in ("She drags the chair to the hearth by the fire. SHE EATS BY THE FIRE.",
-                      "Fire runs along the thatch; nobody moves.", "A new recruit waits. The Listener is late.",
-                      "The dreamweaver's loom stands empty."):
+        for stem in ("Duke of Salt Herons", "New PC - Tower Novice", "Perrin, the Lampwright"):
+            (p.root / "Canon/Characters" / f"{stem}.md").write_text("x\n")
+        for draft in ("She sets the bowl down by the salt. SHE EATS BY THE SALT.",
+                      "Salt crusts the thatch; nobody moves.", "A new novice waits. The Tower is dark.",
+                      "The Lampwright's loom stands empty.", "Herons wheel over the yard. The Duke is a title here."):
             with self.subTest(draft=draft):
                 result = self.lint(turn(f"{draft}\n\n{ANCHOR}"), project=p)
                 self.assertEqual(result["findings"], [])
-        for draft in ("Redacted993 lifts a hand.", "Redacted558 stirs.",
-                      'REDACTED746: "Here."'):
+        for draft in ("Duke of Salt Herons lifts a hand.", "Perrin, the Lampwright stirs.",
+                      'NEW PC - TOWER NOVICE: "Here."'):
             with self.subTest(draft=draft):
                 result = self.lint(turn(f"{draft}\n\n{ANCHOR}"), project=p)
                 self.assertEqual(self.checks(result), ["presence"])
@@ -490,43 +490,43 @@ class LintTests(unittest.TestCase):
             self.assertEqual(rp_gate.name_tokens(word), set())
         self.assertEqual(rp_gate.name_tokens("New PC"), {"new"})
         p = Project(self)
-        (p.root / "Lore/World/Characters/PC.md").write_text("x\n")
-        result = self.lint(turn(f"**PC move (B4378):** I keep working.\n\nRedacted648 nods.\n\n{ANCHOR}"), project=p)
+        (p.root / "Canon/Characters/PC.md").write_text("x\n")
+        result = self.lint(turn(f"**PC move (B4378):** I keep working.\n\nSabe nods.\n\n{ANCHOR}"), project=p)
         self.assertEqual(result["findings"], [])
 
     def test_capitals_of_a_common_word_name_the_draft_also_writes_lowercase(self):
         p = Project(self)
-        (p.root / "Lore/World/Characters/Redacted495.md").write_text("x\n")
-        draft = "A snake of smoke climbs the wall. THE SNAKE OF SMOKE REACHES THE BEAM."
+        (p.root / "Canon/Characters/Kinver Adder.md").write_text("x\n")
+        draft = "An adder of smoke climbs the wall. THE ADDER OF SMOKE REACHES THE BEAM."
         self.assertEqual(self.lint(turn(f"{draft}\n\n{ANCHOR}"), project=p)["findings"], [])
-        result = self.lint(turn(f'SNAKE: "Hang it."\n\n{ANCHOR}'), project=p)  # no lowercase "snake": a person
+        result = self.lint(turn(f'ADDER: "Hang it."\n\n{ANCHOR}'), project=p)  # no lowercase "adder": a person
         self.assertEqual(self.checks(result), ["presence"])
-        p.mode("turnGate:\n  cast: [Snake]\n")  # a configured name is never a common word
+        p.mode("turnGate:\n  cast: [Adder]\n")  # a configured name is never a common word
         result = self.lint(turn(f"{draft}\n\n{ANCHOR}"), project=p)
         self.assertEqual(self.checks(result), ["presence"])
 
     def test_gm_working_before_the_beat_heading_is_not_the_page(self):
-        # The Redacted477 logs put the GM's PRE-COMMIT block (its notes, its STATE) in the draft before the beat
-        # heading; "REDACTED648 (offstage): ..." and "INFERRED Redacted648 at the sledge" there are not Redacted648 on the page.
-        notes = ("### Beat 10 PRE-COMMIT (GM, binding; REDACTED1264 STILL IN THE YARD, HER LOOK HELD OPEN)\n"
-                 "REDACTED1264 (offstage): iron rings twice in the yard (texture, INFERRED Redacted1264 at the sledge).\n"
-                 "STATE: ~08:05 D4. REDACTED1264 (28): in the yard at the sledge with the chain. Redacted1264 has seen none of it.\n\n")
-        heading = "### Beat 10: Day 4, ~15:00 to ~15:05. (/rp:turn gate: routine; lint: presence (Redacted1264, offstage))\n\n"
-        prose = "Redacted648 sets down the drawknife. Redacted695 watches from the step.\n\n"
+        # Live logs put the GM's PRE-COMMIT block (its notes, its STATE) in the draft before the beat
+        # heading; "ORM (offstage): ..." and "INFERRED Orm at the boats" there are not Orm on the page.
+        notes = ("### Beat 10 PRE-COMMIT (GM, binding; ORM AT THE QUAY, THE COUNT STILL OPEN)\n"
+                 "ORM (offstage): a bell twice on the quay (texture, INFERRED Orm at the boats).\n"
+                 "STATE: ~15:02 D4. ORM (41): on the quay with the nets. Orm has seen none of it.\n\n")
+        heading = "### Beat 10: Day 4, ~15:00 to ~15:05. (/rp:turn gate: routine; lint: presence (Orm, offstage))\n\n"
+        prose = "Sabe sets down the drawknife. Tova watches from the step.\n\n"
         result = self.lint(turn(f"{notes}{heading}{prose}{ANCHOR}"))
         self.assertEqual(result["findings"], [])
-        result = self.lint(turn(f"{notes}{heading}Redacted1264 takes the hammer from the bench.\n\n{ANCHOR}"))
+        result = self.lint(turn(f"{notes}{heading}Orm takes the hammer from the bench.\n\n{ANCHOR}"))
         self.assertEqual(self.checks(result), ["presence"])  # on the page itself: still a miss
-        result = self.lint(turn(f"{notes}Redacted1264 takes the hammer from the bench.\n\n{ANCHOR}"))
+        result = self.lint(turn(f"{notes}Orm takes the hammer from the bench.\n\n{ANCHOR}"))
         self.assertEqual(self.checks(result), ["presence"])  # no beat heading: the whole draft is the page
 
     def test_keeper_input_echoed_as_the_pc_move_is_not_narration(self):
-        keeper = "It's not like Redacted1264 hasn't been over familiar with my anatomy, this is just more pony and circus."
-        draft = f"**PC move (B4377):** {keeper}\n\nRedacted648 nods.\n\n{ANCHOR}"
+        keeper = "Orm has seen me carry worse; tell him to mind his own nets."
+        draft = f"**PC move (B12):** {keeper}\n\nSabe nods.\n\n{ANCHOR}"
         self.assertEqual(self.lint(turn(draft, keeper=keeper))["findings"], [])
-        result = self.lint(turn(f"**PC move (B4377):** {keeper}\n\nRedacted1264 nods.\n\n{ANCHOR}", keeper=keeper))
+        result = self.lint(turn(f"**PC move (B12):** {keeper}\n\nOrm nods.\n\n{ANCHOR}", keeper=keeper))
         self.assertEqual(self.checks(result), ["presence"])
-        result = self.lint(turn(f"Redacted648 nods. {keeper}\n\n{ANCHOR}", keeper=keeper))  # not the move line: narration
+        result = self.lint(turn(f"Sabe nods. {keeper}\n\n{ANCHOR}", keeper=keeper))  # not the move line: narration
         self.assertEqual(self.checks(result), ["presence"])
 
     def test_pronouns_are_never_names(self):
@@ -535,60 +535,60 @@ class LintTests(unittest.TestCase):
         self.assertEqual(rp_gate.name_tokens("His Majesty"), {"majesty"})
 
     def test_more_title_abbreviations_in_present(self):
-        result = self.lint(turn("Redacted648 nods.\n\nScene: Day 4 | Location: the yard | Present: Redacted648, Capt. Holt, J. Redacted901, Redacted695"))
-        self.assertEqual(result["present"], ["Redacted648", "Capt. Holt", "J. Redacted901", "Redacted695"])
-        result = self.lint(turn("Redacted648 nods.\n\nScene: Day 4 | Location: the yard | Present: Redacted648, Redacted695 — etc."))
-        self.assertEqual(result["present"], ["Redacted648", "Redacted695"])
+        result = self.lint(turn("Sabe nods.\n\nScene: Day 4 | Location: the yard | Present: Sabe, Capt. Holt, J. Lugg, Tova"))
+        self.assertEqual(result["present"], ["Sabe", "Capt. Holt", "J. Lugg", "Tova"])
+        result = self.lint(turn("Sabe nods.\n\nScene: Day 4 | Location: the yard | Present: Sabe, Tova — etc."))
+        self.assertEqual(result["present"], ["Sabe", "Tova"])
 
     def test_non_list_participants_do_not_crash(self):
-        result = self.lint(turn(f"Redacted648 nods.\n\n{ANCHOR}", delta="scene.participants: 2"))
+        result = self.lint(turn(f"Sabe nods.\n\n{ANCHOR}", delta="scene.participants: 2"))
         self.assertIn("delta_malformed", self.checks(result))
-        body = FRONTMATTER.replace('participants: ["Redacted123", "Redacted648", "Redacted695"]', "participants: true")
+        body = FRONTMATTER.replace('participants: ["Wystan", "Sabe", "Tova"]', "participants: true")
         body = body.replace("  participants:\n", "  people:\n")
-        self.lint(turn(f"Redacted648 nods.\n\n{ANCHOR}"), session_body=body)
+        self.lint(turn(f"Sabe nods.\n\n{ANCHOR}"), session_body=body)
 
     def test_heard_absent_character_is_on_the_page(self):
-        result = self.lint(turn(f"He hears Redacted648 and Redacted1264 below in the kitchen, voices raised.\n\n{ANCHOR}"))
+        result = self.lint(turn(f"He hears Sabe and Orm below in the kitchen, voices raised.\n\n{ANCHOR}"))
         self.assertEqual(self.checks(result), ["presence"])
 
     def test_attribution_after_a_question_still_speaks(self):
-        result = self.lint(turn(f'"Can you hang a door?" asks Redacted1264.\n\n{ANCHOR}'))
+        result = self.lint(turn(f'"Can you hang a door?" asks Orm.\n\n{ANCHOR}'))
         self.assertEqual(self.checks(result), ["presence"])
 
     def test_titled_unnamed_and_abbreviated_people(self):
-        body = FRONTMATTER.replace('    - name: "Redacted695"',
+        body = FRONTMATTER.replace('    - name: "Tova"',
                                    '    - name: "Mother"\n      role: "NPC"\n    - name: "Mr. Holt"\n'
-                                   '      role: "NPC"\n    - name: "two regulars"\n      role: "NPC"\n    - name: "Redacted695"')
-        draft = "Redacted648 nods.\n\nScene: Day 4 | Location: the yard | Present: Mr. Holt, Mother, Redacted648, two regulars, Redacted695"
+                                   '      role: "NPC"\n    - name: "two regulars"\n      role: "NPC"\n    - name: "Tova"')
+        draft = "Sabe nods.\n\nScene: Day 4 | Location: the yard | Present: Mr. Holt, Mother, Sabe, two regulars, Tova"
         result = self.lint(turn(draft), session_body=body)
         self.assertEqual(result["findings"], [])
-        self.assertEqual(result["present"], ["Mr. Holt", "Mother", "Redacted648", "two regulars", "Redacted695"])
+        self.assertEqual(result["present"], ["Mr. Holt", "Mother", "Sabe", "two regulars", "Tova"])
 
     def test_present_none(self):
-        body = FRONTMATTER.replace('    - name: "Redacted648"\n      role: "NPC"\n      profile_file: "Lore/World/Characters/Redacted648.md"\n', "")
-        body = body.replace('    - name: "Redacted695"\n      role: "NPC"\n', "")
+        body = FRONTMATTER.replace('    - name: "Sabe"\n      role: "NPC"\n      profile_file: "Canon/Characters/Sabe.md"\n', "")
+        body = body.replace('    - name: "Tova"\n      role: "NPC"\n', "")
         result = self.lint(turn("He waits.\n\nScene: Day 4 | Location: the yard | Present: none (the house within)"),
                            session_body=body)
         self.assertEqual(result["findings"], [])
         self.assertEqual(result["present"], [])
 
     def test_frontmatter_with_a_byte_order_mark(self):
-        result = self.lint(turn(f"Redacted648 nods.\n\n{ANCHOR}"), session_body="\ufeff" + FRONTMATTER)
+        result = self.lint(turn(f"Sabe nods.\n\n{ANCHOR}"), session_body="\ufeff" + FRONTMATTER)
         self.assertEqual(result["findings"], [])
 
     def test_unknown_delta_key(self):
-        draft = f"Redacted648 nods.\n\n{ANCHOR}"
+        draft = f"Sabe nods.\n\n{ANCHOR}"
         result = self.lint(turn(draft, delta='scene.time: "15:00"\nscene.weather: "rain"'))
         self.assertEqual(self.checks(result), ["delta_unknown_key"])
         self.assertIn("scene.weather", result["findings"][0]["detail"])
 
     def test_root_mirror_delta_key(self):
-        draft = f"Redacted648 nods.\n\n{ANCHOR}"
+        draft = f"Sabe nods.\n\n{ANCHOR}"
         result = self.lint(turn(draft, delta='scene.time: "15:00"\ncurrentTime: "15:05"'))
         self.assertEqual(self.checks(result), ["delta_root_mirror"])
 
     def test_nested_delta_and_fenced_block(self):
-        draft = f"Redacted648 nods.\n\n{ANCHOR}"
+        draft = f"Sabe nods.\n\n{ANCHOR}"
         delta = '```yaml\nscene:\n  time: "15:00"\n  mood: "tense"\n```'
         result = self.lint(turn(draft, delta=delta))
         self.assertEqual(result["findings"], [])
@@ -597,31 +597,31 @@ class LintTests(unittest.TestCase):
     def test_extra_delta_keys_from_config(self):
         p = Project(self)
         p.mode("turnGate:\n  deltaKeys: [scene.weather]\n")
-        draft = f"Redacted648 nods.\n\n{ANCHOR}"
+        draft = f"Sabe nods.\n\n{ANCHOR}"
         result = self.lint(turn(draft, delta='scene.weather: "rain"'), project=p)
         self.assertEqual(result["findings"], [])
 
     def test_present_change_without_participants_delta(self):
-        draft = "Redacted695 goes in through the back door.\n\nScene: Day 4 | Location: the yard | Present: Redacted648"
+        draft = "Tova goes in through the back door.\n\nScene: Day 4 | Location: the yard | Present: Sabe"
         result = self.lint(turn(draft, delta='scene.time: "15:00"'))
         self.assertEqual(self.checks(result), ["delta_participants_missing"])
 
     def test_delta_participants_disagree_with_anchor(self):
-        draft = "Redacted695 goes in through the back door.\n\nScene: Day 4 | Location: the yard | Present: Redacted648"
-        result = self.lint(turn(draft, delta='scene.participants: ["Redacted123", "Redacted648", "Redacted695"]'))
+        draft = "Tova goes in through the back door.\n\nScene: Day 4 | Location: the yard | Present: Sabe"
+        result = self.lint(turn(draft, delta='scene.participants: ["Wystan", "Sabe", "Tova"]'))
         self.assertEqual(self.checks(result), ["delta_participants_mismatch"])
 
     def test_anchor_time_without_time_delta(self):
-        result = self.lint(turn(f"Redacted648 nods.\n\n{LATER}", delta='scene.mood: "tense"'))
+        result = self.lint(turn(f"Sabe nods.\n\n{LATER}", delta='scene.mood: "tense"'))
         self.assertEqual(self.checks(result), ["delta_time_missing"])
         self.assertEqual(result["findings"][0]["fix"], "edit")
 
     def test_anchor_time_agrees_with_delta(self):
-        result = self.lint(turn(f"Redacted648 nods.\n\n{LATER}", delta='scene.time: "15:05"'))
+        result = self.lint(turn(f"Sabe nods.\n\n{LATER}", delta='scene.time: "15:05"'))
         self.assertEqual(result["findings"], [])
 
     def test_anchor_time_disagrees_with_delta(self):
-        result = self.lint(turn(f"Redacted648 nods.\n\n{LATER}", delta='scene.time: "16:00"'))
+        result = self.lint(turn(f"Sabe nods.\n\n{LATER}", delta='scene.time: "16:00"'))
         self.assertEqual(self.checks(result), ["delta_time_mismatch"])
 
     def test_lint_is_fast(self):
@@ -629,7 +629,7 @@ class LintTests(unittest.TestCase):
         session = p.session()
         scene = rp_gate.load_scene(p.root, session)
         config = rp_gate.load_config(p.root)
-        parsed = rp_gate.parse_turn(turn(("Redacted648 nods. Redacted695 looks up. " * 200) + "\n\n" + ANCHOR))
+        parsed = rp_gate.parse_turn(turn(("Sabe nods. Tova looks up. " * 200) + "\n\n" + ANCHOR))
         start = time.perf_counter()
         for _ in range(20):
             rp_gate.lint(parsed, scene, config, p.root)
@@ -647,7 +647,7 @@ class RouteTests(unittest.TestCase):
 
     def test_routine_clean_beat_ships_without_review(self):
         p = Project(self)
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}"))
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}"))
         self.assertEqual(got["route"]["next"], "ship")
         self.assertEqual(got["route"]["beat"], "routine")
         self.assertEqual(got["route"]["max_rewrites"], 1)
@@ -655,7 +655,7 @@ class RouteTests(unittest.TestCase):
 
     def test_lint_flag_routes_to_the_haiku_pass(self):
         p = Project(self)
-        got = self.check(p, turn(f'Redacted1264: "Hang it."\n\n{ANCHOR}'))
+        got = self.check(p, turn(f'Orm: "Hang it."\n\n{ANCHOR}'))
         self.assertEqual(got["route"]["next"], "review")
         self.assertEqual(got["route"]["beat"], "routine")
         self.assertEqual(got["route"]["reviewer_model"], "haiku")
@@ -665,56 +665,56 @@ class RouteTests(unittest.TestCase):
 
     def test_edit_fixable_findings_ask_for_a_fix_then_review_on_recheck(self):
         p = Project(self)
-        got = self.check(p, turn("Redacted648 nods."))
+        got = self.check(p, turn("Sabe nods."))
         self.assertEqual(got["route"]["next"], "fix")
-        got = self.check(p, turn("Redacted648 nods."), "--recheck")
+        got = self.check(p, turn("Sabe nods."), "--recheck")
         self.assertEqual(got["route"]["next"], "review")
 
     def test_final_relint_after_review_never_asks_for_review_again(self):
         p = Project(self)
-        got = self.check(p, turn(f'Redacted1264: "Hang it."\n\n{ANCHOR}', source="priced_stake_touched: true"), "--final")
+        got = self.check(p, turn(f'Orm: "Hang it."\n\n{ANCHOR}', source="priced_stake_touched: true"), "--final")
         self.assertEqual(got["route"]["next"], "ship")
-        got = self.check(p, turn('Redacted1264: "Hang it."'), "--final")
+        got = self.check(p, turn('Orm: "Hang it."'), "--final")
         self.assertEqual(got["route"]["next"], "fix")
         self.assertEqual([line["path"] for line in p.log_lines()], ["lint", "lint"])
         self.assertTrue(all(line["final"] for line in p.log_lines()))
 
     def test_everyone_leaving_is_a_departure(self):
         p = Project(self)
-        draft = "Redacted648 and Redacted695 go out through the back door and are gone.\n\nScene: Day 4 | Location: the yard | Present: none (Redacted123 alone)"
-        got = self.check(p, turn(draft, delta="scene.participants: [Redacted123]"))
+        draft = "Sabe and Tova go out through the back door and are gone.\n\nScene: Day 4 | Location: the yard | Present: none (Wystan alone)"
+        got = self.check(p, turn(draft, delta="scene.participants: [Wystan]"))
         self.assertIn("arrival_departure", got["triggers"])
         self.assertEqual(got["route"]["next"], "review")
 
     def test_any_later_attempt_is_a_rewrite(self):
         p = Project(self)
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}"), "--attempt", "2", "--recheck")
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}"), "--attempt", "2", "--recheck")
         self.assertEqual(got["route"]["next"], "review")
 
     def test_a_rewrite_is_always_reviewed(self):
         p = Project(self)
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}"), "--attempt", "2", "--rewrite")
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}"), "--attempt", "2", "--rewrite")
         self.assertEqual(got["route"]["next"], "review")
         self.assertEqual([line["path"] for line in p.log_lines()], ["lint"])
-        got = self.check(p, turn("Redacted648 nods."), "--rewrite")
+        got = self.check(p, turn("Sabe nods."), "--rewrite")
         self.assertEqual(got["route"]["next"], "fix")
 
     def test_validate_tag_reviews_even_under_lint_only(self):
         p = Project(self)
         p.mode("turnGate:\n  review: lint-only\n")
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}", keeper="I wait. [validate]"))
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}", keeper="I wait. [validate]"))
         self.assertEqual(got["route"]["next"], "review")
 
     def test_quoted_booleans_still_declare(self):
         p = Project(self)
         for source in ('priced_stake_touched: "true"', "priced_stake_touched: 'true'", '"priced_stake_touched": true'):
             with self.subTest(source=source):
-                got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}", source=source))
+                got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}", source=source))
                 self.assertIn("priced_stake", got["triggers"])
 
     def test_fight_pattern_false_friends(self):
         p = Project(self)
-        got = self.check(p, turn(f"Redacted648 fights a smile. Her wounded pride shows. She hits her stride.\n\n{ANCHOR}"))
+        got = self.check(p, turn(f"Sabe fights a smile. Her wounded pride shows. She hits her stride.\n\n{ANCHOR}"))
         self.assertNotIn("fight_or_capture", got["triggers"])
 
     def test_non_mapping_config_values_warn_instead_of_crashing(self):
@@ -723,26 +723,26 @@ class RouteTests(unittest.TestCase):
             with self.subTest(block=block):
                 p = Project(self)
                 p.mode("turnGate:\n" + block)
-                got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}"))
+                got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}"))
                 self.assertEqual(got["route"]["reviewer_model"], "haiku")
                 self.assertEqual(len(got["config_warnings"]), 1)
 
     def test_flow_mappings_in_config(self):
         p = Project(self)
         p.mode("turnGate:\n  rewrites: {routine: 0, consequential: 2}\n  models: {reviewer: sonnet}\n")
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}"))
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}"))
         self.assertEqual(got["route"]["max_rewrites"], 0)
         self.assertEqual(got["route"]["reviewer_model"], "sonnet")
         p = Project(self)
         p.mode("mode: rp\nturnGate: {review: every, models: {reviewer: opus}}\n")
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}"))
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}"))
         self.assertEqual(got["route"]["policy"], "every")
         self.assertEqual(got["route"]["reviewer_model"], "opus")
 
     def test_unreadable_frontmatter_is_reported(self):
         p = Project(self)
         p.session(body="no frontmatter here\n")
-        tf = p.turn_file(turn(f"Redacted648 nods.\n\n{ANCHOR}"))
+        tf = p.turn_file(turn(f"Sabe nods.\n\n{ANCHOR}"))
         code, out, _err = run("check", "--project-dir", str(p.root), "--session-file",
                               "Work/rp/rp_session_2026-10-17.md", "--turn-file", str(tf))
         self.assertEqual(code, 0)
@@ -752,13 +752,13 @@ class RouteTests(unittest.TestCase):
         p = Project(self)
         (p.root / "Memory").mkdir()
         (p.root / "Memory/canon-layout.md").write_text(
-            f"| `character` | `{p.root}/Lore/World/Characters/*.md` | cast |\n")
-        got = self.check(p, turn(f'Redacted1264: "Hang it."\n\n{ANCHOR}'))
+            f"| `character` | `{p.root}/Canon/Characters/*.md` | cast |\n")
+        got = self.check(p, turn(f'Orm: "Hang it."\n\n{ANCHOR}'))
         self.assertIn("lint:presence", got["route"]["reasons"])
 
     def test_priced_stake_is_consequential(self):
         p = Project(self)
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}", source="priced_stake_touched: true"))
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}", source="priced_stake_touched: true"))
         self.assertEqual(got["route"]["next"], "review")
         self.assertEqual(got["route"]["beat"], "consequential")
         self.assertEqual(got["route"]["max_rewrites"], 3)
@@ -766,50 +766,50 @@ class RouteTests(unittest.TestCase):
 
     def test_priced_stake_regex_on_keeper_input(self):
         p = Project(self)
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}", keeper="What price must I pay to leave the house?"))
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}", keeper="What price must I pay to leave the house?"))
         self.assertIn("priced_stake", got["triggers"])
 
     def test_canon_proposed_and_pc_change_are_consequential(self):
         p = Project(self)
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}", source="priced_stake_touched: false\ncanon_proposed: true"))
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}", source="priced_stake_touched: false\ncanon_proposed: true"))
         self.assertIn("canon_proposed", got["triggers"])
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}", source="pc_changed: true"))
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}", source="pc_changed: true"))
         self.assertIn("pc_change", got["triggers"])
 
     def test_pc_role_change_in_delta_is_a_pc_change(self):
         p = Project(self)
-        delta = 'scene.participants:\n  - name: "Redacted123"\n    role: "PC (antlers grown)"\n  - name: "Redacted648"\n  - name: "Redacted695"'
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}", delta=delta))
+        delta = 'scene.participants:\n  - name: "Wystan"\n    role: "PC (hands grown)"\n  - name: "Sabe"\n  - name: "Tova"'
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}", delta=delta))
         self.assertIn("pc_change", got["triggers"])
 
     def test_arrival_or_departure_is_consequential(self):
         p = Project(self)
-        draft = "Redacted695 goes in.\n\nScene: Day 4 | Location: the yard | Present: Redacted648"
-        got = self.check(p, turn(draft, delta='scene.participants: ["Redacted123", "Redacted648"]'))
+        draft = "Tova goes in.\n\nScene: Day 4 | Location: the yard | Present: Sabe"
+        got = self.check(p, turn(draft, delta='scene.participants: ["Wystan", "Sabe"]'))
         self.assertIn("arrival_departure", got["triggers"])
         self.assertEqual(got["route"]["beat"], "consequential")
 
     def test_fight_or_capture_is_consequential(self):
         p = Project(self)
-        got = self.check(p, turn(f"Redacted648 seizes him by the collar and ties him to the post.\n\n{ANCHOR}"))
+        got = self.check(p, turn(f"Sabe seizes him by the sleeve and ties him to the post.\n\n{ANCHOR}"))
         self.assertIn("fight_or_capture", got["triggers"])
 
     def test_validate_tag_forces_review(self):
         p = Project(self)
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}", keeper="I wait. [validate]"))
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}", keeper="I wait. [validate]"))
         self.assertEqual(got["route"]["next"], "review")
         self.assertIn("validate_tag", got["triggers"])
 
     def test_policy_every_restores_review_on_every_beat(self):
         p = Project(self)
         p.mode("turnGate:\n  review: every\n")
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}"))
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}"))
         self.assertEqual(got["route"]["next"], "review")
 
     def test_policy_lint_only_never_spends_a_model_call(self):
         p = Project(self)
         p.mode("turnGate:\n  review: lint-only\n")
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}", source="priced_stake_touched: true"))
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}", source="priced_stake_touched: true"))
         self.assertEqual(got["route"]["next"], "ship")
         self.assertEqual([line["path"] for line in p.log_lines()], ["lint", "skipped"])
 
@@ -822,7 +822,7 @@ class RouteTests(unittest.TestCase):
             "  consequentialPatterns: ['\\bPOW\\s+\\d+']\n"
             "extensions:\n  perTurnGate: continuity-reviewer\n"
         )
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}"))
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}"))
         self.assertEqual(got["route"]["max_rewrites"], 0)
         self.assertEqual(got["route"]["gm_model"], "haiku")
         self.assertEqual(got["route"]["reviewer_model"], "sonnet")
@@ -835,10 +835,10 @@ class RouteTests(unittest.TestCase):
         p = Project(self)
         p.mode(
             "mode: rp\ndefaultRunMode: gate          # solo = cheap\nmodels:\n  reviewer: sonnet\n  draft: null\n"
-            "slots:\n  bible: ${vault}/Lore/World/Characters/{Redacted1259,Redacted648}.md\n"
+            "slots:\n  bible: ${vault}/Canon/Characters/{Morwenna,Sabe}.md\n"
             "extensions:\n  perTurnGate: continuity-reviewer\n  ratification: [rp-ratifier, canon-writer]\n"
         )
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}"))
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}"))
         self.assertEqual(got["route"]["reviewer_model"], "haiku")
         self.assertEqual(got["route"]["policy"], "consequential")
         self.assertEqual(got["config_warnings"], [])
@@ -846,7 +846,7 @@ class RouteTests(unittest.TestCase):
     def test_bad_config_values_fall_back_with_a_warning(self):
         p = Project(self)
         p.mode("turnGate:\n  review: sometimes\n  models:\n    reviewer: gpt\n  rewrites:\n    routine: 9\n")
-        got = self.check(p, turn(f"Redacted648 nods.\n\n{ANCHOR}"))
+        got = self.check(p, turn(f"Sabe nods.\n\n{ANCHOR}"))
         self.assertEqual(got["route"]["policy"], "consequential")
         self.assertEqual(got["route"]["reviewer_model"], "haiku")
         self.assertEqual(got["route"]["max_rewrites"], 1)
@@ -854,12 +854,12 @@ class RouteTests(unittest.TestCase):
 
     def test_cast_from_config_extends_the_presence_check(self):
         p = Project(self)
-        p.mode("turnGate:\n  cast: [Redacted833]\n")
-        got = self.check(p, turn(f'Redacted833: "Coin."\n\n{ANCHOR}'))
+        p.mode("turnGate:\n  cast: [Dunn]\n")
+        got = self.check(p, turn(f'Dunn: "Coin."\n\n{ANCHOR}'))
         self.assertIn("lint:presence", got["route"]["reasons"])
 
 
-GM_TAIL = ("GM_SPAWN_LOG:\n- redacted648: NOT spawned (routine)\n\nSOURCE_LOG:\nsourced: []\npriced_stake_touched: false\n\n"
+GM_TAIL = ("GM_SPAWN_LOG:\n- sabe: NOT spawned (routine)\n\nSOURCE_LOG:\nsourced: []\npriced_stake_touched: false\n\n"
            "SCENE_STATE_DELTA:\nscene.time: \"15:00\"\n")
 
 
@@ -874,17 +874,17 @@ class TurnFileTests(unittest.TestCase):
 
     def test_the_five_blocks_are_written_in_order_and_a_preamble_dropped(self):
         p = Project(self)
-        text = (f"Here is the beat.\n\nKEEPER_INPUT:\nI keep working.\n\n**DRAFT:**\nRedacted648 nods.\n\n{ANCHOR}\n\n"
+        text = (f"Here is the beat.\n\nKEEPER_INPUT:\nI keep working.\n\n**DRAFT:**\nSabe nods.\n\n{ANCHOR}\n\n"
                 "```yaml\n" + GM_TAIL + "```\n")
         code, out, err = run("turn", "--project-dir", str(p.root), "--from", str(self.message(p, text)))
         self.assertEqual((code, err), (0, ""))
         report = json.loads(out)
         written = (p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8")
-        self.assertTrue(written.startswith("KEEPER_INPUT:\nI keep working.\n\nDRAFT:\nRedacted648 nods."))
+        self.assertTrue(written.startswith("KEEPER_INPUT:\nI keep working.\n\nDRAFT:\nSabe nods."))
         parsed = rp_gate.parse_turn(written)
         self.assertEqual(parsed["KEEPER_INPUT"], "I keep working.")
-        self.assertEqual(parsed["DRAFT"], f"Redacted648 nods.\n\n{ANCHOR}")
-        self.assertEqual(parsed["GM_SPAWN_LOG"], "- redacted648: NOT spawned (routine)")
+        self.assertEqual(parsed["DRAFT"], f"Sabe nods.\n\n{ANCHOR}")
+        self.assertEqual(parsed["GM_SPAWN_LOG"], "- sabe: NOT spawned (routine)")
         self.assertEqual(rp_gate.parse_delta(parsed["SCENE_STATE_DELTA"])[0], {"scene.time": "15:00"})
         self.assertEqual(report["keeper_input"], "message")
         self.assertEqual(report["dropped_before"], 1)
@@ -893,7 +893,7 @@ class TurnFileTests(unittest.TestCase):
     def test_the_keeper_input_comes_from_the_file_the_command_wrote(self):
         p = Project(self)
         self.message(p, "I keep working.\n", name="input.md")
-        text = f"DRAFT:\nRedacted648 nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+        text = f"DRAFT:\nSabe nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
         code, out, _err = run("turn", "--project-dir", str(p.root), "--from", str(self.message(p, text)),
                               "--input-file", "Work/rp/.gate/input.md")
         self.assertEqual(code, 0)
@@ -901,7 +901,7 @@ class TurnFileTests(unittest.TestCase):
         self.assertEqual(parsed["KEEPER_INPUT"], "I keep working.")
         self.assertEqual(json.loads(out)["keeper_input"], "file")
         # the file wins over a message block that differs, with a warning
-        text = f"KEEPER_INPUT:\nSomething else.\n\nDRAFT:\nRedacted648 nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+        text = f"KEEPER_INPUT:\nSomething else.\n\nDRAFT:\nSabe nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
         code, out, _err = run("turn", "--project-dir", str(p.root), "--from", str(self.message(p, text)),
                               "--input-file", "Work/rp/.gate/input.md")
         self.assertEqual(code, 0)
@@ -912,21 +912,21 @@ class TurnFileTests(unittest.TestCase):
     def test_a_message_opening_with_the_draft_itself(self):
         p = Project(self)
         self.message(p, "I keep working.\n", name="input.md")
-        text = f"Redacted648 nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+        text = f"Sabe nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
         code, _out, _err = run("turn", "--project-dir", str(p.root), "--from", str(self.message(p, text)),
                                "--input-file", "Work/rp/.gate/input.md")
         self.assertEqual(code, 0)
         parsed = rp_gate.parse_turn((p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8"))
-        self.assertEqual(parsed["DRAFT"], f"Redacted648 nods.\n\n{ANCHOR}")
+        self.assertEqual(parsed["DRAFT"], f"Sabe nods.\n\n{ANCHOR}")
 
     def test_no_block_several_or_out_of_order_refuses_and_writes_nothing(self):
         p = Project(self)
         self.message(p, "I keep working.\n", name="input.md")
         cases = {
-            "no GM block": f"Redacted648 nods.\n\n{ANCHOR}\n",
-            "no GM block (SOURCE_LOG missing)": f"Redacted648 nods.\n\n{ANCHOR}\n\nGM_SPAWN_LOG:\n- x\n\nSCENE_STATE_DELTA:\nnone\n",
-            "several": f"DRAFT:\nRedacted648 nods.\n\n{ANCHOR}\n\n{GM_TAIL}\nDRAFT:\nRedacted648 nods again.\n\n{ANCHOR}\n\n{GM_TAIL}",
-            "out of order": f"DRAFT:\nRedacted648 nods.\n\n{ANCHOR}\n\nSOURCE_LOG:\nsourced: []\n\nGM_SPAWN_LOG:\n- x\n\n"
+            "no GM block": f"Sabe nods.\n\n{ANCHOR}\n",
+            "no GM block (SOURCE_LOG missing)": f"Sabe nods.\n\n{ANCHOR}\n\nGM_SPAWN_LOG:\n- x\n\nSCENE_STATE_DELTA:\nnone\n",
+            "several": f"DRAFT:\nSabe nods.\n\n{ANCHOR}\n\n{GM_TAIL}\nDRAFT:\nSabe nods again.\n\n{ANCHOR}\n\n{GM_TAIL}",
+            "out of order": f"DRAFT:\nSabe nods.\n\n{ANCHOR}\n\nSOURCE_LOG:\nsourced: []\n\nGM_SPAWN_LOG:\n- x\n\n"
                             "SCENE_STATE_DELTA:\nnone\n",
             "no keeper input": None,
             "empty input file": "",
@@ -935,10 +935,10 @@ class TurnFileTests(unittest.TestCase):
             with self.subTest(label=label):
                 argv = ["turn", "--project-dir", str(p.root)]
                 if text is None:
-                    argv += ["--from", str(self.message(p, f"Redacted648 nods.\n\n{ANCHOR}\n\n{GM_TAIL}"))]
+                    argv += ["--from", str(self.message(p, f"Sabe nods.\n\n{ANCHOR}\n\n{GM_TAIL}"))]
                 elif text == "":
                     self.message(p, "", name="empty.md")
-                    argv += ["--from", str(self.message(p, f"Redacted648 nods.\n\n{ANCHOR}\n\n{GM_TAIL}")),
+                    argv += ["--from", str(self.message(p, f"Sabe nods.\n\n{ANCHOR}\n\n{GM_TAIL}")),
                              "--input-file", "Work/rp/.gate/empty.md"]
                 else:
                     argv += ["--from", str(self.message(p, text)), "--input-file", "Work/rp/.gate/input.md"]
@@ -951,7 +951,7 @@ class TurnFileTests(unittest.TestCase):
     def test_claude_task_output_jsonl_gives_the_final_assistant_text(self):
         p = Project(self)
         self.message(p, "I keep working.\n", name="input.md")
-        final = f"DRAFT:\nRedacted648 nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+        final = f"DRAFT:\nSabe nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
         lines = [
             {"type": "user", "message": {"role": "user", "content": "KEEPER_INPUT: I keep working."}},
             {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Reading."}]}},
@@ -964,7 +964,7 @@ class TurnFileTests(unittest.TestCase):
                               "--input-file", "Work/rp/.gate/input.md")
         self.assertEqual(code, 0)
         parsed = rp_gate.parse_turn((p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8"))
-        self.assertEqual(parsed["DRAFT"], f"Redacted648 nods.\n\n{ANCHOR}")
+        self.assertEqual(parsed["DRAFT"], f"Sabe nods.\n\n{ANCHOR}")
         self.assertEqual(json.loads(out)["format"], "claude-jsonl")
         code, _out, err = run("turn", "--project-dir", str(p.root), "--from", str(path),
                               "--input-file", "Work/rp/.gate/input.md")  # read as text: no block in it
@@ -972,15 +972,15 @@ class TurnFileTests(unittest.TestCase):
         self.assertIn("ERROR", err)
 
     def test_claude_task_output_takes_the_handback_over_a_later_note(self):
-        # B4380: the GM handed the beat back by a tool call, then a late character-agent alert woke it and its
+        # Seen live: the GM handed the beat back by a tool call, then a late character-agent alert woke it and its
         # final text was "Nothing left to do on this one"; the handback is the message.
         p = Project(self)
         self.message(p, "I keep working.\n", name="input.md")
-        handback = f"KEEPER_INPUT:\nI keep working.\n\nDRAFT:\nRedacted648 nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+        handback = f"KEEPER_INPUT:\nI keep working.\n\nDRAFT:\nSabe nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
         lines = [
             {"type": "user", "message": {"role": "user", "content": "KEEPER_INPUT: I keep working."}},
             {"type": "assistant", "message": {"role": "assistant", "content": [
-                {"type": "text", "text": "Waiting for Redacted648's agent to return before drafting."}]}},
+                {"type": "text", "text": "Waiting for Sabe's agent to return before drafting."}]}},
             {"type": "assistant", "message": {"role": "assistant", "content": [
                 {"type": "tool_use", "id": "h", "name": "SubagentHandback", "input": {"message": handback}}]}},
             {"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "ok"}]}},
@@ -992,37 +992,37 @@ class TurnFileTests(unittest.TestCase):
                              "--input-file", "Work/rp/.gate/input.md")
         self.assertEqual((code, err), (0, ""))
         parsed = rp_gate.parse_turn((p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8"))
-        self.assertEqual(parsed["DRAFT"], f"Redacted648 nods.\n\n{ANCHOR}")
+        self.assertEqual(parsed["DRAFT"], f"Sabe nods.\n\n{ANCHOR}")
         self.assertEqual(json.loads(out)["warnings"], [])
 
     def test_a_bare_draft_header_opens_the_draft_and_a_sentence_before_it_is_dropped(self):
-        # B4393 and B4394: the GM wrote "DRAFT" on a line of its own, no colon; the line and the sentence
+        # Seen live: the GM wrote "DRAFT" on a line of its own, no colon; the line and the sentence
         # before it went into the draft.
         p = Project(self)
         self.message(p, "I keep working.\n", name="input.md")
         for header in ("DRAFT", "**DRAFT**", "## DRAFT"):
             with self.subTest(header=header):
-                text = f"My hand-back was refused, so the draft is below.\n\n{header}\n\nRedacted648 nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+                text = f"My hand-back was refused, so the draft is below.\n\n{header}\n\nSabe nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
                 code, out, err = run("turn", "--project-dir", str(p.root), "--from", str(self.message(p, text)),
                                      "--input-file", "Work/rp/.gate/input.md")
                 self.assertEqual((code, err), (0, ""))
                 parsed = rp_gate.parse_turn((p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8"))
-                self.assertEqual(parsed["DRAFT"], f"Redacted648 nods.\n\n{ANCHOR}")
+                self.assertEqual(parsed["DRAFT"], f"Sabe nods.\n\n{ANCHOR}")
                 self.assertEqual(json.loads(out)["dropped_before"], 1)
         # a header's name inside a sentence is prose
-        text = f"Redacted648 reads the DRAFT of the notice and nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+        text = f"Sabe reads the DRAFT of the notice and nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
         code, _out, _err = run("turn", "--project-dir", str(p.root), "--from", str(self.message(p, text)),
                                "--input-file", "Work/rp/.gate/input.md")
         self.assertEqual(code, 0)
         parsed = rp_gate.parse_turn((p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8"))
-        self.assertEqual(parsed["DRAFT"], f"Redacted648 reads the DRAFT of the notice and nods.\n\n{ANCHOR}")
+        self.assertEqual(parsed["DRAFT"], f"Sabe reads the DRAFT of the notice and nods.\n\n{ANCHOR}")
 
-    def b4394_lines(self, final_text, after_status=True):
-        """The shape of the B4394 GM transcript: a STATUS handback (its one report), the character agent's
+    def status_handback_lines(self, final_text, after_status=True):
+        """The shape of a live GM transcript: a STATUS handback (its one report), the character agent's
         result, a second handback the harness refused, then a final text carrying the blocks."""
-        status = ("STATUS: Redacted973's character agent is still running. I have not drafted yet.\n\n"
-                  "Scene anchor to use: " + ANCHOR + "\n\nGM_SPAWN_LOG:\n  - redacted648: spawned, in flight, no result yet.")
-        draft = f"DRAFT\n\nRedacted648 nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+        status = ("STATUS: Nessa's character agent is still running. I have not drafted yet.\n\n"
+                  "Scene anchor to use: " + ANCHOR + "\n\nGM_SPAWN_LOG:\n  - sabe: spawned, in flight, no result yet.")
+        draft = f"DRAFT\n\nSabe nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
         lines = [
             {"type": "user", "message": {"role": "user", "content": "KEEPER_INPUT: I keep working."}},
             {"type": "assistant", "message": {"role": "assistant", "content": [
@@ -1037,9 +1037,9 @@ class TurnFileTests(unittest.TestCase):
         ]
         if after_status:
             lines += [
-                {"type": "user", "message": {"role": "user", "content": "<agent-message>character: Redacted648 ...</agent-message>"}},
+                {"type": "user", "message": {"role": "user", "content": "<agent-message>character: Sabe ...</agent-message>"}},
                 {"type": "assistant", "message": {"role": "assistant", "content": [
-                    {"type": "text", "text": "Redacted648's agent returned, so this is the draft.\n\n" + draft}]}},
+                    {"type": "text", "text": "Sabe's agent returned, so this is the draft.\n\n" + draft}]}},
                 {"type": "assistant", "message": {"role": "assistant", "content": [
                     {"type": "tool_use", "id": "h2", "name": "SubagentHandback", "input": {"message": draft}}]}},
                 {"type": "user", "message": {"role": "user", "content": [
@@ -1052,20 +1052,20 @@ class TurnFileTests(unittest.TestCase):
         return lines
 
     def test_claude_task_output_takes_the_final_draft_over_a_status_handback(self):
-        # B4394: the GM spent its one handback on a status note, its second handback was refused, and its final
+        # Seen live: the GM spent its one handback on a status note, its second handback was refused, and its final
         # text carried the draft under a bare DRAFT line: the final draft is the message, its sentence dropped.
         p = Project(self)
         self.message(p, "I keep working.\n", name="input.md")
         final = ("My second hand-back was rejected, so it never arrived. The draft is below.\n\n"
-                 f"DRAFT\n\nRedacted648 nods.\n\n{ANCHOR}\n\n{GM_TAIL}")
-        path = self.message(p, "".join(json.dumps(line) + "\n" for line in self.b4394_lines(final)), name="task.jsonl")
+                 f"DRAFT\n\nSabe nods.\n\n{ANCHOR}\n\n{GM_TAIL}")
+        path = self.message(p, "".join(json.dumps(line) + "\n" for line in self.status_handback_lines(final)), name="task.jsonl")
         code, out, err = run("turn", "--project-dir", str(p.root), "--from", str(path), "--format", "claude-jsonl",
                              "--input-file", "Work/rp/.gate/input.md")
         self.assertEqual((code, err), (0, ""))
         parsed = rp_gate.parse_turn((p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8"))
-        self.assertEqual(parsed["DRAFT"], f"Redacted648 nods.\n\n{ANCHOR}")
+        self.assertEqual(parsed["DRAFT"], f"Sabe nods.\n\n{ANCHOR}")
         self.assertNotIn("STATUS", parsed["DRAFT"])
-        self.assertEqual(parsed["GM_SPAWN_LOG"], "- redacted648: NOT spawned (routine)")
+        self.assertEqual(parsed["GM_SPAWN_LOG"], "- sabe: NOT spawned (routine)")
         self.assertEqual(json.loads(out)["dropped_before"], 1)
 
     def test_claude_task_output_never_takes_a_status_handback(self):
@@ -1074,8 +1074,8 @@ class TurnFileTests(unittest.TestCase):
         p = Project(self)
         self.message(p, "I keep working.\n", name="input.md")
         cases = {
-            "status, then nothing": self.b4394_lines(None, after_status=False),
-            "status, then a note with no blocks": self.b4394_lines(None, after_status=False) + [
+            "status, then nothing": self.status_handback_lines(None, after_status=False),
+            "status, then a note with no blocks": self.status_handback_lines(None, after_status=False) + [
                 {"type": "user", "message": {"role": "user", "content": "Continue the beat."}},
                 {"type": "assistant", "message": {"role": "assistant", "content": [
                     {"type": "text", "text": "I handed back a status note and have no draft to give."}]}}],
@@ -1091,19 +1091,19 @@ class TurnFileTests(unittest.TestCase):
                 self.assertEqual(out, "")
                 self.assertFalse((p.root / "Work/rp/.gate/turn.md").exists())
         # a handback the harness refused still carries the GM's draft: it is the message when nothing follows it
-        lines = self.b4394_lines(None)
+        lines = self.status_handback_lines(None)
         path = self.message(p, "".join(json.dumps(line) + "\n" for line in lines), name="task.jsonl")
         code, _out, err = run("turn", "--project-dir", str(p.root), "--from", str(path), "--format", "claude-jsonl",
                               "--input-file", "Work/rp/.gate/input.md")
         self.assertEqual((code, err), (0, ""))
         parsed = rp_gate.parse_turn((p.root / "Work/rp/.gate/turn.md").read_text(encoding="utf-8"))
-        self.assertEqual(parsed["DRAFT"], f"Redacted648 nods.\n\n{ANCHOR}")
+        self.assertEqual(parsed["DRAFT"], f"Sabe nods.\n\n{ANCHOR}")
 
     def test_the_written_file_checks_like_a_hand_written_one(self):
         p = Project(self)
         session = p.session()
         self.message(p, "I keep working.\n", name="input.md")
-        text = f"A word first.\n\nDRAFT:\nRedacted648 nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
+        text = f"A word first.\n\nDRAFT:\nSabe nods.\n\n{ANCHOR}\n\n{GM_TAIL}"
         code, _out, _err = run("turn", "--project-dir", str(p.root), "--from", str(self.message(p, text)),
                                "--input-file", "Work/rp/.gate/input.md")
         self.assertEqual(code, 0)
@@ -1120,7 +1120,7 @@ class LogTests(unittest.TestCase):
         p = Project(self)
         p.session()
         session = "Work/rp/rp_session_2026-10-17.md"
-        tf = p.turn_file(turn(f'Redacted1264: "Hang it."\n\n{ANCHOR}'))
+        tf = p.turn_file(turn(f'Orm: "Hang it."\n\n{ANCHOR}'))
         run("check", "--project-dir", str(p.root), "--session-file", session, "--turn-file", str(tf), "--beat", "B12")
         for args in (
             ("--path", "review", "--model", "haiku", "--verdict", "violations_found", "--violations", "presence"),
@@ -1145,7 +1145,7 @@ class LogTests(unittest.TestCase):
     def test_no_log_flag_writes_nothing(self):
         p = Project(self)
         p.session()
-        tf = p.turn_file(turn(f"Redacted648 nods.\n\n{ANCHOR}"))
+        tf = p.turn_file(turn(f"Sabe nods.\n\n{ANCHOR}"))
         run("check", "--project-dir", str(p.root), "--session-file", "Work/rp/rp_session_2026-10-17.md",
             "--turn-file", str(tf), "--no-log")
         self.assertEqual(p.log_lines(), [])
@@ -1197,24 +1197,24 @@ campaign: "Test"
 currentDate: "Day 195 (Sunday)"
 currentLocation: "the yard"
 currentTime: "15:00"
-participants: ["Redacted123", "Redacted648", "Redacted695"]
+participants: ["Wystan", "Sabe", "Tova"]
 {extra}scene:
   time: "15:00"
   location: "the yard"
   participants:
-    - name: "Redacted123"
+    - name: "Wystan"
       role: "PC (calm)"
-    - name: "Redacted648"
+    - name: "Sabe"
       role: "NPC"
-    - name: "Redacted695"
+    - name: "Tova"
       role: "NPC"
 ---
 """
 
 HEADER = """
-# RP Session 2026-10-24: Redacted123, Day 195 afternoon onward
+# RP Session 2026-10-24: Wystan, Day 195 afternoon onward
 
-Continues the 10-17 log (closed at B4099). Summary: `Work/rp/summaries/x.md`. State: `Work/rp/redacted123/redacted123.md`
+Continues the 10-17 log (closed at B4099). Summary: `Work/rp/summaries/x.md`. State: `Work/rp/wystan/wystan.md`
 § Run state ("Closed" line). Beat numbering resumes at 4100.
 
 **Standing since D174:** the Warden is dead. No board is held.
@@ -1232,15 +1232,15 @@ DAY_PLAN = """
 
 ### Beat 4100: Day 195, ~15:00 (Sunday)
 
-Redacted648 sets down the drawknife.
+Sabe sets down the drawknife.
 """
 
 RUN_STATE_FILE = """---
-character: "Redacted123"
+character: "Wystan"
 status: "paused at Beat 83, Day 31 (2026-09-25)"
 ---
 
-# Redacted123
+# Wystan
 
 ## Sheet
 
@@ -1285,16 +1285,16 @@ conflicts_flagged: 1
 
 ### Warden
 
-- **Arc status (CLOSED)** `[KEEPER-LOCKED]`: the pilgrimage is complete.
+- **Arc status (CLOSED)** `[KEEPER-LOCKED]`: the debt is settled.
 
-### Redacted123 (PC)
+### Wystan (PC)
 
-- **Run state block** at the foot of `Work/rp/redacted123/redacted123.md` is the only PC state the GM updates.
-- Fed once (D32) is history; the calendar ruling says Day 36 = Tuesday.
+- **Run state block** at the foot of `Work/rp/wystan/wystan.md` is the only PC state the GM updates.
+- Paid once (D32) is history; the harbour calendar names Day 36 a feast day.
 
 ## Mechanical Rules
 
-- **Resistance**: 50 + caster's POW - target's current POW (current POW from the run state).
+- **Ward strength**: 40 + the warden's POW - the intruder's current POW (current POW from the run state).
 
 ## World and Timeline Facts
 
@@ -1311,12 +1311,12 @@ Timeline State: example
 """
 
 LIVE_LINES = {
-    "snapshot": "> **This projection is the run begun 2026-09-24, now at Day 60.**",
-    "label": "- **Run state (Day 60, Friday, ~18:45, Beat 342 closed; resumes Beat 343)**: his own frame.",
-    "clocks": "- **Live clocks**: treads 23-29 to fit.",
+    "snapshot": "> **This projection is the run begun 2026-01-05, now at Day 41.**",
+    "label": "- **Run state (Day 41, Friday, ~11:20, Beat 210 closed; resumes Beat 211)**: the mended boot.",
+    "clocks": "- **Live clocks**: nets 3-5 to mend.",
     "heading": "## Timeline State `[KEEPER-LOCKED]`",
-    "vessel": "- **Current vessel (session-local)**: Redacted123, Day 60.",
-    "resumes": "The run resumes at Beat 343 at the gate.",
+    "vessel": "- **Current vessel (session-local)**: Wystan, Day 41.",
+    "resumes": "The run resumes at Beat 211 at the quay.",
 }
 
 
@@ -1324,7 +1324,7 @@ class LiveStateProject(Project):
     def live_session(self, name="rp_session_2026-10-24.md", extra="", header=HEADER, plan=DAY_PLAN):
         return self.session(name, LIVE_FRONTMATTER.format(extra=extra) + header + plan)
 
-    def run_state(self, path="Work/rp/redacted123/redacted123.md", body=RUN_STATE_FILE):
+    def run_state(self, path="Work/rp/wystan/wystan.md", body=RUN_STATE_FILE):
         target = self.root / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(body, encoding="utf-8")
@@ -1350,7 +1350,7 @@ class LiveStateTests(unittest.TestCase):
         target = p.run_state()
         got = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
         rs = got["run_state"]
-        self.assertEqual(rs["path"], "Work/rp/redacted123/redacted123.md")
+        self.assertEqual(rs["path"], "Work/rp/wystan/wystan.md")
         self.assertEqual(rs["source"], "header")
         self.assertEqual(rs["section"], "Run state")
         self.assertEqual(rs["heading_line"], line_of(target, "## Run state (one page — the GM updates this, nothing else)"))
@@ -1415,11 +1415,11 @@ class LiveStateTests(unittest.TestCase):
         self.assertEqual(code, 0)
         live = json.loads(out)["live_state"]
         self.assertEqual(live["session_file"], "Work/rp/rp_session_2026-10-24.md")
-        self.assertEqual(live["run_state"]["path"], "Work/rp/redacted123/redacted123.md")
+        self.assertEqual(live["run_state"]["path"], "Work/rp/wystan/wystan.md")
 
     def test_malformed_frontmatter_pointer_warns_instead_of_falling_back(self):
         p = LiveStateProject(self)
-        p.live_session(extra="run_state:\n  - Work/rp/redacted123/redacted123.md\n")
+        p.live_session(extra="run_state:\n  - Work/rp/wystan/wystan.md\n")
         p.run_state()
         got = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
         self.assertIsNone(got["run_state"])
@@ -1448,7 +1448,7 @@ class LiveStateTests(unittest.TestCase):
     def test_run_state_file_without_the_section_warns(self):
         p = LiveStateProject(self)
         p.live_session()
-        p.run_state(body="# Redacted123\n\n## Sheet\n\nSTR 80.\n")
+        p.run_state(body="# Wystan\n\n## Sheet\n\nSTR 80.\n")
         got = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
         self.assertIsNone(got["run_state"])
         self.assertTrue(any("Run state" in w for w in got["warnings"]))
@@ -1465,10 +1465,11 @@ class LiveStateTests(unittest.TestCase):
         self.assertEqual((got["state_date"], got["state_date_source"]), ("2026-10-24", "session"))
 
     def test_the_tool_names_no_campaign(self):
-        # The state files are resolved from the session, never from a run's name.
-        source = SCRIPT.read_text(encoding="utf-8").lower()
-        for name in ("redacted477", "gilt thorn"):
-            self.assertNotIn(name, source)
+        # The state files are resolved from the session, never from a run's name: the only directories
+        # under Work/rp/ the tool names are its own, so no campaign's directory is built in.
+        source = SCRIPT.read_text(encoding="utf-8")
+        named = set(re.findall(r"Work/rp/([A-Za-z0-9_.-]+)/", source))
+        self.assertLessEqual(named, {".gate", "summaries", "characters", "pending-canon"}, named)
 
 
 class InvariantsTests(unittest.TestCase):
@@ -1554,7 +1555,7 @@ class InvariantsTests(unittest.TestCase):
 
     def test_check_reports_and_logs_the_warnings(self):
         p = self.project(STATIC_INVARIANTS.format(extracted="2026-09-27") + "\n" + LIVE_LINES["heading"] + "\n")
-        tf = p.turn_file(turn(f'Redacted648 sets down the drawknife.\n\n{ANCHOR}'))
+        tf = p.turn_file(turn(f'Sabe sets down the drawknife.\n\n{ANCHOR}'))
         code, out, err = run("check", "--project-dir", str(p.root), "--session-file",
                              "Work/rp/rp_session_2026-10-24.md", "--turn-file", str(tf))
         self.assertEqual(code, 0, err)
@@ -1565,7 +1566,7 @@ class InvariantsTests(unittest.TestCase):
     def test_check_without_invariants_is_unchanged(self):
         p = LiveStateProject(self)
         p.live_session()
-        tf = p.turn_file(turn(f'Redacted648 sets down the drawknife.\n\n{ANCHOR}'))
+        tf = p.turn_file(turn(f'Sabe sets down the drawknife.\n\n{ANCHOR}'))
         code, out, err = run("check", "--project-dir", str(p.root), "--session-file",
                              "Work/rp/rp_session_2026-10-24.md", "--turn-file", str(tf))
         self.assertEqual(code, 0, err)
@@ -1614,7 +1615,7 @@ class LiveStateReviewTests(unittest.TestCase):
             "- **Scene state**: every beat closes with a SCENE_STATE_DELTA.",
             "- **Current state:** read from the session, never from here.",
             "- **Live state** comes from the session header.",
-            "- **Witness arc**: CLOSED; Beat 3217 closed it.",
+            "- **Debt arc**: CLOSED; Beat 97 closed it.",
             "The cycle resumes at Day 1 after each reset.",
             "~~~\n## Timeline State\n~~~",
             "One line ```Timeline State``` of code.",
@@ -1625,12 +1626,12 @@ class LiveStateReviewTests(unittest.TestCase):
 
     def test_more_live_state_shapes_are_flagged(self):
         for line in (
-            "- Run state: Day 60, Beat 342.",
+            "- Run state: Day 41, Beat 210.",
             "## Current State",
             "## Live State",
             "## 3. Timeline State",
-            "- **Run state (Day 60)** `[KEEPER-LOCKED]`: his own frame.",
-            "- **Live clocks** (session-local): treads 23-29.",
+            "- **Run state (Day 41)** `[KEEPER-LOCKED]`: the mended boot.",
+            "- **Live clocks** (session-local): nets 3-5.",
             "Play is now at D195, B4099 closed; resumes B4100.",
         ):
             with self.subTest(line=line):
@@ -1652,16 +1653,16 @@ class LiveStateReviewTests(unittest.TestCase):
 
     def test_hits_inside_locked_content_are_marked_locked(self):
         body = STATIC_INVARIANTS.format(extracted="2026-10-25") + (
-            "\n## Timeline State `[KEEPER-LOCKED]`\n\n### Active\n\n- **Current vessel (session-local)**: Redacted123, Day 60.\n"
-            "\n## Protocol Requirements\n\n- **Live clocks**: treads 23-29.\n"
-            "- **Run state (Day 60)** `[KEEPER-LOCKED]`: his own frame.\n")
+            "\n## Timeline State `[KEEPER-LOCKED]`\n\n### Active\n\n- **Current vessel (session-local)**: Wystan, Day 41.\n"
+            "\n## Protocol Requirements\n\n- **Live clocks**: nets 3-5.\n"
+            "- **Run state (Day 41)** `[KEEPER-LOCKED]`: the mended boot.\n")
         p, report = self.report_for("", body=body)
         path = p.root / "Memory/invariants.md"
         hits = {h["line"]: h["locked"] for w in report["warnings"] if w["kind"] == "live_state" for h in w["hits"]}
         self.assertTrue(hits[line_of(path, "## Timeline State `[KEEPER-LOCKED]`")])
-        self.assertTrue(hits[line_of(path, "- **Current vessel (session-local)**: Redacted123, Day 60.")])
-        self.assertFalse(hits[line_of(path, "- **Live clocks**: treads 23-29.")])
-        self.assertTrue(hits[line_of(path, "- **Run state (Day 60)** `[KEEPER-LOCKED]`: his own frame.")])
+        self.assertTrue(hits[line_of(path, "- **Current vessel (session-local)**: Wystan, Day 41.")])
+        self.assertFalse(hits[line_of(path, "- **Live clocks**: nets 3-5.")])
+        self.assertTrue(hits[line_of(path, "- **Run state (Day 41)** `[KEEPER-LOCKED]`: the mended boot.")])
         live = next(w for w in report["warnings"] if w["kind"] == "live_state")
         self.assertTrue(live["locked"])
 
@@ -1695,16 +1696,16 @@ class LiveStateReviewTests(unittest.TestCase):
     def test_header_pointer_skips_other_kinds_of_state(self):
         p = LiveStateProject(self)
         header = ("\n# RP Session\n\nScene state: `Work/rp/scenes/yard.md` (map). "
-                  "State: `Work/rp/redacted123/redacted123.md` § Run state.\n")
+                  "State: `Work/rp/wystan/wystan.md` § Run state.\n")
         p.live_session(header=header)
         p.run_state()
         rs = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")["run_state"]
-        self.assertEqual(rs["path"], "Work/rp/redacted123/redacted123.md")
+        self.assertEqual(rs["path"], "Work/rp/wystan/wystan.md")
 
     def test_a_pointer_at_the_invariants_is_refused(self):
         p = LiveStateProject(self)
         p.live_session(extra='run_state: "Memory/invariants.md#Timeline State"\n')
-        p.invariants(STATIC_INVARIANTS.format(extracted="2026-10-25") + "\n## Timeline State\n\nDay 60.\n")
+        p.invariants(STATIC_INVARIANTS.format(extracted="2026-10-25") + "\n## Timeline State\n\nDay 41.\n")
         got = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
         self.assertIsNone(got["run_state"])
         self.assertTrue(any("invariants" in w for w in got["warnings"]))
@@ -1712,7 +1713,7 @@ class LiveStateReviewTests(unittest.TestCase):
     def test_section_prefers_the_exact_heading(self):
         p = LiveStateProject(self)
         p.live_session()
-        target = p.run_state(body="# Redacted123\n\n## Run state history\n\nOld.\n\n## Run state\n\n**Closed: Day 9.**\n")
+        target = p.run_state(body="# Wystan\n\n## Run state history\n\nOld.\n\n## Run state\n\n**Closed: Day 9.**\n")
         rs = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")["run_state"]
         self.assertEqual(rs["heading_line"], line_of(target, "## Run state"))
 
@@ -1724,8 +1725,8 @@ class LiveStateReviewTests(unittest.TestCase):
 
     def test_empty_header_and_empty_current_entry_are_null(self):
         p = LiveStateProject(self)
-        p.live_session(extra='run_state: "Work/rp/redacted123/redacted123.md"\n', header="", plan="## Day Plan: Day 195\n")
-        p.run_state(body="# Redacted123\n\n## Run state\n\n### Workings\n\n- smooth skin\n")
+        p.live_session(extra='run_state: "Work/rp/wystan/wystan.md"\n', header="", plan="## Day Plan: Day 195\n")
+        p.run_state(body="# Wystan\n\n## Run state\n\n### Workings\n\n- steady hands\n")
         got = rp_gate.live_state(p.root, "Work/rp/rp_session_2026-10-24.md", today="2026-10-25")
         self.assertIsNone(got["header"])
         self.assertIsNone(got["run_state"]["current"])

@@ -87,12 +87,12 @@ The stitched summary's state at close and the block both come from the `run:` bl
 
 ```markdown
 ---
-character: "Redacted123"
+character: "Wystan"
 last_updated: "2026-02-03"
 fiction_date: "<fiction-date>"
 ---
 
-# Redacted123 - Current State
+# Wystan - Current State
 
 ## Stats
 - HP: 12/12
@@ -106,12 +106,12 @@ fiction_date: "<fiction-date>"
 - [list any changes]
 
 ## Relationship Updates
-- the Proprietor: Initial contact established
+- the Tapster: Initial contact established
 ```
 
 ### Step 5: Canon Ratification (NEW — gate before promotion)
 
-Before any canon is promoted to `Lore/`, the Keeper ratifies each proposed addition. This protects against auto-promoting items the Keeper does not want canonized, and against promoting items that conflict with existing invariants.
+Before any canon is promoted to `Canon/`, the Keeper ratifies each proposed addition. This protects against auto-promoting items the Keeper does not want canonized, and against promoting items that conflict with existing invariants.
 
 **Preconditions**:
 
@@ -189,11 +189,11 @@ Resolve every destination from `Memory/canon-layout.md` (*Entity paths* table) �
 
 | Type | Destination (default — see register) | Update Style |
 |------|-------------|--------------|
-| Locations | `location` → `Lore/World/Places/` | Create or expand |
-| Characters | `character` → `Lore/World/Characters/` | Add relationships, details |
-| Artifacts | `artifact` → `Lore/World/Magic/Artefacts/` | Create new |
-| Magic | `magic` → `Lore/World/Magic/` | Document new spells/effects |
-| Factions | `faction` → `Lore/World/Factions/` | Update membership, goals |
+| Locations | `location` → `Canon/Places/` | Create or expand |
+| Characters | `character` → `Canon/Characters/` | Add relationships, details |
+| Artifacts | `artifact` → `Canon/Items/` | Create new |
+| Magic | `magic` → `Canon/Magic/` | Document new spells/effects |
+| Factions | `faction` → `Canon/Factions/` | Update membership, goals |
 
 Never invent a destination. If a ratified item has no matching kind in the register, stop and ask the Keeper where it belongs — writing canon to a guessed path scatters the source of truth, and the next lookup will not find it.
 

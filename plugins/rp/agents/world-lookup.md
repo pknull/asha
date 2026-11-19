@@ -16,9 +16,9 @@ Resolve proper nouns and world references by searching both the project's canoni
 The GM orchestrator spawns you with:
 
 ```yaml
-QUERY: "Ashfield House"
+QUERY: "The Pewter Gull"
 CONTEXT: |
-  PC mentioned wanting to visit "Ashfield House" to meet a contact.
+  PC mentioned wanting to visit "The Pewter Gull" to meet a contact.
   Scene is set in the campaign setting.
 TYPE_HINT: "location|character|artifact|faction|magic|any"
 SESSION_FILE: "Work/rp/<campaign>/log/day-0042.md"  # Current day file, for pending canon
@@ -35,18 +35,18 @@ If `Memory/canon-layout.md` does not exist, fall back to the historical default 
 
 | Type Hint | Default search paths (fallback only) |
 |-----------|---------------------|
-| location | `Lore/World/Places/**/*.md` |
-| character | `Lore/World/Characters/*.md`, `Lore/TTRPG/Redacted910/Characters/*.md` |
-| artifact | `Lore/World/Magic/Artefacts/*.md` |
-| faction | `Lore/World/Factions/*.md` |
-| magic | `Lore/World/Magic/*.md`, `Lore/World/Magic/Spheres/*.md` |
+| location | `Canon/Places/**/*.md` |
+| character | `Canon/Characters/*.md`, `Canon/Sheets/*.md` |
+| artifact | `Canon/Items/*.md` |
+| faction | `Canon/Factions/*.md` |
+| magic | `Canon/Magic/*.md`, `Canon/Magic/Schools/*.md` |
 | any | All of the above |
 
 **Search Strategy (index first):**
 
-The canon vault is an OKF bundle when its root (the directory the register's globs sit under, `Lore/` by default) holds `.okfconfig`, `.okfignore` or an `index.md` declaring `okf_version`, and then every directory in it carries a generated `index.md` whose lines read `- [Title](./Note.md): one-line description`. The GM brief already lists the entries whose titles the Keeper's input or the last beats name (its `=== Canon index ===` section); you are spawned for a noun that section did not resolve, so start one level up from the files:
+The canon vault is an OKF bundle when its root (the directory the register's globs sit under, `Canon/` by default) holds `.okfconfig`, `.okfignore` or an `index.md` declaring `okf_version`, and then every directory in it carries a generated `index.md` whose lines read `- [Title](./Note.md): one-line description`. The GM brief already lists the entries whose titles the Keeper's input or the last beats name (its `=== Canon index ===` section); you are spawned for a noun that section did not resolve, so start one level up from the files:
 
-1. Read the `index.md` of each directory the register's globs point at (`Lore/World/Places/index.md` for `location`). Match the query against the entry titles, then against the descriptions: a description names the household a character belongs to, the parent place, an alias. Follow a child directory line (`- [Redacted524](./Redacted524/index.md)`) only when its name or its parent's description fits the query.
+1. Read the `index.md` of each directory the register's globs point at (`Canon/Places/index.md` for `location`). Match the query against the entry titles, then against the descriptions: a description names the household a character belongs to, the parent place, an alias. Follow a child directory line (`- [Salt Marsh Island](./Salt%20Marsh%20Island/index.md)`) only when its name or its parent's description fits the query.
 2. Open only the notes whose entry matched; read the frontmatter first, the body only when the entry says the note is relevant.
 3. Fall back to Glob on the file name and Grep for the term in the register's paths only when no index led to it, and say so in the response (`searched` names the indexes read and then the globs).
 
@@ -77,27 +77,27 @@ Combine canonical and session findings. Canonical takes precedence for conflicts
 ```yaml
 found: true|false
 canonical:
-  name: "Ashfield House"
+  name: "The Pewter Gull"
   type: "location"
-  file_path: "Lore/World/Places/the town/Ashfield House.md"
+  file_path: "Canon/Places/Saltmere/The Pewter Gull.md"
   description: |
-    A high-class establishment on the edge of the town's respectable district.
-    Known for its red velvet curtains and discretion. Frequented by academics
-    seeking conversation away from the Academy's watchful eyes.
+    A dockside tavern at the end of Saltmere's long quay.
+    Known for its tide tables and its short memory. Frequented by pilots
+    trading news away from the Conclave's clerks.
   related_entities:
-    - name: "the Rival"
+    - name: "the Harbourmaster"
       type: "character"
-      relationship: "proprietor"
-    - name: "the town"
+      relationship: "landlord"
+    - name: "Saltmere"
       type: "location"
       relationship: "parent location"
   tags: ["social", "information-gathering", "neutral-ground"]
 session_additions:
-  - "Redacted123 mentioned a back room used for 'special meetings'"
-  - "The bartender seems to recognize Academy insignia"
+  - "Wystan mentioned a cellar room used for 'special meetings'"
+  - "The tapster seems to recognize Conclave seals"
 alternatives:
-  - name: "The Velvet Room"
-    file_path: "Lore/World/Places/..."
+  - name: "The Pewter Lantern"
+    file_path: "Canon/Places/..."
     reason: "Partial name match - different location"
 ```
 
@@ -105,14 +105,14 @@ alternatives:
 
 ```yaml
 found: false
-query: "Ashfield House"
+query: "The Pewter Gull"
 searched:
-  - "Lore/World/Places/index.md (and the child indexes its description fit: none)"
-  - "Lore/World/Places/**/*.md"
+  - "Canon/Places/index.md (and the child indexes its description fit: none)"
+  - "Canon/Places/**/*.md"
   - "Work/rp/<campaign>/log/day-0042.md"
 suggestions:
   - "May be a new location - GM should establish details"
-  - "Similar: 'The Velvet Room' in Redacted379 section"
+  - "Similar: 'The Pewter Lantern' in the Saltmere section"
 session_context: |
   No prior references found in current session.
 ```
@@ -123,21 +123,21 @@ session_context: |
 
 ```bash
 # Glob for file name match
-Lore/World/Places/**/*Velvet*Lounge*.md
+Canon/Places/**/*Pewter*Gull*.md
 ```
 
 ### Content Search
 
 ```bash
 # Grep for term in content
-Grep "Ashfield House" in Lore/World/Places/
+Grep "The Pewter Gull" in Canon/Places/
 ```
 
 ### Fuzzy Matching
 
 If exact match fails:
 
-1. Try partial name components ("Velvet", "Lounge")
+1. Try partial name components ("Pewter", "Gull")
 2. Search for aliases or alternate names
 3. Check session file for first introduction
 
@@ -157,7 +157,7 @@ If exact match fails:
 
 ### Magic/Artifacts
 
-- Reference Wizardry mechanics if applicable
+- Reference the setting's magic rules if applicable
 - Note any restrictions or costs
 - Include provenance if known
 

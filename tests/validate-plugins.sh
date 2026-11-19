@@ -586,6 +586,40 @@ else
 fi
 fi
 
+# Test 7: asha is public. No tracked file may name a private project of the
+# owner's (campaigns, characters, books, private repositories). The names come
+# from a local config that is never committed (tests/check-private-names.py),
+# so without one, in CI, the check reports a skip; so does a copied tree that
+# lacks the script. Hits print as file:line (a path can itself be the hit).
+echo -n "Test 7: No private project names in tracked files... "
+NAMES_CHECK="$REPO_ROOT/tests/check-private-names.py"
+if [[ ! -f "$NAMES_CHECK" ]]; then
+    echo -e "${GREEN}PASS${NC} (skipped: tests/check-private-names.py not in this tree)"
+    PASSED=$((PASSED + 1))
+else
+    names_rc=0
+    names_out="$(python3 "$NAMES_CHECK" --root "$REPO_ROOT" --locations 2>&1)" || names_rc=$?
+    if [[ $names_rc -eq 0 ]]; then
+        if [[ "$names_out" == *"skipped"* ]]; then
+            echo -e "${GREEN}PASS${NC} (skipped: no local private-names config)"
+        else
+            echo -e "${GREEN}PASS${NC}"
+        fi
+        PASSED=$((PASSED + 1))
+    else
+        echo -e "${RED}FAIL${NC}"
+        # --locations prints file:line, for logs that may be pasted publicly (a path can itself be a hit). Any
+        # other failure prints nothing of the config (it may name private paths).
+        if [[ $names_rc -eq 1 ]]; then
+            printf '%s\n' "$names_out" | grep -v '^check-private-names:' | head -20 | sed 's/^/  /' || true
+            echo "  (run tests/check-private-names.py to see the names)"
+        else
+            echo "  check-private-names could not run (exit $names_rc); run it directly to see why"
+        fi
+        FAILED=$((FAILED + 1))
+    fi
+fi
+
 echo ""
 echo "=== Test Summary ==="
 echo -e "Passed: ${GREEN}$PASSED${NC}"

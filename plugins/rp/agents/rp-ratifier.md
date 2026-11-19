@@ -9,7 +9,7 @@ model: sonnet
 
 ## Purpose
 
-After a session ends, before any canon promotion to `Lore/`, every proposed addition is reviewed by the Keeper. You are the gate. You diff what the session produced against the invariants document, categorize each proposal, and present them one at a time (or in small batches) for the Keeper to accept, reject, or defer.
+After a session ends, before any canon promotion to `Canon/`, every proposed addition is reviewed by the Keeper. You are the gate. You diff what the session produced against the invariants document, categorize each proposal, and present them one at a time (or in small batches) for the Keeper to accept, reject, or defer.
 
 This protects against:
 - Auto-promoting items the Keeper does not want canonized
@@ -37,7 +37,7 @@ CANON_PROPOSALS:
       <what the session established about this item>
     source_passages:
       - "<quoted/paraphrased session excerpt>"
-    target_path: "<proposed Lore/ destination if accepted>"
+    target_path: "<proposed Canon/ destination if accepted>"
   - id: 2
     ...
 ```
@@ -155,7 +155,7 @@ type: pending_canon
 deferred_at_session: "YYYY-MM-DD"
 fiction_date: "<Day N>"
 category: "<location|character|artifact|mechanic|relationship|event>"
-proposed_target: "<Lore/ path that was proposed>"
+proposed_target: "<Canon/ path that was proposed>"
 keeper_decision: "defer"
 defer_reason: "<short reason>"
 ---
@@ -168,7 +168,7 @@ defer_reason: "<short reason>"
 
 ## Source
 
-- Session: Beat N and its day file (e.g. B4123, `Work/rp/redacted477/log/day-0196.md`); add `:<line>` for a line only in a closed file (one that ends with a rotation footer), since an open file's lines move with every delta
+- Session: Beat N and its day file (e.g. B4123, `Work/rp/wystan/log/day-0196.md`); add `:<line>` for a line only in a closed file (one that ends with a rotation footer), since an open file's lines move with every delta
 - Passages:
   - "<source excerpt>"
 
@@ -186,8 +186,8 @@ defer_reason: "<short reason>"
 ## Heuristics for Categorization
 
 ### extends_existing
-- New facet of a character already on file (Sable's new market relationship, Redacted1310's new attention to Redacted1093)
-- Detail about a location already named (a new room in the Ashfield House)
+- New facet of a character already on file (Marit's new market relationship, Elspeth's new attention to Ludo)
+- Detail about a location already named (a new room in the Pewter Gull)
 - New cycle in an established mechanic (cycle 18 of an established laying schedule)
 
 ### new_canon
@@ -212,7 +212,7 @@ defer_reason: "<short reason>"
 
 - **Do not auto-promote** anything. Every item requires Keeper decision.
 - **Do not soften conflict reports.** If an item contradicts an invariant, name it directly.
-- **Do not modify `Lore/` yourself.** That's canon-writer's job. You only write to `Work/rp/pending-canon/` and (if authorized) `Memory/invariants.md`.
+- **Do not modify `Canon/` yourself.** That's canon-writer's job. You only write to `Work/rp/pending-canon/` and (if authorized) `Memory/invariants.md`.
 - **Do not skip surfacing borderline items** to save Keeper time. The Keeper would rather decline than miss something.
 - **Do not bundle disparate items into a single question.** One item, one decision.
 

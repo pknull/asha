@@ -23,8 +23,8 @@ repository layout:
 3. At each directory, check `Work/review-config.md`, then
    `work/review-config.md`. The nearest match wins. Treat path case as
    significant.
-4. Never assume that books live under `Vault/Books`, `Lore/Books`, or any
-   other fixed parent directory.
+4. Never assume that books live under a fixed parent directory such as
+   `Books/`.
 5. If no project config exists before reaching the repository root, use the
    fallback configuration documented below.
 

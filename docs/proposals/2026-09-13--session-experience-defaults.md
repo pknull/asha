@@ -36,11 +36,11 @@ run at all. Findings from reading `1d1cda2`:
 | G5. Plain workers receive guidance only by chair selection | `session_guidance.resolve` uses `learning_ids` from launch; worker SessionStart exits early (`session-start.sh:9`). Rooms already receive active learnings (Claude SessionStart `session-start.sh:101-107`; wrapper layer `bin/asha:195,301,399`). | The sessions least attended by the Keeper are the only ones that never get learned guidance by default. |
 | G6. Rooms that saved are still asked for a close assessment | Close request text appends the experience request whenever policy is on. Publication receipts carry no hub session identity (`plugins/session/tools/memory_v2.py:370-373`). | Duplicate reflection for Rooms that already ran `/session:save`. |
 
-Observed in live use on 2026-09-14 (redacted1208 Room `af8ed095`, Codex):
+Observed in live use on 2026-09-14 (briar Room `af8ed095`, Codex):
 
 | Gap | Evidence | Effect |
 | --- | --- | --- |
-| G7. Graceful close cannot reach an idle non-Claude terminal session | `session_hub.py` `_deliver` queues the request as a hub message; only Claude has the Stop-hook channel. `_resume` already reuses the captured native conversation ID for Claude and Codex. | "Save and close" from the chair stalls until the Keeper attaches. The chair completed redacted1208's save only by `session stop` then `session resume --text`. |
+| G7. Graceful close cannot reach an idle non-Claude terminal session | `session_hub.py` `_deliver` queues the request as a hub message; only Claude has the Stop-hook channel. `_resume` already reuses the captured native conversation ID for Claude and Codex. | "Save and close" from the chair stalls until the Keeper attaches. The chair completed briar's save only by `session stop` then `session resume --text`. |
 | G8. Every Codex save prompts for the experience read | The `save.md` steps added in `1d1cda2` run `experience pending`; the Control database lies outside Codex's sandbox. With policy `off` the result is always empty. | Three native approvals for one save (experience read, Memory commit, `session report`); the first carries no information. |
 
 ## 2. Changes

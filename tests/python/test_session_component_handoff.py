@@ -47,14 +47,14 @@ OTHER_DECISIONS = "# Decisions\n\n- The component's own save landed first.\n"
 
 
 class ComponentFixture(PublicationRowFixture):
-    """A redacted1106-like tree: the fixture project is the root, with nested v2 projects (and the old manifest)."""
+    """A foundry-like tree: the fixture project is the root, with nested v2 projects (and the old manifest)."""
 
     def setUp(self):
         super().setUp()
         self.egregore = self.component('egregore', 'egregore-project')
-        self.fle = self.component('research/redacted448', 'redacted448-project')
+        self.fle = self.component('research/lab-net', 'lab-net-project')
         self.scry = self.component('scry', 'scry-project')
-        self.declare('egregore', 'research/redacted448', 'scry')
+        self.declare('egregore', 'research/lab-net', 'scry')
 
     def component(self, rel, project_id, *, config=True, base=None):
         path = (base or self.project) / rel
@@ -69,7 +69,7 @@ class ComponentFixture(PublicationRowFixture):
 
     def declare(self, *paths):
         (self.project / '.asha/workspace.json').write_text(json.dumps({
-            'version': 1, 'workspace_name': 'redacted1106', 'repositories': [{'path': p} for p in paths]}))
+            'version': 1, 'workspace_name': 'foundry', 'repositories': [{'path': p} for p in paths]}))
 
     def child_digests(self, child):
         return {name: sha((child / 'Memory' / name).read_text()) for name in closure.MEMORY_FILES}
@@ -214,13 +214,13 @@ class ComponentPublicationTests(ComponentFixture):
         self.assertNotEqual(self.hub.get(sid)['lifecycle'], 'closed')   # the Room stays open
 
     def test_absolute_path_names_the_same_nested_project(self):
-        """A nested path two levels down (life's research/redacted448) named by its absolute path."""
+        """A nested path two levels down (research/lab-net) named by its absolute path."""
         sid = self.room()
         result = self.publish_component(sid, str(self.fle), child=self.fle)
         self.assertEqual(self.contents(self.fle), (CHILD_ACTIVE, CHILD_DECISIONS))
-        self.assertEqual(result['component']['path'], 'research/redacted448')
+        self.assertEqual(result['component']['path'], 'research/lab-net')
         row, = self.rows(sid)
-        self.assertEqual(row['project_id'], 'redacted448-project')
+        self.assertEqual(row['project_id'], 'lab-net-project')
 
     def test_read_component_reports_the_components_digests(self):
         sid = self.room()
@@ -752,7 +752,7 @@ class ComponentAuthorityTests(ComponentFixture):
         copies = {rel: self.component(rel, rel.replace('/', '-').strip('.') + '-copy')
                   for rel in ('.trash/egregore', '.git/modules/scry', '.claude/worktrees/x', '.hidden-project')}
         os.symlink(self.project / '.trash/egregore', self.project / 'copy-link')   # a plain name, a hidden target
-        self.declare('egregore', 'research/redacted448', 'scry', *copies, 'copy-link')
+        self.declare('egregore', 'research/lab-net', 'scry', *copies, 'copy-link')
         for rel, child in copies.items():
             with self.subTest(path=rel):
                 self.assert_refused(sid, rel, 'hidden', child)
@@ -789,7 +789,7 @@ class ComponentAuthorityTests(ComponentFixture):
         marker.parent.mkdir(parents=True)
         marker.write_text('{"stale": true}')
         sid = self.room()
-        self.assert_refused(sid, 'research/redacted448', 'not its own Memory plane', self.fle)
+        self.assert_refused(sid, 'research/lab-net', 'not its own Memory plane', self.fle)
 
     def test_link_resolving_outside_the_root_is_refused(self):
         outside = self.component('outside-repo', 'outside-project', base=self.root)

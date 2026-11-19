@@ -1,6 +1,6 @@
 # OKF
 
-**Version**: 0.4.0
+**Version**: 0.4.1
 
 Asha's layer for the Open Knowledge Format (OKF): pinned upstream tooling, a
 dependency-free indexer and log writer, a gate that refuses a validator pass it
@@ -82,7 +82,7 @@ at the bundle root with `{"links": "obsidian"}` switches the gate: upstream
 checks only the three conformance errors, and Asha runs the strict set itself,
 the recommended-field and v0.2 field lints through the upstream functions and
 links, orphans and reachability through `okf_links`. Generated index entries
-percent-encode their targets (`./Redacted524.md`), which CommonMark
+percent-encode their targets (`./Salt%20Marsh%20Island.md`), which CommonMark
 and Obsidian read; files are never renamed. A bundle whose own taxonomy owns a
 word OKF also uses may waive that field's lints (`"waive": ["status"]`); the
 verdict names every waiver. `okf_validate.py --links` overrides the config for

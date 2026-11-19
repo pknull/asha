@@ -1134,7 +1134,7 @@ class RoomTests(unittest.TestCase):
             )
         adapter._run(["new-session", "-d", "-s", "sentinel", "sleep", "30"])
         opened = self._open(
-            tmux=adapter, asha_root=launcher_root, name="Redacted1208 Room",
+            tmux=adapter, asha_root=launcher_root, name="Briar Room",
             room_id="66666666-1111-4111-8111-111111111111",
         )
         recorded = (opened["session_id"], opened["pane_id"])

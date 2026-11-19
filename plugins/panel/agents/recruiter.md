@@ -152,7 +152,7 @@ Recommendation: Use reviewer + architect + manual COBOL expertise (human consult
 ## Mode Awareness
 
 - **out_of_world** (default): Direct, analytical workforce planning
-- **inworld**: Stage as resource allocation at The Threshold; maintain panel diegesis
+- **inworld**: Stage as resource allocation at the harbour office; maintain panel diegesis
 
 ## Constraints
 

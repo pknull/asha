@@ -16,11 +16,11 @@ Search roleplay session history for past events, character interactions, and con
 The GM orchestrator spawns you with:
 
 ```yaml
-QUERY: "when did Redacted123 first meet Sable"
+QUERY: "when did Wystan first meet Marit"
 DATE_RANGE:
-  start: "1895-09-01"  # Optional: in-fiction date
-  end: "1895-10-21"    # Optional: in-fiction date
-CHARACTER_FOCUS: "Redacted123"  # Optional: filter by character involvement
+  start: "1712-02-01"  # Optional: in-fiction date
+  end: "1712-03-21"    # Optional: in-fiction date
+CHARACTER_FOCUS: "Wystan"  # Optional: filter by character involvement
 SESSION_RANGE:
   start: "2025-12-01"  # Optional: real-world session date
   end: "2026-02-03"    # Optional: real-world session date
@@ -43,8 +43,8 @@ Paths come from `Memory/canon-layout.md` (`session_curated`, plus any project-sp
 
 | Source | Register kind → default path | Content |
 |--------|------|---------|
-| Curated Sessions | `session_curated` → `Lore/TTRPG/Notes/*.md` | Promoted/edited sessions |
-| Fiction References | `Lore/Books/**/*.md` | Canonical story events |
+| Curated Sessions | `session_curated` → `Canon/Sessions/*.md` | Promoted/edited sessions |
+| Fiction References | `Canon/Books/**/*.md` | Canonical story events |
 
 These live in the canon vault, an OKF bundle when its root `index.md` declares `okf_version`: read the directory's generated `index.md` (`- [Title](./Note.md): description`) first and open only the notes whose entry fits the query, as world-lookup does. The primary sources under `Work/rp/` carry no indexes; search them as below.
 
@@ -97,62 +97,60 @@ Build chronological event list from matches.
 ## Output Format
 
 ```yaml
-query: "when did Redacted123 first meet Sable"
+query: "when did Wystan first meet Marit"
 results:
   events:
-    - date_fiction: "1895-10-14"
-      date_session: "2025-12-28"
-      session_file: "Work/rp/rp_session_2025-12-28.md"
+    - date_fiction: "1712-03-14"
+      date_session: "2026-01-10"
+      session_file: "Work/rp/rp_session_2026-01-10.md"
       summary: |
-        Redacted123 encountered Sable in the Threshold.
-        She appeared as a bound figure in white silk, claiming to be
-        the domain's former Keeper. First established: she gave him
-        the Deep Country as part of a deal.
-      characters: ["Redacted123", "Sable"]
+        Wystan met Marit on the long quay outside the Pewter Gull.
+        She was checking cargo seals for the Conclave and turned
+        down his purse in front of the porters.
+      characters: ["Wystan", "Marit"]
       significance: "first_meeting"
       excerpt: |
-        "I am Sable," the figure said, amber eyes catching light
-        that had no source. "And you are trespassing in what was
-        once my domain."
+        "Put your purse away," Marit said, not looking up from
+        the seal. "The tide is honest. So am I, until noon."
 
-    - date_fiction: "1895-10-15"
-      date_session: "2025-12-29"
-      session_file: "Work/rp/rp_session_2025-12-29.md"
+    - date_fiction: "1712-03-15"
+      date_session: "2026-01-11"
+      session_file: "Work/rp/rp_session_2026-01-11.md"
       summary: |
-        Second encounter. Power dynamics established. Sable
-        revealed her nature as a redacted1075/Keeper entity.
-      characters: ["Redacted123", "Sable"]
+        Second meeting. Terms set over the tide tables. Marit
+        named her price for a manifest.
+      characters: ["Wystan", "Marit"]
       significance: "relationship_development"
 
 timeline_summary: |
-  Redacted123 and Sable first met on 1895-10-14 (session 2025-12-28)
-  in the Threshold. Their relationship has evolved
-  through 12 subsequent sessions with multiple power reversals.
+  Wystan and Marit first met on 1712-03-14 (session 2026-01-10)
+  on the long quay. Their dealings have shifted
+  through 12 later sessions, the upper hand changing often.
 
 continuity_notes:
-  - "Sable's height has changed: originally 5ft, reduced to 3.5ft, restored to 5ft"
-  - "Bite mark on neck established 1895-10-16"
+  - "Marit's rank has changed: clerk, raised to factor, back to clerk"
+  - "Ink stain on her left cuff established 1712-03-16"
 
 search_metadata:
   sessions_searched: 15
-  date_range_fiction: "1895-10-14 to 1895-10-21"
-  date_range_real: "2025-12-28 to 2026-02-03"
+  date_range_fiction: "1712-03-14 to 1712-03-21"
+  date_range_real: "2026-01-10 to 2026-02-03"
 ```
 
 ### No Results Response
 
 ```yaml
-query: "when did Redacted123 visit the Redacted379"
+query: "when did Wystan visit the Underreach"
 results:
   events: []
 timeline_summary: "No matching events found in searched sessions."
 suggestions:
   - "Event may not have occurred yet"
   - "Try broader date range"
-  - "Check canonical fiction in Lore/Books/"
+  - "Check canonical fiction in Canon/Books/"
 search_metadata:
   sessions_searched: 15
-  date_range_fiction: "1895-09-01 to 1895-10-21"
+  date_range_fiction: "1712-02-01 to 1712-03-21"
 ```
 
 ## Query Patterns
@@ -166,14 +164,14 @@ Return the summary of the most recent session: the newest file in `Work/rp/summa
 Spawned by `/rp:turn` once rotation has closed a fiction day. You get `BEATS` (the closed file and the line range of the day's beats, or its `parts`, several ranges, when struck drafts lie between them) and `PLANS` (the day's Day Plan ranges, likewise as `parts` when a struck draft lies inside one). Read only those ranges. Return markdown text, not YAML, that opens with `## Day N (<weekday>)` and then lists what happened in order, one bullet per beat or run of beats:
 
 ```markdown
-## Day 197 (Tuesday)
+## Day 42 (Friday)
 
-- **~06:37, the barn (B4177):** Redacted648: "Neck's red." / "Caught you." He took the twelve oak boards down from the loft.
-- **~07:02 (B4179):** Redacted695 paid game one: Redacted648 at the forge-lane oak at night, more than once. Why is HIDDEN.
-- **Clocks:** the vine test D198 (the Day Plan); THE CURE Day 2 of 30.
+- **~14:20, the chandlery (B88):** Sabe: "Count them again." He counted the rope coils twice and signed the docket.
+- **~15:05 (B89):** Tova lost a wager to Sabe at the customs house before dawn. The stake is HIDDEN.
+- **Clocks:** the bridge toll falls due D43 (the Day Plan); THE RITE Day 4 of 12.
 ```
 
-- Cite every event by beat number (`B4177`). A line may be cited only in the closed file you were given (`redacted477/log/day-0197.md:120`); cite no line in any other session file.
+- Cite every event by beat number (`B88`). A line may be cited only in the closed file you were given (`wystan/log/day-0042.md:120`); cite no line in any other session file.
 - Quote speech exactly or not at all. Mark anything the log does not say outright `INFERRED`. Never invent, and cite no beat after the day's last.
 - The PC's moves are the Keeper's: report what he did and said as the log records it. Never add his thoughts, feelings or choices.
 - A struck or rejected draft (a struck callout, a VALIDATOR SURRENDER block without "KEEPER: accepted") is a record of what the gate refused, not an event: leave it out.
@@ -202,16 +200,16 @@ When asked to verify continuity:
 
 ```yaml
 continuity_check:
-  detail: "Sable's height"
+  detail: "Marit's rank"
   consistent: false
   variations:
-    - session: "2025-12-28"
-      value: "5 feet"
-    - session: "2025-12-30"
-      value: "3.5 feet (reduced by Redacted123)"
+    - session: "2026-01-10"
+      value: "clerk"
+    - session: "2026-01-12"
+      value: "factor (raised by the Conclave)"
     - session: "2026-01-15"
-      value: "5 feet (restored)"
-  current_canonical: "5 feet (restored)"
+      value: "clerk (demoted)"
+  current_canonical: "clerk (demoted)"
   source: "Work/rp/rp_session_2026-01-15.md"
 ```
 

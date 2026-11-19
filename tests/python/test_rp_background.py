@@ -24,18 +24,18 @@ TODAY = "2026-10-28"
 PENDING = "Work/rp/.gate/pending"
 
 
-def bg_turn(delta='scene.time: "19:05"\nscene.mood: "tense"', prose="Redacted648 hangs the kettle on its hook.",
+def bg_turn(delta='scene.time: "19:05"\nscene.mood: "tense"', prose="Sabe hangs the kettle on its hook.",
             day=196, time="19:05", priced=True, keeper="I wait."):
     """A lint-clean turn: the anchor agrees with the delta, the cast is the scene's."""
     return (f"KEEPER_INPUT:\n{keeper}\n\nDRAFT:\n{prose}\n\n"
-            f"Scene: Day {day}, ~{time}, calm | Location: the kitchen | Present: Redacted648\n\n"
-            f"GM_SPAWN_LOG:\n- redacted648: NOT spawned\n\n"
+            f"Scene: Day {day}, ~{time}, calm | Location: the kitchen | Present: Sabe\n\n"
+            f"GM_SPAWN_LOG:\n- sabe: NOT spawned\n\n"
             f"SOURCE_LOG:\npriced_stake_touched: {'true' if priced else 'false'}\n\n"
             f"SCENE_STATE_DELTA:\n{delta}\n")
 
 
 TURN = bg_turn()
-TURN_2 = bg_turn('scene.time: "19:10"', prose="Redacted648 pours the water out.", time="19:10", keeper="I watch her.")
+TURN_2 = bg_turn('scene.time: "19:10"', prose="Sabe pours the water out.", time="19:10", keeper="I watch her.")
 BEAT = beat(4131, 196)
 BEAT_2 = beat(4132, 196)
 
@@ -241,8 +241,8 @@ class OrderingTests(unittest.TestCase):
                 if where == "frontmatter":
                     text = text.replace('mood: "tense"', 'mood: "grim"', 1)
                 else:  # the provisional beat is the file's last
-                    at = text.rindex("Redacted648 sets down the axe.")
-                    text = text[:at] + "Redacted648 sets down the saw." + text[at + len("Redacted648 sets down the axe."):]
+                    at = text.rindex("Sabe sets down the axe.")
+                    text = text[:at] + "Sabe sets down the saw." + text[at + len("Sabe sets down the axe."):]
                 (p.root / LEGACY).write_text(text, encoding="utf-8")
                 got = settle(p, key, "struck", violations=["presence"])
                 self.assertEqual(got["action"], "refused")
@@ -395,9 +395,9 @@ class RouteTests(unittest.TestCase):
 
     def test_check_reports_background_reasons(self):
         p = Project(self)
-        cast = p.root / "Lore/World/Characters/Redacted1264.md"  # a profiled name the lint knows
+        cast = p.root / "Canon/Characters/Orm.md"  # a profiled name the lint knows
         cast.parent.mkdir(parents=True)
-        cast.write_text("# Redacted1264\n", encoding="utf-8")
+        cast.write_text("# Orm\n", encoding="utf-8")
         got = RouteTests.check(self, p)
         self.assertEqual(got["next"], "review")
         self.assertEqual(got["background"], {"eligible": True, "reasons": []})
@@ -408,7 +408,7 @@ class RouteTests(unittest.TestCase):
             "validate_tag": ((bg_turn(keeper="I wait. [validate]"),), {}),
             "day_change": ((bg_turn('currentDate: "Day 197 (Tuesday)"\nscene.time: "06:00"', day=197,
                                     time="06:00"),), {}),
-            "lint": ((bg_turn(prose="Redacted1264 hangs the kettle on its hook."),), {}),
+            "lint": ((bg_turn(prose="Orm hangs the kettle on its hook."),), {}),
         }
         for reason, (args, kw) in cases.items():
             with self.subTest(reason=reason):
@@ -496,7 +496,7 @@ class ReviewRoundOneTests(unittest.TestCase):
         settle(p, key, "soft", violations=["tonal_drift"], findings_text="- tonal_drift\n")
         ship(p, text=TURN_2, append=BEAT_2, label="4132", provisional=False)
         self.assertTrue(rp_gate.carried_path(p.root, LEGACY).is_file())
-        third = bg_turn('scene.time: "19:15"', prose="Redacted648 wipes the table.", time="19:15", keeper="I sit.")
+        third = bg_turn('scene.time: "19:15"', prose="Sabe wipes the table.", time="19:15", keeper="I sit.")
         ship(p, text=third, append=beat(4133, 196), label="4133", provisional=False, reviewed=True)
         self.assertFalse(rp_gate.carried_path(p.root, LEGACY).exists())
 
@@ -579,7 +579,7 @@ class ReviewRoundOneTests(unittest.TestCase):
     def test_a_beat_with_odd_line_breaks_can_be_struck(self):
         # M1
         p = Project(self)
-        odd = beat(4131, 196).replace("Redacted648 sets down the axe.", "Redacted648 sets down the axe.\x0c")
+        odd = beat(4131, 196).replace("Sabe sets down the axe.", "Sabe sets down the axe.\x0c")
         key = ship(p, append=odd)["key"]
         self.assertEqual(settle(p, key, "struck", violations=["presence"])["action"], "struck")
 

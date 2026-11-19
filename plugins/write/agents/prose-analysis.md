@@ -98,7 +98,7 @@ that intent, never against general taste.
 
 1. **Escape Hatch Identification**: Find decision points where characters could have chosen differently
 2. **Counterfactual Testing**: Ask "what if the opposite happened?" at critical junctures
-3. **Worldbuilding Verification**: Cross-reference candidates against Vault/World/* canon
+3. **Worldbuilding Verification**: Cross-reference candidates against the project's worldbuilding canon
 
 ## Documentation Verification (--docs)
 
@@ -136,7 +136,7 @@ supporting files. Start at the target's directory and walk upward toward the
 repository root. Prefer the nearest ancestor containing
 `Work/review-config.md` or `work/review-config.md`; otherwise use the nearest
 ancestor that contains the manuscript's established project structure. Never
-assume a fixed parent such as `Vault/Books` or `Lore/Books`, and never search
+assume a fixed parent such as `Canon/Books`, and never search
 outside the current repository to find a project by name.
 
 **Step 2: Discover voice documentation** (if --voice or no flags):
@@ -169,9 +169,9 @@ If voice doc found → read it. Extract:
 **Step 3: Gather additional context** based on active modes:
 
 - **--continuity**: Extract character pronoun rules, identify timeline markers
-- **--character**: Load character sheets (`Work/novel/bible/characters/` or `Vault/World/Characters/`), current character states (`Work/novel/state/current/characters.md`), and knowledge tracking (`Work/novel/state/current/knowledge.md`) — build per-character profiles before analysis
+- **--character**: Load character sheets (`Work/novel/bible/characters/` or the project's canon character folder), current character states (`Work/novel/state/current/characters.md`), and knowledge tracking (`Work/novel/state/current/knowledge.md`) — build per-character profiles before analysis
 - **--coherence**: Load worldbuilding declared by the project, then check
-  repository-level canon directories such as `Lore/World/` or `Vault/World/`
+  repository-level canon directories such as `Canon/`
 - **--docs**: Use every `documentation` entry from the nearest discovered
   review config when present. Accept either one path or a list of file/directory
   paths; do not silently discard later entries. Otherwise locate the story
@@ -184,9 +184,9 @@ If voice doc found → read it. Extract:
 - Target manuscript and adjacent sections beneath the discovered project root
 - Voice documentation (work/prose_voice.md, Work/novel/bible/voice.md)
 - Genre rules (Work/novel/bible/rules.md)
-- Character sheets and pronoun specifications (Vault/World/Characters/, Work/novel/bible/characters/)
+- Character sheets and pronoun specifications (the project's canon character folder, Work/novel/bible/characters/)
 - Character/knowledge state (Work/novel/state/current/)
-- Worldbuilding canon (Vault/World/*)
+- Worldbuilding canon (the project's canon folders)
 - Story bible/documentation declared by config or found beneath the discovered
   project root
 
@@ -364,7 +364,7 @@ If scripts or Ollama are unavailable → note "Quantified metrics pending" and c
 **Reference Chain Validation**:
 
 1. **First Mentions**: Does X get introduced before referenced?
-2. **Callback Verification**: "What Redacted921 taught you" - was this shown?
+2. **Callback Verification**: "What the mentor taught you" - was this shown?
 3. **Knowledge Consistency**: What should characters know/not know?
 
 **Error Severity Classification** (Continuity):
@@ -440,7 +440,7 @@ For each major decision point, ask:
 **Worldbuilding Verification**:
 For each candidate escape hatch:
 
-1. Search Vault/World/* for relevant canon
+1. Search the project's canon folders for relevant canon
 2. Does worldbuilding establish why alternative path was unavailable?
 3. Does worldbuilding confirm alternative path *should* have worked?
 4. Is this silence (no worldbuilding either way)?
@@ -775,8 +775,8 @@ If server down → note "Technical verification pending" and continue.
 
 - Target path and adjacent files under the discovered project root — chapter
   manuscripts
-- Project-declared canon, plus repository-level `Lore/World/` or
-  `Vault/World/` when applicable — worldbuilding canon
+- Project-declared canon, plus a repository-level `Canon/`
+  when applicable — worldbuilding canon
 - Configured voice guide or project-root voice documentation
 - Configured documentation or project-root story bible
 

@@ -24,7 +24,7 @@ This command carries no campaign of its own. The consuming project supplies:
 | What | Where |
 |---|---|
 | Default scene / cast, if any | project `CLAUDE.md` or the RP mode manifest |
-| PC and NPC canon | `Lore/World/Characters/` (or project equivalent) |
+| PC and NPC canon | `Canon/Characters/` (or project equivalent) |
 | The invariants projection | `Memory/invariants.md` |
 | Era, setting, and tone constraints | the invariants projection — **not** this file |
 
@@ -142,7 +142,7 @@ scene:
       role: "PC"
     - name: "<NPC>"
       role: "NPC"
-      profile_file: "Lore/World/Characters/<NPC>.md"
+      profile_file: "Canon/Characters/<NPC>.md"
   mood: "<one-word scene register>"
   pending_rolls: []
   power_holder: null
@@ -151,11 +151,11 @@ run:                                # optional: typed run state; omit to keep ru
   stats:                            # an integer, or "current/max"
     POW: "54/60"
   body:                             # one line of text per part, citing the beat that worked it
-    hooves: "feathered draught hooves, shod (T21, B3549)"
+    boots: "hobnailed boots, worn (T21, B3549)"
   workings:                         # on or off
-    SURE-FOOTED: on
+    STEADY: on
   clocks:                           # the fiction day it fires, and what fires
-    vine-test: {day: 198, fires: "the vine test at the wall"}
+    toll-test: {day: 42, fires: "the bridge toll falls due"}
 ---
 ```
 
@@ -163,13 +163,13 @@ run:                                # optional: typed run state; omit to keep ru
 
 `run_state:` names where the run's current state lives (PC stats, workings, standing facts), taken from the `run_state` register in `Memory/canon-layout.md` (a project with several campaigns may name it in each campaign's own table instead). `/rp:turn` reads current state from it and from this file's frontmatter and header, never from `Memory/invariants.md`, which holds static canon. A continuing session carries the previous session's `run_state:` forward. Without the key, the gate falls back to a ``State: `<path>` § <section>`` line in the session header.
 
-`log_dir:` names the campaign's day-file directory, under `Work/rp/` (the campaign's run directory plus `log`, e.g. `Work/rp/redacted477/log`). Each day file is `<log_dir>/day-NNNN.md`; rotation copies this frontmatter forward, adding `log_day`, `continues` (the file before) and `opened` (the real date it opened). The header between the frontmatter and the first Day Plan (tier, register, GM line, standing facts, live workings and the trigger table, open threads) is copied into each new day file as written, so keep it current there. Without `log_dir`, or without a `Day N` in `currentDate`, the log stays one file per session.
+`log_dir:` names the campaign's day-file directory, under `Work/rp/` (the campaign's run directory plus `log`, e.g. `Work/rp/wystan/log`). Each day file is `<log_dir>/day-NNNN.md`; rotation copies this frontmatter forward, adding `log_day`, `continues` (the file before) and `opened` (the real date it opened). The header between the frontmatter and the first Day Plan (tier, register, GM line, standing facts, live workings and the trigger table, open threads) is copied into each new day file as written, so keep it current there. Without `log_dir`, or without a `Day N` in `currentDate`, the log stays one file per session.
 
 ### Step 6: Enforce Scene Pressure Protocol
 
 **HARD RULES:**
 
-1. **Drive scenes with NPC actions.** Do NOT end every beat with "What does Redacted123 do?" Only pause for player input at genuine decision points — moments where the PC must choose between real options.
+1. **Drive scenes with NPC actions.** Do NOT end every beat with "What does Wystan do?" Only pause for player input at genuine decision points — moments where the PC must choose between real options.
 
 2. **Spawn agents for critical moments only.** Confrontations, high-stakes interactions, revelations, and first-appearance-in-scene. Routine interactions you write yourself.
 
@@ -264,7 +264,7 @@ Parse {command_args}:
 
 - `resume` → only the **Resume** section above (a fresh session continuing an open one): no marker, Day Plan, timeline search or scene state; then stop
 - Empty → Resume from the project's last session state; if none, ask the Keeper for scene and cast
-- Character names (e.g., "halloran and redacted123") → Set up those characters
+- Character names (e.g., "halloran and wystan") → Set up those characters
 - Date (e.g., "<fiction-date>") → Set fiction date
 - "load [session]" → Continue specific session
 - "end" → Trigger `/rp:end` workflow

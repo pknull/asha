@@ -2,8 +2,8 @@
 """Link resolution for OKF bundles in two grammars.
 
 `standard`: markdown links to `.md` paths, as the spec writes them, with
-percent-encoded targets decoded (a file named `Redacted524.md` is
-addressed as `./Redacted524.md`; the upstream validator decodes
+percent-encoded targets decoded (a file named `Salt Marsh Island.md` is
+addressed as `./Salt%20Marsh%20Island.md`; the upstream validator decodes
 nothing, so this module owns the link checks whenever encoding is in play).
 
 `obsidian`: the standard grammar plus `[[Note]]`, `[[Note|alias]]`,

@@ -37,10 +37,10 @@ class ScopeFixture(unittest.TestCase):
         os.environ["HOME"] = str(home)
         self.addCleanup(self._restore_home)
         # Workspace: sgr = ws root, one child repo, workspace Memory plane.
-        self.ws = home / "Code" / "redacted1106"
+        self.ws = home / "Code" / "foundry"
         (self.ws / ".asha").mkdir(parents=True)
         (self.ws / ".asha" / "workspace.json").write_text(json.dumps({
-            "version": 1, "workspace_name": "redacted1106",
+            "version": 1, "workspace_name": "foundry",
             "repositories": [{"path": "egregore"}],
         }), encoding="utf-8")
         (self.ws / "Memory").mkdir()

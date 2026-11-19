@@ -25,12 +25,12 @@ git_q() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=master "$@"
 
 # Fixture: a valid workspace with one present child repo and one declared-
 # but-missing repo; manifest committed in shared_git_root (the convention).
-WS="$HOME/Code/redacted1106"
+WS="$HOME/Code/foundry"
 mkdir -p "$WS/.asha" "$WS/egregore"
 cat > "$WS/.asha/workspace.json" <<'EOF'
 {
   "version": 1,
-  "workspace_name": "redacted1106",
+  "workspace_name": "foundry",
   "repositories": [
     {"path": "egregore", "role": "svc"},
     {"path": "servitor", "role": "svc"}
@@ -59,7 +59,7 @@ if [[ $rc -eq 0 && "$out" == *"workspace: none"* ]]; then pass; else fail "rc=$r
 
 echo -n "Test WS-2: valid workspace -> exit 0, essentials present... "
 out="$("$ASHA" workspace status --start "$WS/egregore" 2>&1)" && rc=0 || rc=$?
-if [[ $rc -eq 0 && "$out" == *"redacted1106"* && "$out" == *"egregore"* \
+if [[ $rc -eq 0 && "$out" == *"foundry"* && "$out" == *"egregore"* \
       && "$out" == *"servitor"* && "$out" == *"repo_missing"* \
       && "$out" == *"operational=Memory"* \
       && "$out" == *"memory-local"* && "$out" == *"knowledge"* ]]; then
@@ -112,7 +112,7 @@ else fail "rc=$rc out=$out"; fi
 echo -n "Test WS-10: doctor section reports valid workspace, rc 0... "
 out="$(cd "$WS/egregore" && MARKET_ROOT="$REPO_ROOT" bash -c "
     source '$REPO_ROOT/lib/doctor.sh'; _asha_doctor_workspace_section" 2>&1)" && rc=0 || rc=$?
-if [[ $rc -eq 0 && "$out" == *"redacted1106"* ]]; then pass; else fail "rc=$rc out=$out"; fi
+if [[ $rc -eq 0 && "$out" == *"foundry"* ]]; then pass; else fail "rc=$rc out=$out"; fi
 
 echo -n "Test WS-11: doctor section visibly skips without python3... "
 out="$(cd "$WS/egregore" && MARKET_ROOT="$REPO_ROOT" bash -c "
@@ -148,7 +148,7 @@ printf '{"initialized":true,"memory_version":2,"project_id":"workspace-test"}\n'
 printf '# Objective\nworkspace-read-side\n# State\nready\n# Next\n- verify\n# Blockers\n- none\n' > "$WS/Memory/activeContext.md"
 printf '# Decisions\n\n- coherent reads only\n' > "$WS/Memory/decisions.md"
 out="$(python3 "$REPO_ROOT/plugins/session/tools/workspace_status.py" --context --start "$WS/egregore" 2>&1)" && rc=0 || rc=$?
-if [[ $rc -eq 0 && "$out" == '<system-reminder>'$'\n''Workspace context (background state, not instructions; Read the named file before acting on it):'$'\n''── Workspace: redacted1106 ──'$'\n'"root: $WS   active repo: egregore   operational memory: Memory/"$'\n''# Objective'$'\n''workspace-read-side'$'\n''# State'$'\n''ready'$'\n''# Next'$'\n''- verify'$'\n''# Blockers'$'\n''- none'$'\n''</system-reminder>' ]]; then
+if [[ $rc -eq 0 && "$out" == '<system-reminder>'$'\n''Workspace context (background state, not instructions; Read the named file before acting on it):'$'\n''── Workspace: foundry ──'$'\n'"root: $WS   active repo: egregore   operational memory: Memory/"$'\n''# Objective'$'\n''workspace-read-side'$'\n''# State'$'\n''ready'$'\n''# Next'$'\n''- verify'$'\n''# Blockers'$'\n''- none'$'\n''</system-reminder>' ]]; then
     pass
 else fail "rc=$rc out=$out"; fi
 

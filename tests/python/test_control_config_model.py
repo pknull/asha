@@ -566,7 +566,7 @@ class ControlModelTests(unittest.TestCase):
                 canonical_uuid(invalid)
 
     def test_slug_uses_restricted_bounded_grammar(self) -> None:
-        for valid in ("a", "redacted1106-pr-34", "a" * 64):
+        for valid in ("a", "foundry-pr-34", "a" * 64):
             self.assertEqual(validate_slug(valid), valid)
         for invalid in ("", "Upper", "has space", "-leading", "trailing-", "a" * 65, "../escape"):
             with self.subTest(invalid=invalid), self.assertRaises(ModelError):

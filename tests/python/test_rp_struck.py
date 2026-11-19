@@ -28,11 +28,11 @@ SAME_197 = SAME_DAY.replace("Day 196", "Day 197")
 
 def draft_turn(prose, delta="none", anchor_day=196):
     """A turn file whose DRAFT is prose plus its anchor."""
-    return turn_text(delta, anchor_day=anchor_day).replace("Redacted648 sets down the axe.", prose)
+    return turn_text(delta, anchor_day=anchor_day).replace("Sabe sets down the axe.", prose)
 
 
-REJECTED = draft_turn("Redacted1264 hangs the door on its new hinges and steps back.")
-REJECTED_2 = draft_turn("Redacted1264 sends word: the hinges are ready.")
+REJECTED = draft_turn("Orm hangs the door on its new hinges and steps back.")
+REJECTED_2 = draft_turn("Orm sends word: the hinges are ready.")
 
 
 def strike(p, text=REJECTED, attempt=1, beat_label="4131", reason="presence", session=None, **kw):
@@ -146,7 +146,7 @@ class WriteTests(unittest.TestCase):
         self.assertTrue(text.startswith(before))
         tail = text[len(before):]
         self.assertEqual(len(blocks(tail)), 2)
-        self.assertLess(tail.index("Redacted1264 hangs the door"), tail.index("Redacted1264 sends word"))
+        self.assertLess(tail.index("Orm hangs the door"), tail.index("Orm sends word"))
         self.assertIn(f"> <!-- rp-struck: {k1} -->", tail)
         self.assertTrue(text.endswith("\n\n"))  # a blank line ends the callout before the beat
         [rotate_line] = [x for x in p.log_lines() if x["path"] == "rotate"]
@@ -166,8 +166,8 @@ class WriteTests(unittest.TestCase):
             if not line.startswith(">"):
                 break
             block.append(line)
-        self.assertIn("> Redacted1264 hangs the door on its new hinges and steps back.", block)
-        self.assertIn("> Scene: Day 196, ~06:00, calm | Location: the kitchen | Present: Redacted648", block)
+        self.assertIn("> Orm hangs the door on its new hinges and steps back.", block)
+        self.assertIn("> Scene: Day 196, ~06:00, calm | Location: the kitchen | Present: Sabe", block)
         self.assertRegex(block[-1], r"^> <!-- rp-struck: [0-9a-f]{16} -->$")
         self.assertFalse(any("SCENE_STATE_DELTA" in x or "SOURCE_LOG" in x for x in block))  # the draft only
 
@@ -332,7 +332,7 @@ class ReaderTests(unittest.TestCase):
     def ship(self, p, n, day=196, strike_first=True, text=None):
         """Strike a draft for beat n, then ship it: rotate (which writes the strike), then the beat."""
         if strike_first:
-            strike(p, text=text or draft_turn(f"Redacted1264 hangs door {n}.\n\n### Beat 9{n}: Day 300, ~01:00\n"
+            strike(p, text=text or draft_turn(f"Orm hangs door {n}.\n\n### Beat 9{n}: Day 300, ~01:00\n"
                                               f"## Day Plan: Day 300\n<!-- rp-rotated-to: x.md -->\n---"),
                    beat_label=str(n))
         got = p.rotate(text=turn_text("none", anchor_day=day))
@@ -405,14 +405,14 @@ class ReaderTests(unittest.TestCase):
         p.rotate(text=turn_text('currentDate: "Day 198 (Wednesday)"', anchor_day=198))
         copied = p.read(f"{LOG_DIR}/day-0198.md")
         self.assertEqual(blocks(copied), [])
-        self.assertNotIn("Redacted1264 hangs the door", copied)
+        self.assertNotIn("Orm hangs the door", copied)
 
     def test_a_struck_block_inside_a_day_plan_section_is_left_out(self):
         p = Project(self)
         strike(p)
         p.rotate()
         with open(p.root / DAY_197, "a", encoding="utf-8") as fh:
-            fh.write("## Day Plan: Day 197 (Tuesday)\n\n- Redacted648: the shed\n\n")
+            fh.write("## Day Plan: Day 197 (Tuesday)\n\n- Sabe: the shed\n\n")
         strike(p, text=REJECTED_2, beat_label="4131")
         p.rotate(text=SAME_197)
         with open(p.root / DAY_197, "a", encoding="utf-8") as fh:
@@ -479,7 +479,7 @@ class ReviewFixTests(unittest.TestCase):
         p.rotate()
         with open(p.root / DAY_197, "a", encoding="utf-8") as fh:
             fh.write("## Day Plan: Day 197 (Tuesday)\n\n" + "".join(beat(n, 197) for n in range(4131, 4156)))
-        inject(p, DAY_197, "### Beat 4150 PRE-COMMIT", "Redacted1264 hangs the door.")
+        inject(p, DAY_197, "### Beat 4150 PRE-COMMIT", "Orm hangs the door.")
         cur = rp_gate.continuity(p.root, DAY_197, 20)["current"]
         self.assertFalse(cur["whole_day"])
         self.assertIn("parts", cur)
@@ -487,7 +487,7 @@ class ReviewFixTests(unittest.TestCase):
 
     def test_earlier_beats_of_the_same_log_leave_struck_drafts_out(self):
         p = Project(self)
-        inject(p, LEGACY, "### Beat 4118 PRE-COMMIT", "Redacted1264 hangs the door.")
+        inject(p, LEGACY, "### Beat 4118 PRE-COMMIT", "Orm hangs the door.")
         [prev] = rp_gate.continuity(p.root, LEGACY, 20)["previous"]
         self.assertEqual(prev["path"], LEGACY)
         self.assertIn("parts", prev)
@@ -495,7 +495,7 @@ class ReviewFixTests(unittest.TestCase):
 
     def test_the_file_before_leaves_struck_drafts_out(self):
         p = Project(self)
-        inject(p, LEGACY, "### Beat 4118 PRE-COMMIT", "Redacted1264 hangs the door.")
+        inject(p, LEGACY, "### Beat 4118 PRE-COMMIT", "Orm hangs the door.")
         p.rotate()
         [prev] = rp_gate.continuity(p.root, DAY_197, 20)["previous"]
         self.assertEqual(prev["path"], LEGACY)
@@ -506,9 +506,9 @@ class ReviewFixTests(unittest.TestCase):
         p = Project(self)
         p.rotate()
         with open(p.root / DAY_197, "a", encoding="utf-8") as fh:
-            fh.write("## Day Plan: Day 197 (Tuesday)\n\n- Redacted648: the shed\n\n### Clocks\n\n- ~06:00 first light\n\n"
+            fh.write("## Day Plan: Day 197 (Tuesday)\n\n- Sabe: the shed\n\n### Clocks\n\n- ~06:00 first light\n\n"
                      + "".join(beat(n, 197) for n in range(4131, 4156)))
-        inject(p, DAY_197, "### Clocks", "Redacted1264 hangs the door.")
+        inject(p, DAY_197, "### Clocks", "Orm hangs the door.")
         [plan] = rp_gate.continuity(p.root, DAY_197, 20)["plans"]
         self.assertIn("parts", plan)
         self.assertFalse(read_lines(plan) & struck_lines(p, DAY_197))
@@ -539,7 +539,7 @@ class ReviewFixTests(unittest.TestCase):
             "aaaaaaaaaaaaaaa2": {**data, "key": "aaaaaaaaaaaaaaa3", "block": keyed("aaaaaaaaaaaaaaa3")},
             "aaaaaaaaaaaaaaa4": {**data, "key": "aaaaaaaaaaaaaaa4", "block": keyed("aaaaaaaaaaaaaaa4"), "created": "soon"},
             "aaaaaaaaaaaaaaa5": {**data, "key": "aaaaaaaaaaaaaaa5",  # no callout: it would be written as story
-                                 "block": "Redacted1264 hangs the door.\n" + rp_gate.STRUCK_CLOSE.format("aaaaaaaaaaaaaaa5") + "\n"},
+                                 "block": "Orm hangs the door.\n" + rp_gate.STRUCK_CLOSE.format("aaaaaaaaaaaaaaa5") + "\n"},
         }
         (p.root / STASH / f"{good}.json").unlink()
         for name, entry in bad.items():
@@ -550,7 +550,7 @@ class ReviewFixTests(unittest.TestCase):
         self.assertEqual(len([w for w in got["warnings"] if "not a whole struck draft" in w]), 4)
 
     def test_a_block_always_follows_a_blank_line(self):
-        for tail in ("Redacted648 sets down the axe.\n", "Redacted648 sets down the axe."):
+        for tail in ("Sabe sets down the axe.\n", "Sabe sets down the axe."):
             with self.subTest(tail=repr(tail)):
                 p = Project(self)
                 with open(p.root / LEGACY, "a", encoding="utf-8") as fh:
@@ -559,14 +559,14 @@ class ReviewFixTests(unittest.TestCase):
                 p.rotate(text=SAME_DAY)
                 lines = p.read(LEGACY).splitlines()
                 at = next(i for i, x in enumerate(lines) if x.startswith("> [!struck]"))
-                self.assertEqual((lines[at - 2], lines[at - 1]), ("Redacted648 sets down the axe.", ""))
+                self.assertEqual((lines[at - 2], lines[at - 1]), ("Sabe sets down the axe.", ""))
 
     def test_header_text_after_a_struck_block_is_still_header(self):
         p = Project(self)
         strike(p)
         p.rotate()
         with open(p.root / DAY_197, "a", encoding="utf-8") as fh:
-            fh.write("**Steer (Keeper):** the bit fires on her orders only.\n\n## Day Plan: Day 197 (Tuesday)\n\n"
+            fh.write("**Steer (Keeper):** the bell rings on her word only.\n\n## Day Plan: Day 197 (Tuesday)\n\n"
                      + beat(4131, 197))
         lines = p.read(DAY_197).splitlines()
         steer = next(i for i, x in enumerate(lines, 1) if x.startswith("**Steer"))
@@ -575,7 +575,7 @@ class ReviewFixTests(unittest.TestCase):
         self.assertFalse(read_lines(header) & struck_lines(p, DAY_197))
         p.rotate(text=turn_text('currentDate: "Day 198 (Wednesday)"', anchor_day=198))
         copied = p.read(f"{LOG_DIR}/day-0198.md")
-        self.assertIn("**Steer (Keeper):** the bit fires", copied)
+        self.assertIn("**Steer (Keeper):** the bell rings", copied)
         self.assertEqual(blocks(copied), [])
 
     def test_a_fenced_struck_example_in_the_header_does_not_end_it(self):
@@ -691,7 +691,7 @@ class SecondReviewTests(unittest.TestCase):
         bad = strike(p, text=REJECTED_2)["key"]
         path = p.root / STASH / f"{bad}.json"
         data = json.loads(path.read_text(encoding="utf-8"))
-        data["block"] = data["block"].replace("> Redacted1264 sends word", "> \ud800 Redacted1264 sends word")
+        data["block"] = data["block"].replace("> Orm sends word", "> \ud800 Orm sends word")
         data["created"] = 1
         path.write_text(json.dumps(data), encoding="utf-8")
         good = strike(p)["key"]
@@ -743,7 +743,7 @@ class SecondReviewTests(unittest.TestCase):
         (p.root / "Work/rp/other.md").write_text("# Other\n\n## Run state\n\nDay 3.\n", encoding="utf-8")
         inject(p, LEGACY, "# RP Session", "State: `Work/rp/other.md` § Run state")
         state = rp_gate.live_state(p.root, LEGACY, today=TODAY)
-        self.assertEqual(state["run_state"]["path"], "Work/rp/test/redacted123.md")
+        self.assertEqual(state["run_state"]["path"], "Work/rp/test/wystan.md")
 
 
 class ContractTests(unittest.TestCase):

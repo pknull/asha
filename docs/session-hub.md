@@ -653,7 +653,7 @@ files byte for byte to a new directory
 a refusal copies the pair it rereads to a new directory too, and no copy
 overwrites an earlier one. The writer never commits a copy, though a parent's
 `Work/` may be tracked. Control neither makes nor checks the copy (#136's
-observed trial, 2026-11-09: the four Redacted1106 children's earlier pairs survived
+observed trial, 2026-11-09: the four Foundry children's earlier pairs survived
 only in a session transcript; text only, per the Keeper's #136 ruling).
 
 PATH is relative to the session's own project root, or absolute. Control

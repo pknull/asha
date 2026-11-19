@@ -21,12 +21,12 @@ SESSION_FILES: ["Work/rp/<campaign>/log/day-0041.md", "Work/rp/<campaign>/log/da
 FACT_TYPE: "location|character|artifact|relationship|magic|all"
 CONTENT: |
   The session established the following new canon:
-  - Ashfield House has a secret back room
-  - the Rival is connected to the Academy
-  - A new artifact: The Siphon (drains magic)
+  - The Pewter Gull has a cellar room below the tide line
+  - the Harbourmaster answers to the Conclave
+  - A new artifact: The Wayglass (drains magic)
 CONTEXT: |
   This session took place in the campaign setting.
-  Characters involved: Redacted123, the Proprietor
+  Characters involved: Wystan, the Tapster
 ACTOR: "asha/0.5.5"               # the trust actor for `generated.by`; the command resolves it from the rp README
 NOW: "2026-11-01T03:12:44Z"       # UTC instant for `generated.at`; the command prints it, never guess one
 ```
@@ -42,11 +42,11 @@ Resolve every target from `Memory/canon-layout.md` (*Entity paths*). The kind co
 
 | Type | Register kind → default path | File Pattern |
 |------|-----------------|--------------|
-| Location | `location` → `Lore/World/Places/` | Hierarchical by parent location |
-| Character | `character` → `Lore/World/Characters/` | One file per character |
-| Artifact | `artifact` → `Lore/World/Magic/Artefacts/` | One file per item |
-| Magic/Spell | `magic` → `Lore/World/Magic/` | Appropriate subsection |
-| Faction | `faction` → `Lore/World/Factions/` | One file per faction |
+| Location | `location` → `Canon/Places/` | Hierarchical by parent location |
+| Character | `character` → `Canon/Characters/` | One file per character |
+| Artifact | `artifact` → `Canon/Items/` | One file per item |
+| Magic/Spell | `magic` → `Canon/Magic/` | Appropriate subsection |
+| Faction | `faction` → `Canon/Factions/` | One file per faction |
 | Relationship | Existing character files | Update both parties |
 
 ### 2. Check for Existing Files
@@ -72,16 +72,16 @@ Read similar files in the target directory to match:
 
 ```yaml
 operation: "create"
-file_path: "Lore/World/Places/the town/Ashfield House.md"
+file_path: "Canon/Places/Saltmere/The Pewter Gull.md"
 content: |
   ---
-  title: Ashfield House
-  description: "A discreet high-class house on the edge of the town's respectable district, with a concealed back room and a proprietor tied to the Academy"
+  title: The Pewter Gull
+  description: "A dockside tavern at the end of Saltmere's long quay, with a cellar room below the tide line and a landlord who answers to the Conclave"
   type: doc
   status: draft
   universe: <project universe key>
-  privacy: players
-  rating: Teen
+  privacy: <project value>
+  rating: <project value>
   tags:
     - domain/world
     - location/<place-tag>
@@ -94,24 +94,24 @@ content: |
     - resource: "Work/rp/<campaign>/log/day-0042.md#B4123"
   ---
 
-  # Ashfield House
+  # The Pewter Gull
 
-  A high-class establishment on the edge of the town's respectable district.
+  A dockside tavern at the end of Saltmere's long quay.
 
   ## Description
 
-  Known for its red velvet curtains and discretion. The main room offers
-  comfortable seating and private conversation nooks. Gaslight keeps the
-  atmosphere warm but dim.
+  Known for its tide tables and its short memory. The main room is
+  low-beamed, with benches along the walls. Lamps hang from hooks over
+  the bar.
 
   ## Notable Features
 
-  - **Back Room**: A concealed meeting space accessed through a bookshelf.
-    Used for "special meetings" of uncertain nature.
+  - **Cellar Room**: Below the tide line, reached by a trapdoor behind the
+    bar. Used for "special meetings" of uncertain nature.
 
   ## People
 
-  - **the Rival** (proprietor): Connection to the Academy suspected.
+  - **the Harbourmaster** (landlord): Answers to the Conclave, it seems.
 
   ## History
 
@@ -119,40 +119,40 @@ content: |
 
   ## Session References
 
-  - Established: Session 2026-02-03 (Redacted123's visit)
+  - Established: Session 2026-02-03 (Wystan's visit)
 ```
 
 ### Character Update
 
 ```yaml
 operation: "edit"
-file_path: "Lore/World/Characters/the Rival.md"
+file_path: "Canon/Characters/the Harbourmaster.md"
 changes:
   - section: "Relationships"
     add: |
-      ### Academy Connection
+      ### Conclave Connection
 
-      Suspected ties to the setting's central institution. Nature unclear.
+      Suspected ties to the port's ruling guild. Nature unclear.
       (Established: Session 2026-02-03)
   - section: "Properties"
     add: |
-      - **Ashfield House**: Proprietor
+      - **The Pewter Gull**: landlord
 ```
 
 ### New Artifact
 
 ```yaml
 operation: "create"
-file_path: "Lore/World/Magic/Artefacts/The Siphon.md"
+file_path: "Canon/Items/The Wayglass.md"
 content: |
   ---
-  title: The Siphon
+  title: The Wayglass
   description: "An artifact that drains magical energy from its targets; mechanism and current location still unknown"
   type: doc
   status: draft
   universe: <project universe key>
-  privacy: players
-  rating: Teen
+  privacy: <project value>
+  rating: <project value>
   tags:
     - domain/world
     - artifact
@@ -166,7 +166,7 @@ content: |
     - resource: "Work/rp/<campaign>/log/day-0042.md#B4131"
   ---
 
-  # The Siphon
+  # The Wayglass
 
   A dangerous artifact capable of draining magical energy.
 
@@ -197,19 +197,19 @@ content: |
 ```yaml
 operation: "multi_edit"
 files:
-  - path: "Lore/World/Characters/Redacted123.md"
+  - path: "Canon/Characters/Wystan.md"
     section: "Relationships"
     add: |
-      ### the Proprietor
+      ### the Tapster
 
-      Met at Ashfield House (1895-10-21). Terms unclear.
+      Met at The Pewter Gull (1712-03-21). Terms unclear.
 
-  - path: "Lore/World/Characters/the Proprietor.md"
+  - path: "Canon/Characters/the Tapster.md"
     section: "Relationships"
     add: |
-      ### Redacted123 Vance
+      ### Wystan Vance
 
-      Met at Ashfield House (1895-10-21). Terms unclear.
+      Met at The Pewter Gull (1712-03-21). Terms unclear.
 ```
 
 ## Return Format
@@ -217,28 +217,28 @@ files:
 ```yaml
 operations_completed:
   - type: "create"
-    path: "Lore/World/Places/the town/Ashfield House.md"
+    path: "Canon/Places/Saltmere/The Pewter Gull.md"
     status: "success"
   - type: "edit"
-    path: "Lore/World/Characters/the Rival.md"
+    path: "Canon/Characters/the Harbourmaster.md"
     status: "success"
-    changes: ["Added Academy connection", "Added Ashfield House property"]
+    changes: ["Added Conclave connection", "Added The Pewter Gull property"]
   - type: "create"
-    path: "Lore/World/Magic/Artefacts/The Siphon.md"
+    path: "Canon/Items/The Wayglass.md"
     status: "success"
 
 warnings:
-  - "the Rival.md did not exist - created new file"
-  - "The Siphon mechanics incomplete - marked for expansion"
+  - "the Harbourmaster.md did not exist - created new file"
+  - "The Wayglass mechanics incomplete - marked for expansion"
 
 descriptions_to_review:
-  - "Lore/World/Characters/the Rival.md: now also the Ashfield House proprietor; the description says only 'Academy rival'"
+  - "Canon/Characters/the Harbourmaster.md: now also the Pewter Gull's landlord; the description says only 'Conclave rival'"
 
 summary: |
   Promoted 3 canon items from session 2026-02-03:
-  - 1 new location (Ashfield House)
-  - 1 character update (the Rival)
-  - 1 new artifact (The Siphon)
+  - 1 new location (The Pewter Gull)
+  - 1 character update (the Harbourmaster)
+  - 1 new artifact (The Wayglass)
 ```
 
 ## Frontmatter Standards

@@ -1,5 +1,58 @@
 # Changelog
 
+## Unreleased — okf 0.4.1, panel 5.1.1, rp 0.6.0, write 1.13.1: asha is public; no private project names
+
+- The tree is scrubbed of the owner's private projects: campaign, vault,
+  character, place, book and private-repository names, and the live play the
+  RP gate's examples and fixtures were copied from. The agents' worked
+  examples move to one invented setting, and the fixtures are rewritten as
+  invented text with the shape each test needs (word count, case,
+  punctuation, line positions, a narrative role over 200 characters with the
+  same stats). Every invented proper name is absent from the owner's vault,
+  its session archives included. Comments cite "a live log" instead of a live
+  beat. Plain sequence numbers and session dates in fixtures stay: they name
+  nothing. Tests the renaming had weakened are checked against mutants: the
+  epithet rule's test fails when the rule is removed, a new canon-index test
+  fails when bundle discovery stops climbing after one folder, and the
+  projects test again tells a name's first word from the whole name.
+- rp 0.6.0: the canon register's documented defaults are a neutral layout
+  under `Canon/` (`Canon/Characters/*.md`, `Canon/Places/`, `Canon/Items/`,
+  `Canon/Rules/`), where they mirrored one vault's tree, and the write
+  reviewers' fallbacks name the project's own canon folders. A project whose
+  `Memory/canon-layout.md` names its rows, as the register asks, is
+  unaffected; one that relied on an older default adds the rows it needs, or
+  the presence lint knows no cast.
+- `tests/check-private-names.py` fails when a tracked file's text or path, or
+  a commit being pushed, names a private project. Its names come from a local
+  config that is never committed: `--config` or `$ASHA_PRIVATE_NAMES` (which
+  must exist), else `private-names.conf` in `$ASHA_HOME`, `~/.asha`, or the
+  account's own `~/.asha`, so a sandbox-HOME test run still finds it. `name:`
+  matches in any case; `term:` (a name that is also a word) as written, in
+  capitals or as a lowercase slug (`- name:`, `character:name`, `name.md`);
+  `stems:` takes every note and folder name in a folder, `The X` also as `X`;
+  `allow:` drops one. Matches extend to `-`, `_`, `%20` and no separator,
+  identifiers and URL-encoded paths. A missing folder or dictionary is an
+  error, never a smaller check; without any config, as in CI, it reports a
+  skip. validate-plugins Test 7 runs it with `--locations` (file and line; a
+  path can itself be the hit) and prints nothing of the config when it cannot
+  run.
+  `--pre-push`, run by the git pre-push hook `tests/hooks/pre-push` (install
+  as a copy: `cp tests/hooks/pre-push .git/hooks/pre-push`), checks each pushed
+  remote ref name (deletions allowed), annotated-tag messages, and every new
+  commit's message, changed paths (renamed, binary and empty files included)
+  and added text lines. A commit is new unless `git ls-remote` on the push URL
+  lists it (tips not yet fetched fall back to the remote's tracking refs;
+  offline, the tracking refs decide), so a new remote or mirror gets the whole
+  history checked, and asha's early history refuses that push. The hook runs
+  the guard from the checked-out working copy, else origin/master, so pushing
+  a fetched branch that is not checked out runs none of its code. Push asha
+  with `git push`; `jj git push` runs no git hooks. Day files (`day-NNNN`) and
+  bare dates are not names. Not caught: plurals, spelling variants not listed,
+  a name wrapped across lines, sentence-case multi-word names, note names that
+  are dictionary words unless listed with `term:`, binary file content and the
+  content of a tag of a tree or blob. History already pushed is not rewritten.
+- `CLAUDE.md` and `AGENTS.md` state the rule.
+
 ## Unreleased — write 1.13.0, rp 0.5.8: the Material rules; intimacy-arbiter retired
 
 - write: `intimacy-arbiter` is retired. Nothing called it (no recipe, command
@@ -106,7 +159,7 @@
 ## Unreleased — session: a component publisher keeps the pair it replaces (#136)
 
 - #136's observed trial (2026-11-09, the first real `handoff --component` use:
-  Redacted1106 published familiar, scry, servitor and redacted1106-core) found that nested
+  a workspace published its four nested children) found that nested
   projects often gitignore their Memory v2 pair by design, and a handoff never
   commits, so nothing could restore the pair a publication replaced; the four
   earlier pairs survived only in the session transcript. The project-memory
@@ -181,7 +234,7 @@
   rules, so `/clear` still rebinds.
 - Refused too, until the Keeper rules on rebinding at SessionStart `fork`: a
   moved continuation of the Room's own conversation, whose explicit saves into
-  its own project now fail (two such REDACTED1208 saves recorded on 2026-10-24 would
+  its own project now fail (two such saves recorded on 2026-10-24 would
   have); a `/clear` conversation whose SessionStart hook was lost; and a plain
   shell in the Room's tmux session that inherited another Claude value.
 
@@ -205,14 +258,14 @@
   should not: its pane may be mid-turn or at a dialog. The text now says the
   pointer goes to an idle session or one never observed, and that a stale
   working row is not typed into; its close reports `working, last event`.
-- REDACTED1208 Room `3b100e2d` was stored working (shown `unknown`) for 49 h because
+- A project Room (`3b100e2d`) was stored working (shown `unknown`) for 49 h because
   Claude Code moved its conversation to a background session on 2026-10-22
   (`continued-in` record, SessionStart source `fork`, new ID `a818b246`).
   Control binds a generation to its first conversation and rebinds only on
   `clear` or after that conversation ends, so every later hook event was
   refused while its Memory saves still recorded. The binding section now names
-  this. The background host kept REDACTED1208's environment: a Redacted477 RP
-  conversation moved there on 2026-10-28 reported as REDACTED1208 and could not save
+  this. The background host kept that Room's environment: an RP
+  conversation moved there on 2026-10-28 reported as that Room and could not save
   at its close (#148).
 
 ## Unreleased — control: no pointer after the Stop decision delivered the close (#148)
@@ -485,7 +538,7 @@
   `okf_version` gets `okf_update.py --plugin panel` after each decision and
   ratification.
 
-## Unreleased — rp 0.5.6: the RP readers walk the Lore indexes first
+## Unreleased — rp 0.5.6: the RP readers walk the canon indexes first
 
 - The GM brief carries a canon index: the entries of the vault's generated OKF
   `index.md` files whose titles the Keeper's input or the last three beats
@@ -493,9 +546,9 @@
   matches first, at most twelve. The bundle is the register's `canon_index`
   row (its root `index.md`), else the nearest directory above the entity
   globs holding `.okfconfig`, `.okfignore`, `.okf-0.2.json` or an `index.md`
-  declaring `okf_version` (`Lore/` by default; the live REDACTED99 register has no entity rows,
-  so discovery is what runs there). A multi-word title matches in any case; a
-  single word only as written (a possessive, "Redacted221's", names Redacted221); under four
+  declaring `okf_version` (the default character glob's root by default; a live
+  register with no entity rows runs discovery). A multi-word title matches in any case; a
+  single word only as written (a possessive, "Tobb's", names Tobb); under four
   characters never. The section is an optional piece like a keyed entry,
   admitted after them and before the optional beats, so the older beats fall
   to the budget first and the index after them, never the last beat; dropped,
@@ -517,7 +570,7 @@
   its vault-side secondary sources (its `Work/rp/` primary sources carry no
   indexes). The canon-layout template gains the optional `canon_index` row.
 
-## Unreleased — okf 0.4.0, rp 0.5.5: the RP writers keep the Lore bundle indexed, logged and gated
+## Unreleased — okf 0.4.0, rp 0.5.5: the RP writers keep the canon bundle indexed, logged and gated
 
 - `okf_update.py`: a writer hands over the exact paths it created or edited.
   Each path's bundle is the nearest ancestor holding `.okfconfig`, `.okfignore`,
@@ -546,7 +599,7 @@
   agent's rendering of it; descriptions are the Keeper's to revise under
   Taxonomy Decision 004), and returns `descriptions_to_review` for notes whose
   subject an edit widened.
-- Rotation and the summaries write under `Work/rp/`, outside the Lore bundle,
+- Rotation and the summaries write under `Work/rp/`, outside the canon bundle,
   and `novel-state-updater` writes a book's excluded state directory; neither
   changes. The `okf-bundle` skill gains a "Record a writer's changes" section.
 
@@ -683,18 +736,18 @@ Decided in the OKF Room and its panel (2026-10-31,
   Claude Code a spawn from the GM starts in the background whether or not it
   asks (every GM run of 2026-10-30 shows "Async agent launched" with no
   `run_in_background`), so the GM holds for the result by ending its model
-  turn with a line of text, as the GM did on B4383 to B4393; on B4394 it spent
-  its one `SubagentHandback` on "Redacted973's agent is still running", drafted when
+  turn with a line of text, as the GM did on ten live beats; on the next it spent
+  its one `SubagentHandback` on "the agent is still running", drafted when
   messaged, and could not deliver.
 - `/rp:turn` 3b runs the `turn` command as soon as the GM has reported,
   whatever it says. A report with no blocks is refused and the GM is spawned
   once more with the error; the Room never messages, resumes or re-invokes a
   GM that has reported, and never ends the turn waiting on a second report
-  (B4394's Room waited four hours on a notification that never came).
+  (one Room waited four hours on a notification that never came).
 - `rp_gate.py turn` reads a block header with a colon or alone on its line: the
-  GM writes `DRAFT` bare (B4393, B4394), and a sentence before it went into the
+  GM writes `DRAFT` bare, and a sentence before it went into the
   draft, where the lint and the Keeper would have read "my second hand-back
-  was rejected" as the beat. Against B4394's GM transcript (a status handback,
+  was rejected" as the beat. Against a live GM transcript (a status handback,
   a refused second handback and a final text carrying the blocks), `--format
   claude-jsonl` takes the final draft with that sentence dropped; a transcript
   that ends on the status note, or on a note with no blocks, is refused.
@@ -703,17 +756,17 @@ Decided in the OKF Room and its panel (2026-10-31,
 
 - `/rp:turn` takes the GM's model from `gate.models.gm` on every turn and from
   nowhere else: a header, ruling or memory naming a model, or "the default
-  model", no longer overrides it. The Redacted477 Room drafted 49 of Day 201's 50
-  beats on opus from R-246's "weighted beats keep the default model" while the
+  model", no longer overrides it. One live RP Room drafted 49 of a day's 50
+  beats on opus from a ruling's "weighted beats keep the default model" while the
   gate said sonnet; sonnet drafts run about 1 min against opus's 8.5.
 - The presence lint reads the page: the prose after the beat's heading, not
   the GM's working before it (a PRE-COMMIT block's notes and STATE lines put
-  "REDACTED648 (offstage)" on a beat Redacted648 is not in), not a heading, and not the
+  "SABE (offstage)" on a beat Sabe is not in), not a heading, and not the
   Keeper's input echoed as the PC's move. An epithet among the character files
-  ("Redacted993", "Redacted746") matches only whole, so
-  "by the fire" and "PC move" are no longer people; role labels (PC, NPC, GM,
+  ("Duke of Salt Herons", "New PC - Tower Novice") matches only whole, so
+  its single words ("by the salt", "PC move") are no longer people; role labels (PC, NPC, GM,
   DM) are never names; a common-word name in capitals is skipped where the
-  draft also writes it lowercase. Redacted477 B4377 and B4378 now lint clean of
+  draft also writes it lowercase. Two live beats now lint clean of
   presence (they had 2 and 3 flags; a flagged beat loses its background review,
   about 2.3 min of the Keeper's wait each).
 - `rp_gate.py turn` writes the gate's turn file from the GM's final message
@@ -722,10 +775,10 @@ Decided in the OKF Room and its panel (2026-10-31,
   sentence before the first header is dropped. It refuses a message with no GM
   block, a block twice or blocks out of order, and writes nothing. `--format
   claude-jsonl` (Claude Code only) reads a task's JSONL output for the GM's
-  handback, the last message carrying its blocks (B4380: a late alert woke the
+  handback, the last message carrying its blocks (in one live turn a late alert woke the
   GM after its handback, so its final text was not the beat); on Claude Code, 3b passes the GM task's output file this way,
   so the Room never re-emits the message. The Room no longer extracts the
-  blocks by hand (B4378: its own prompt grabbed, then the whole file in a
+  blocks by hand (once: its own prompt grabbed, then the whole file in a
   heredoc, 1.2 min).
 
 ## Unreleased — rp 0.5.2, write 1.12.3: follow-ups to the GM brief
@@ -743,7 +796,7 @@ Decided in the OKF Room and its panel (2026-10-31,
 
 ## Unreleased — rp 0.5.1, write 1.12.2: the GM brief fits its budget
 
-- The GM brief fits its budget with its keyed entries (B4355: 107,696 bytes of
+- The GM brief fits its budget with its keyed entries (a live brief: 107,696 bytes of
   80,000 and none of 13 keyed entries; now 79,098 and 13). A carried beat leaves
   out STATE lines the governing one supersedes; the decision list of beats not
   carried takes `GM DECISIONS / RULINGS` and drops STATE lines and source
@@ -2636,7 +2689,7 @@ the active instruction surface loses no release detail.
   HEAD/branch/index/all-ref evidence, including normalized per-stage index
   flags and symbolic-ref targets, with descriptor-checked raw hashes for changed
   tracked and bounded untracked paths, while clean tracked content stays bound
-  by exact index-cache facts without an REDACTED99-scale content walk.
+  by exact index-cache facts without a whole-vault content walk.
 - A verified colocation record hardened only by removing group/other write bits
   can be reauthenticated on task start after strict root/backend/sync checks,
   stable two-pass Git semantics including all refs, stable jj operation identity,
@@ -3145,7 +3198,7 @@ Five repairs driven by a `/insights` review of 145 sessions. Each maps a recurri
 
 - **`no-broad-home-scans` was username-hardcoded** — its regex matched `/home(/pknull)?`, so on any other machine a full scan of `/home/<someone-else>` was **allowed**. The guard protected exactly one account. Now `/home(/[^/[:space:]]+)?`, denying for any user while leaving scoped paths (`/home/<user>/code`) allowed. Regression cases added to Test 104.
 - **`recall_fixtures.yaml` shipped the maintainer's benchmark to every install** — `lib/install.sh` seeds it into each new `~/.asha/`, so a fresh user received twelve fixtures expecting memories (`project_egregore_setup`, `reference_home_network`) that could never exist for them. They score 0 forever, and the file's own comment explains the cost: *"A permanently impossible fixture would conceal real score regressions."* It then shipped twelve of them. Four also referenced the retired marketplace flow. Replaced with a documented, empty starter — `recall_bench` handles zero fixtures cleanly (`score … if cases else 0.0`), and existing `~/.asha/recall_fixtures.yaml` files are untouched because install only seeds when absent.
-- **Personal names removed from core prose** — an "REDACTED99 vault" aside in `pattern_analyzer.py`'s RP calibration guard, and a `reference_pk_lintop_…` memory id used as the worked example in the memory-maintenance skill.
+- **Personal names removed from core prose** — a named-vault aside in `pattern_analyzer.py`'s RP calibration guard, and a personal memory id used as the worked example in the memory-maintenance skill.
 - **`vault-structure` content root widened** — was anchored on the literal `Vault/`; now matches any of `Vault|Lore|Wiki|Codex|Compendium|Archive`, with the same bucket taxonomy as the exclude. The root stays a *named* anchor deliberately: it is what scopes the rule, and a bare wildcard degenerates the trigger into "every write not in a bucket" — measured at 129/129 markdown files in this repo, `CLAUDE.md` and every doc included. Test 104c pins that blast radius while leaving the root list extensible. Projects whose content lives elsewhere redefine the row in `~/.asha/policies.json`.
 
 **Adversarial review pass (2026-08-04, Codex as external reviewer + self-review).** The four remediation commits were themselves reviewed before release; 13 findings, all verified against the live guard before fixing. The ones that mattered: the v1 delete rule **denied the toolkit's own marker cleanup** (`rm -f Work/markers/…` in `/rp:end`, `/session:silence`, `/session:restore`) — a guard that blocks its own shipped workflows gets overridden into uselessness; an exemption string anywhere in a command suppressed the whole rule (`rm -rf important && mkdir -p /tmp/stage` was allowed), fixed by scoping path exemptions to the rm segment and giving archives their own prior rule with **no** path exemptions; quoted archives (`rm "backup.7z"`) slipped the terminator; `~`/`$HOME`/quoted forms — the most natural phrasings — bypassed the home-scan rule entirely; the priced-stakes nudge was case-sensitive (sentence-initial capitals never fired) and unbounded (`impact` fired via `pact`), fixed with a new opt-in `match_ci` engine flag plus word-boundary discipline; scene-state maintenance was orphaned by the roleplay-gm allowlist cut, redesigned as a `SCENE_STATE_DELTA` the GM emits and `/rp:turn` applies only on a clean verdict — state now rides the same gate as prose; `/rp:turn` and the priced-stakes fragment still hardcoded the stake register the canon-layout work was meant to own; and README's per-plugin detail sections carried versions two releases stale, outside `validate-versions.sh`'s net (now its Test 5). Residual gaps are documented in the rules' `_comment` fields rather than silently carried.
@@ -3156,9 +3209,9 @@ Five repairs driven by a `/insights` review of 145 sessions. Each maps a recurri
 
 **`write` plugin de-specialized (v1.8.0 → v1.9.0 same cycle).** The last domain plugin carrying one project's material:
 
-- **`prose-analysis` hardcoded a voice doc** — `Vault/Docs/Redacted680.md`, with a "**Always** read Redacted680.md first" best-practice and a "missing → request location" fallback. In any other project the glob resolved nothing and the agent proceeded on assumed voice standards. Now a convention search (`**/*StyleGuide*.md` among generic candidates), with an explicit declaration — a manifest's `slots.voiceSpec` or a user-given path — taking precedence, and a refusal to proceed on assumed standards when nothing resolves.
-- **A project's canon shipped inside a generic agent** — a "Hush-Specific Checks" block listing coined transformation-anatomy terms and their body-location constraints. Replaced by the *generalizable* half: constrained-term checking, where a term carries a constraint (location, rank, material, direction) that prose drifts on before it drifts on the term itself, and where the negative cases must be written out because the wrong answers are the adjacent ones.
-- **`craft-core-universal` profile mapping** — the `rp`/`hush` column table became a template for a project's own mapping, plus the three honest relationships a mapping can express (`enforced via core` / a named category / `cf.` for adjacent-but-not-identical) and guidance on what should *stay* profile-specific. The engine itself was already generic (`profileKey = a.profile || P.mode || 'custom'`, no built-in list); only its description string claimed `Profiles: rp | hush`.
+- **`prose-analysis` hardcoded a voice doc** — one project's style guide path, with an "**Always** read it first" best-practice and a "missing → request location" fallback. In any other project the glob resolved nothing and the agent proceeded on assumed voice standards. Now a convention search (`**/*StyleGuide*.md` among generic candidates), with an explicit declaration — a manifest's `slots.voiceSpec` or a user-given path — taking precedence, and a refusal to proceed on assumed standards when nothing resolves.
+- **A project's canon shipped inside a generic agent** — a project-specific checks block listing coined transformation-anatomy terms and their body-location constraints. Replaced by the *generalizable* half: constrained-term checking, where a term carries a constraint (location, rank, material, direction) that prose drifts on before it drifts on the term itself, and where the negative cases must be written out because the wrong answers are the adjacent ones.
+- **`craft-core-universal` profile mapping** — the per-profile column table became a template for a project's own mapping, plus the three honest relationships a mapping can express (`enforced via core` / a named category / `cf.` for adjacent-but-not-identical) and guidance on what should *stay* profile-specific. The engine itself was already generic (`profileKey = a.profile || P.mode || 'custom'`, no built-in list); only its description string claimed a fixed list of two profiles.
 
 ### v2.3.0 — OpenCode support dropped (2026-07-27)
 
@@ -3236,11 +3289,11 @@ Three disciplines ported from harness-native memory prompts into Asha's own stor
 
 Full-project audit (goals, effectiveness, 88-script inventory, reachability) followed by fixes for all ten findings. Also rolls up the 2026-07-21 policy-guardrail work below.
 
-- **Session v1.3.0** — dead memory-index feature removed (`post-tool-use.sh` no longer invokes the nonexistent `memory_index.py`; scaffolding template stops promising `memory_index.py`/`reasoning_bank.py`); orphaned `run-python.sh` deleted; `jsonl_reader.py` fully self-contained (no `~/life/bin` import path); save.md baseline capture resolved via `ASHA_BASELINE_CAPTURE`/config, not a personal path; both session skills documented.
+- **Session v1.3.0** — dead memory-index feature removed (`post-tool-use.sh` no longer invokes the nonexistent `memory_index.py`; scaffolding template stops promising `memory_index.py`/`reasoning_bank.py`); orphaned `run-python.sh` deleted; `jsonl_reader.py` fully self-contained (no import path into a private checkout); save.md baseline capture resolved via `ASHA_BASELINE_CAPTURE`/config, not a personal path; both session skills documented.
 - **Installer** — per-harness failure isolation in `asha_install_main` (one harness failing no longer aborts the rest; per-harness summary, non-zero exit on partial failure).
 - **Code v1.4.0** — new `asha calibration` dispatcher verb makes `bin/calibration` reachable everywhere; orchestrate/complexity-routing docs use it; postgres skill documented.
-- **Admin v0.2.0** — SKILL prose de-localized (repo paths resolve via `asha_root`, not `~/life/asha`).
-- **Docs** — `~/life`/`~/life/marketplace` swept from all shipped prose (INSTALLER.md, secrets.md, memory-architecture.md, test-ping); README/CLAUDE.md version tables re-synced (session detail section had drifted to 1.0.0, write to 1.5.0/9-agents).
+- **Admin v0.2.0** — SKILL prose de-localized (repo paths resolve via `asha_root`, not a private checkout path).
+- **Docs** — private checkout paths swept from all shipped prose (INSTALLER.md, secrets.md, memory-architecture.md, test-ping); README/CLAUDE.md version tables re-synced (session detail section had drifted to 1.0.0, write to 1.5.0/9-agents).
 - **Tests** — shellcheck now covers `bin/ lib/ harnesses/ identity/` + root shims; `validate-versions.sh` cross-checks every plugin README version against both top-level tables; new `test-install.sh` (sandboxed round-trip incl. failure isolation) and `test-identity-merge.sh` (merge-script smoke) suites; bash-safety flags classified and annotated repo-wide.
 
 ### Policy guardrails made reachable and enforcing (2026-07-21, rolled into v2.2.0)
@@ -3322,7 +3375,7 @@ Full-project audit (goals, effectiveness, 88-script inventory, reachability) fol
 
 ### v1.16.0 (2026-03-08)
 
-- **Write v1.4.0**: Novel-specific agents from REDACTED99 project
+- **Write v1.4.0**: Novel-specific agents from one project
   - novel-character-reviewer, novel-continuity-reviewer
   - novel-state-updater, novel-style-linter
 
@@ -3565,13 +3618,13 @@ Five repairs from a `/insights` review of 145 sessions; each routes a recurring 
 
 - `no-broad-home-scans` hardcoded the maintainer's account (`/home(/pknull)?`), so a full scan of any *other* user's home was allowed — the guard protected one machine. Now username-agnostic.
 - `templates/recall_fixtures.yaml` seeded the maintainer's personal recall benchmark into every new `~/.asha/` (`lib/install.sh`). Its fixtures name memories no other install can have, so they score 0 permanently — the exact failure the file's own comment warns about ("a permanently impossible fixture would conceal real score regressions"). Now a documented empty starter; live user files are untouched, since install seeds only when absent.
-- `pattern_analyzer.py` and the memory-maintenance skill lost their "REDACTED99 vault" / `pk_lintop` references.
+- `pattern_analyzer.py` and the memory-maintenance skill lost their named-vault and personal-memory references.
 
 **`write` plugin de-specialized (v1.8.0)** — the last domain plugin carrying one project's material:
 
-- `prose-analysis` hardcoded `Vault/Docs/Redacted680.md` *and* instructed itself to "**always** read it first". Elsewhere that resolved nothing and the agent proceeded on assumed voice standards — the silent-empty-result failure again. Now a convention search, an explicit declaration that overrides it, and a refusal to proceed when nothing resolves.
-- A "Hush-Specific Checks" block shipped one project's coined transformation-anatomy terms and body-location constraints inside a generic agent. Replaced with the generalizable pattern: constrained-term checking with negative cases written out.
-- `craft-core-universal`'s `rp`/`hush` mapping table became a template for a project's own. Note the engine was *already* generic — only its description string claimed a fixed profile list, which is the cheapest kind of drift to miss.
+- `prose-analysis` hardcoded one project's style guide path *and* instructed itself to "**always** read it first". Elsewhere that resolved nothing and the agent proceeded on assumed voice standards — the silent-empty-result failure again. Now a convention search, an explicit declaration that overrides it, and a refusal to proceed when nothing resolves.
+- A project-specific checks block shipped one project's coined transformation-anatomy terms and body-location constraints inside a generic agent. Replaced with the generalizable pattern: constrained-term checking with negative cases written out.
+- `craft-core-universal`'s per-profile mapping table became a template for a project's own. Note the engine was *already* generic — only its description string claimed a fixed profile list, which is the cheapest kind of drift to miss.
 
 **Adversarial review pass (same day)** — the remediation itself was reviewed (Codex externally + self-review) before release; every finding verified against the live guard before fixing. Headlines: the delete rule denied the toolkit's own `rm -f Work/markers/…` cleanup (BLOCKER — an over-broad guard gets disabled and then guards nothing, this time proven against ourselves); exemption strings anywhere in a command suppressed the whole rule (now segment-scoped, archives get a prior rule with zero path exemptions); `~`/`$HOME`/quoted home scans bypassed entirely; the priced-stakes nudge never fired on sentence-initial capitals (`match_ci` engine flag added) and fired on `impact` via `pact` (word boundaries); the roleplay-gm allowlist cut orphaned scene-state maintenance (now `SCENE_STATE_DELTA`, applied by `/rp:turn` only on clean verdict); stale README detail-section versions escaped `validate-versions.sh` (new Test 5). Lesson reinforced: **verify a rule against the workflows that ship beside it, not only against the incident that motivated it** — and a reviewer's findings are claims until probed against the live mechanism — all 13 verified as real here, but two were resolved differently than proposed (the overloaded vault roots stay, being warn-only and user-overridable; `/rp:end` stages canon-writer's reported file list rather than gaining a register "root" field).
 
@@ -3626,7 +3679,7 @@ Five repairs from a `/insights` review of 145 sessions; each routes a recurring 
 - Full-project audit (Work/audit/2026-07-22--project-audit.md): all ten findings fixed.
 - Session v1.3.0 (dead memory-index feature removed; run-python.sh orphan deleted; jsonl_reader self-contained; skills documented), Code v1.4.0 (`asha calibration` dispatcher verb; postgres skill documented), Admin v0.2.0 (prose de-localized).
 - Installer: per-harness failure isolation in `asha_install_main` (mirrors uninstall's issue-#4 pattern).
-- `~/life` paths swept from all shipped prose; version tables re-synced.
+- Private checkout paths swept from all shipped prose; version tables re-synced.
 - Tests: shellcheck scope extended to bin/lib/harnesses/identity; validate-versions cross-checks plugin READMEs vs both top-level tables; new install round-trip + identity-merge smoke suites; bash-safety flags classified repo-wide.
 
 ### v2.1.0 (2026-07-10) — Ecosystem audit prune
@@ -3703,7 +3756,7 @@ Five repairs from a `/insights` review of 145 sessions; each routes a recurring 
 
 ### v1.2.0 (2025-11-17)
 
-- Removed REDACTED99-specific universe references
+- Removed one project's universe references
 - Updated character names to general-purpose versions:
   - "Asha" → "The Moderator"
   - "The Recruiter" → "The Analyst"

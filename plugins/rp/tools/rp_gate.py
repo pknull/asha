@@ -80,7 +80,7 @@ VALIDATOR_LOG = "Work/rp/_validator_log.jsonl"
 MODE_FILE = ".claude/modes/rp.yaml"
 CANON_LAYOUT = "Memory/canon-layout.md"
 INVARIANTS = "Memory/invariants.md"
-DEFAULT_CHARACTER_GLOB = "Lore/World/Characters/*.md"
+DEFAULT_CHARACTER_GLOB = "Canon/Characters/*.md"
 PRICED_RULE = Path(__file__).resolve().parents[1] / "hooks/priced-stakes/rule.json"
 
 POLICIES = ("consequential", "every", "lint-only")
@@ -94,7 +94,7 @@ DEFAULTS = {
     "deltaKeys": [],
     "consequentialPatterns": [],
     "background": True,
-    "briefBytes": 80_000,  # about 33k tokens of a live log (B4355): read in the parts the report's reads name
+    "briefBytes": 80_000,  # about 33k tokens of a live log: read in the parts the report's reads name
 }
 # Harnesses where a command can run a subagent in the background and collect its result later. Claude Code only:
 # docs/session-hub.md records Claude's background agents; nothing in asha verifies it for Codex, Copilot or OpenCode,
@@ -836,7 +836,7 @@ def invariants_report(project, state: dict | None) -> dict | None:
 # -------------------------------------------------------------- turn input
 
 # a block header: the name, with or without a heading mark or bold, followed by a colon, or alone on its line
-# (the GM writes "DRAFT" bare, B4393 and B4394); a name inside a sentence is prose
+# (a GM writes "DRAFT" bare); a name inside a sentence is prose
 SECTION_RE = re.compile(r"^\s*(?:#+\s*)?(?:\*\*)?(%s)(?:\*\*)?\s*(?::(?:\*\*)?\s*(.*))?$" % "|".join(SECTIONS))
 
 
@@ -873,10 +873,10 @@ TITLES = {"The", "A", "An", "Dr", "Mr", "Mrs", "Ms", "Mx", "Miss", "Lady", "Lord
           # pronouns and determiners are never names, even capitalised
           "He", "She", "It", "They", "We", "You", "I", "Him", "Her", "Them", "Us", "Me", "His", "Hers", "Its",
           "Their", "Theirs", "Our", "Ours", "Your", "Yours", "My", "Mine", "This", "That", "These", "Those",
-          # role labels are not names: "PC move (B4378)", a file stem "Redacted746"
+          # role labels are not names: "PC move (B12)", a file stem "New PC - Tower Novice"
           "PC", "NPC", "GM", "DM"}
-# An epithet is one name, not a list of people: "Redacted993", "Redacted558",
-# "Redacted746". Its words match only together; turnGate.cast takes a short form.
+# An epithet is one name, not a list of people: "Duke of Salt Herons", "Perrin, the Lampwright",
+# "New PC - Tower Novice". Its words match only together; turnGate.cast takes a short form.
 EPITHET_RE = re.compile(r"\s(?:of|the|and|in|at|to|on|for|from|with|by|de|du|von|van|der|den|del|della|di|da"
                         r"|la|le|el|al|bin|ibn)\s|,|\s[-\u2013\u2014]\s")
 TOKEN_RE = re.compile(r"[^\W\d_][\w'’-]*")
@@ -900,7 +900,7 @@ def _plain(name: str) -> str:
 
 
 def same_person(a: str, b: str) -> bool:
-    """Marr is Redacted561; Redacted804 is not Redacted518 Brand; Mother is Mother."""
+    """Pask is Kester Pask; Hamo Mossop is not Effie Mossop; Mother is Mother."""
     left, right = name_tokens(a), name_tokens(b)
     if not left or not right:
         return bool(_plain(a)) and _plain(a) == _plain(b)
@@ -920,7 +920,7 @@ def present_names(value: str) -> list[str]:
         if stripped == text:
             break
         text = stripped
-    text = re.sub(r"\b(%s|[A-Z])\." % ABBREVIATIONS, lambda m: m.group(1) + "\u2024", text)  # "Mr. Holt", "J. Redacted901"
+    text = re.sub(r"\b(%s|[A-Z])\." % ABBREVIATIONS, lambda m: m.group(1) + "\u2024", text)  # "Mr. Holt", "J. Lugg"
     text = re.split(r"\.(?:\s|$)", text)[0]  # a field holds names, not sentences
     parts = (part.strip(" .*`—–-").replace("\u2024", ".") for part in re.split(r"[,;]|\band\b|&|[—–]", text))
     return [part for part in parts if part and ":" not in part and _plain(part) not in NOBODY]
@@ -999,7 +999,7 @@ ANCHOR_START_RE = re.compile(r"(?i)\**\s*\bscene\s*:")
 SENTENCE_RE = re.compile(r"(?<=[.!?])\s+|\n+|;\s*")
 ANCHOR_LINE_RE = re.compile(r"(?i)\bscene\s*:.*\|.*\bpresent\s*:")
 TIME_RE = re.compile(r"~?\b(\d{1,2}):(\d{2})\b")
-# A possession that does not put its owner on the page: "Redacted1259's plans", "Redacted1264's letter".
+# A possession that does not put its owner on the page: "Morwenna's plans", "Orm's letter".
 ARTIFACTS = {"letter", "letters", "note", "notes", "plans", "plan", "book", "books", "ledger", "page", "pages",
              "name", "names", "word", "words", "yard", "house", "home", "room", "shop", "farm", "mill", "grave",
              "things", "belongings", "memory", "ghost", "absence", "debt", "debts", "money", "coin", "coins",
@@ -1012,14 +1012,14 @@ SPEECH_WORDS = {"says", "said", "asks", "asked", "calls", "called", "answers", "
 ARTICLES = {"the", "a", "an"}
 MENTION_PREPS = {"without", "whether"}
 FAMILY = r"\s+(?:brothers|sisters|family|household|boys|girls|twins|clan|farm|house|place|name|kind|way)\b"
-# "of Redacted1264" and "from Redacted1264" are mentions only after these: "thinks of Redacted1264", "a letter from Redacted1264".
+# "of Orm" and "from Orm" are mentions only after these: "thinks of Orm", "a letter from Orm".
 OF_MENTION = {"think", "thinks", "thought", "thinking", "speak", "speaks", "spoke", "talk", "talks", "talked",
               "hear", "hears", "heard", "dream", "dreams", "dreamt", "dreamed", "remind", "reminds", "reminded",
               "memory", "memories", "word", "news", "story", "stories", "name", "mention", "sign", "trace",
               "nothing", "none", "rest", "tired", "sick", "fond", "afraid", "jealous", "proud", "ashamed"}
 FROM_MENTION = {"word", "letter", "note", "message", "news", "gift", "present", "order", "orders", "request",
                 "greetings", "money", "coin", "payment"}
-# Belief, not speech: "Redacted648 knows Redacted1264 hates the cold" is not Redacted1264 acting.
+# Belief, not speech: "Sabe knows Orm hates the cold" is not Orm acting.
 REPORT = {"knows", "knew", "thinks", "thought", "believes", "believed", "remembers", "remembered", "hopes",
           "hoped", "wonders", "wondered", "fears", "feared", "imagines", "imagined", "doubts", "doubted",
           "suspects", "suspected", "guesses", "guessed"}
@@ -1058,38 +1058,38 @@ def _excused(sentence: str, start: int, end: int, tokens_re) -> str | None:
 
     Every other mention counts: a false flag costs one cheap review, a miss ships
     unreviewed. Each excuse is narrow, and only an excuse word directly before the
-    name counts ("Lost in thought, Redacted1264 turns" is Redacted1264 on the page).
+    name counts ("Lost in thought, Orm turns" is Orm on the page).
     """
     before, after = sentence[:start], sentence[end:]
     if SPEAKER_RE.match(after):
-        return None  # 'A shout from Redacted1264: "..."' is Redacted1264 speaking
-    owned = re.match(r"['’][sS]\s+([A-Za-z]+)(?:\s+([A-Za-z]+))?", after)  # "Redacted1264's letter", "Redacted1264's old letter"
+        return None  # 'A shout from Orm: "..."' is Orm speaking
+    owned = re.match(r"['’][sS]\s+([A-Za-z]+)(?:\s+([A-Za-z]+))?", after)  # "Orm's letter", "Orm's old letter"
     if owned and (owned.group(1).lower() in ARTIFACTS or (owned.group(2) or "").lower() in ARTIFACTS):
-        return "possessive"  # "Redacted1259's plans", not "Redacted1264's eyes" or "Redacted1264's taken"
+        return "possessive"  # "Morwenna's plans", not "Orm's eyes" or "Orm's taken"
     adjacent = before.rsplit(None, 2)[-2:] if before[-1:].isspace() else []
     prev = adjacent[-1].lower() if adjacent and re.fullmatch(r"[\w'’]+", adjacent[-1]) else ""
     prev2 = adjacent[-2].lower() if prev and len(adjacent) > 1 and re.fullmatch(r"[\w'’]+", adjacent[-2]) else ""
     titled = not name_tokens(sentence[start:end])  # "the Captain": the article is part of the name
     if prev in ARTICLES and not titled and re.match(FAMILY, after):
-        return "attributive"  # "the Redacted1264 brothers"; not "the Warden, who nods"
+        return "attributive"  # "the Orm brothers"; not "the Warden, who nods"
     if (prev in MENTION_PREPS or (prev in ("of", "about") and prev2 in OF_MENTION)
             or (prev == "from" and prev2 in FROM_MENTION)):
-        return "mention"  # "thinks of Redacted1264", "talks about Redacted1264", "a letter from Redacted1264", "whether Redacted1264..."
+        return "mention"  # "thinks of Orm", "talks about Orm", "a letter from Orm", "whether Orm..."
     subject = len(adjacent) > 1 and (prev2 in PRONOUNS or bool(tokens_re.fullmatch(adjacent[-2])))
     if (prev in REPORT and subject) or (prev == "that" and prev2 in REPORT | SPEECH_WORDS):
-        return "reported"  # "Redacted648 knows Redacted1264...", not "Deep in thought Redacted1264..."
+        return "reported"  # "Sabe knows Orm...", not "Deep in thought Orm..."
     if prev in ("says", "said") and prev2 and (prev2 in PRONOUNS or tokens_re.fullmatch(adjacent[-2])):
-        return "reported"  # "Redacted648 says Redacted1264 must be at the mill"; not '"Hang it," said Redacted1264'
+        return "reported"  # "Sabe says Orm must be at the mill"; not '"Hang it," said Orm'
     gone = GONE_RE.match(after)
     if gone and not ARRIVAL_RE.search(after) and not re.search(r"\b(?:and|now|then)\b", after[gone.end():]):
-        return "absent"  # "Redacted221 is away", "Redacted1264 has gone to the mill"; not "...and now comes in"
+        return "absent"  # "Tobb is away", "Orm has gone to the mill"; not "...and now comes in"
     if LATER_RE.match(after) and not ARRIVAL_RE.search(after):
-        return "absent"  # "Redacted1264 will be back by noon", "where Redacted1264 used to sit"
+        return "absent"  # "Orm will be back by noon", "where Orm used to sit"
     return None
 
 
 def _carried(after: str) -> bool:
-    """The absent character sends word and nothing else: "Redacted1264 sends word: the hinges are ready." """
+    """The absent character sends word and nothing else: "Orm sends word: the hinges are ready." """
     m = re.match(r"\s+(?:has\s+)?(?:sends?|sent)\s+(?:\w+\s+){0,4}?(?:word|news|note|message|letter)\b", after, re.I)
     if m:
         rest = after[m.end():]
@@ -1103,15 +1103,15 @@ def _tokens_regex(cast: list[str]):
     for name in cast:
         full = " ".join(re.sub(r"\([^()]*\)", " ", name).replace("_", " ").split())
         epithet = bool(EPITHET_RE.search(" ".join(re.split(r"[-\s]+", full)) if full == full.lower() else full))
-        if full and full == full.lower():  # a file stem like "redacted561"
+        if full and full == full.lower():  # a file stem like "kester-pask"
             full = " ".join(w[:1].upper() + w[1:] for w in re.split(r"[-\s]+", full) if w)
         if len(name_tokens(full)) > 1 and " " in full:
             variants.update({full, full.upper()})
         titled = re.match(r"(?i)(the|a|an)\s+(.*)", full)
-        if titled:  # "Redacted1143" is a title: its words are not names
+        if titled:  # "The Ember Keeper" is a title: its words are not names
             variants.update({full, full.upper(), f"the {titled.group(2)}", titled.group(2)})
             continue
-        if epithet:  # "Redacted993": "Fire" is not a person
+        if epithet:  # "Duke of Salt Herons": "Salt" is not a person
             continue
         if not name_tokens(full) and re.fullmatch(r"[A-Z][a-z]+", full):
             variants.update({full, full.upper()})  # a title-only name: "Captain", "Mother"
@@ -1130,9 +1130,9 @@ def _page(lines: list[str], keeper: str) -> str:
     """The prose the presence check reads.
 
     The GM's working before the beat's heading (a PRE-COMMIT block: its notes, its
-    STATE, "REDACTED648 (offstage): ...") is not the page, and nor is a heading; without a
+    STATE, "SABE (offstage): ...") is not the page, and nor is a heading; without a
     beat heading the whole draft is. The Keeper's input echoed as the PC's move
-    ("**PC move (B4377):** ...") is the Keeper's, read like a quotation.
+    ("**PC move (B12):** ...") is the Keeper's, read like a quotation.
     """
     last = max((i for i, line in enumerate(lines) if parse_beat_heading(line)), default=-1)
     text = "\n".join(line for line in lines[last + 1:] if not HEADING_RE.match(line))
@@ -1182,7 +1182,7 @@ def _day_findings(scene_field: str, delta: dict, scene_day, file_day=None) -> li
     """The delta's day picks the beat's day file, and a rotation cannot be undone: hold it to the anchor.
 
     The anchor's day is the day its leading span ends on: "Scene: Day 196, ~22:00 to Day 197,
-    ~05:50" is Day 197. A clock later in the field ("; THE CURE Day 3 of 30") is not the day, and
+    ~05:50" is Day 197. A clock later in the field ("; THE RITE Day 4 of 12") is not the day, and
     "the siege, Day 3 of it" names none.
     """
     m = ANCHOR_DAY_RE.match(scene_field)
@@ -1236,7 +1236,7 @@ def parse_delta(text: str):
     for key, value in data.items():
         if key == "scene" and isinstance(value, dict):
             delta.update({f"scene.{k}": v for k, v in value.items()})
-        elif key == "run" and isinstance(value, dict):  # run: {workings: {HOMING: on}}
+        elif key == "run" and isinstance(value, dict):  # run: {workings: {WARDING: on}}
             for section, entries in value.items():
                 if isinstance(entries, dict):
                     delta.update({f"run.{section}.{name}": v for name, v in entries.items()})
@@ -1441,7 +1441,7 @@ def lint(turn: dict, scene: dict, config: dict, project, brief=None) -> dict:
                 continue
             if (not sentence[:m.start()].strip() and not after_quote and not name.isupper()
                     and name.lower() in lowercase and name.lower() not in hard):
-                continue  # "Frost runs along the wall" where the draft also says "frost"
+                continue  # "Gorse runs along the wall" where the draft also says "gorse"
             if name.isupper() and name.lower() in lowercase and name.lower() not in hard:
                 continue  # "BY THE FIRE" in the GM's capitals, where the draft also says "fire"
             if _excused(sentence, m.start(), m.end(), tokens_re):
@@ -1839,7 +1839,7 @@ BRIEF_FILE = "Work/rp/.gate/brief.md"
 BRIEF_REPORT = "Work/rp/.gate/brief.json"
 BRIEF_MIN, BRIEF_MAX = 8_000, 1_000_000
 KEYED_DEFAULT = "keyed-entries.md"
-PRICED_DEFAULT = "Lore/TTRPG/canon-sources.md"
+PRICED_DEFAULT = "Canon/Rules/canon-sources.md"
 PRICED_FRAGMENT = PRICED_RULE.parent / "canon-priced-stakes.md"
 SCAN_BEATS = 3  # besides the Keeper's input, keys are matched in the last few beats
 CANON_INDEX_MAX = 12  # index entries the brief's Canon index carries at most
@@ -1847,16 +1847,16 @@ CANON_TITLE_MIN = 4  # a shorter title is a word, not a name
 OKF_MARKERS = (".okfconfig", ".okfignore", ".okf-0.2.json")
 INDEX_ENTRY_RE = re.compile(r"^- \[(.+?)\]\((\./[^)]+)\)(?:: (.*))?$")  # a generated OKF index entry
 ENTITY_KINDS = ("character", "location", "artifact", "faction", "magic", "pc")
-CHARACTER_DEFAULT = "Lore/World/Characters/*.md"
+CHARACTER_DEFAULT = "Canon/Characters/*.md"
 WHOLE_BEATS = 1  # the last beats every brief carries, whatever the budget; the two before them go in after the keyed
 DECISION_LINE_MAX = 400  # bytes of a GM DECISION or RULING line from a beat not carried; the rest is a read away
 # One Read of the brief on Claude Code is refused past 25,000 tokens, and one with no limit returns only a first
-# part: a 79,098-byte live brief (B4355) was 33,091 tokens (2.4 bytes a token). The report's reads cut it
+# part: a 79,098-byte live brief was 33,091 tokens (2.4 bytes a token). The report's reads cut it
 # into parts this size or less (even at 1.6 bytes a token), which the GM issues in one message.
 BRIEF_READ_BYTES = 40_000
 STATE_LINE_RE = re.compile(r"^\s*(?:[-*>]\s*)?\**STATE\**\s*:")  # "STATE: ~07:35 D199 ...", capitals only
 # A source record ("SOURCED: ...", "SOURCED (priced stake: ...):", "SOURCE_LOG ...") cites the rulings it names, even
-# with their labels ("l.436 GM RULING: the collar answers ..."), so it is no decision line; nor is a STATE line, which
+# with their labels ("l.436 GM RULING: the tide bell sounds ..."), so it is no decision line; nor is a STATE line, which
 # the governing one supersedes.
 SOURCE_RECORD_RE = re.compile(r"^\s*(?:[-*>]\s*)?\**SOURCE(?:D|_LOG)\b")
 BRIEF_DECISION_ITEM_RE = re.compile(r"^- Beat \S+, .+? line \d+: (.*)$")  # a line of the brief's decision list
@@ -1994,7 +1994,7 @@ def canon_index_entries(project, bundle) -> tuple[list[dict], int]:
 
 def _title_names(title: str, text: str, lowered: str) -> bool:
     """Whether the text names the title as a whole phrase (the keyed matcher's word boundaries, so a possessive
-    "Redacted221's" names Redacted221): case-insensitive for a multi-word title (an article's case follows the sentence), as
+    "Tobb's" names Tobb): case-insensitive for a multi-word title (an article's case follows the sentence), as
     written for a single word (so a note called Edits does not match every 'edits'). A title under
     CANON_TITLE_MIN characters is a word, not a name, and never matches."""
     if len(title) < CANON_TITLE_MIN:
@@ -2923,7 +2923,7 @@ def _days(data: dict, lines: list[str] | None = None):
     beats reached (its frontmatter only when no beat names a day). state_day, the day a beat without
     a day of its own is on, is the later of that and the frontmatter's: a flashback's delta lowers
     the frontmatter but not the log, a delta applied without its beat raises it before any beat.
-    A log's frontmatter can also go stale: the 10-17 log's says Day 176, its beats end on Day 195.
+    A log's frontmatter can also go stale, many days behind the last beat it holds.
     """
     stated = fiction_day(data.get("currentDate")) if isinstance(data.get("currentDate"), str) else None
     file_day = _log_day(data)

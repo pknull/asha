@@ -1,6 +1,6 @@
 # RP Plugin
 
-**Version**: 0.5.8
+**Version**: 0.6.0
 
 Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification, and world/history lookup. The *verbs* of running a game live here; the *nouns* — canon, character registers, rulesets, the invariants projection — stay in the consuming project.
 
@@ -35,7 +35,7 @@ tedious species of error.
 ## Session lifecycle
 
 ```text
-/rp:start Redacted477 1889-10-03       open markers, retrieve continuity, build Day Plan
+/rp:start Wystan 1712-03-03       open markers, retrieve continuity, build Day Plan
 /rp:turn I open the cellar door.  run one GM draft through the continuity gate
 /rp:turn I ask her what changed.  repeat for each Keeper turn
 /rp:end                            summarize, update character state, ratify canon
@@ -94,7 +94,7 @@ The plugin ships the *verbs*. Where a project keeps its characters, places, and 
 
 Agents (`world-lookup`, `canon-writer`, `timeline-search`, `character-template`) and commands (`/rp:end`) resolve every canon path through that register, falling back to a documented default only when it is absent.
 
-**Why this is enforced rather than suggested.** Until v0.2.0 these agents addressed one vault's tree directly (`Lore/World/Places/`, `Lore/World/Magic/Artefacts/`, …). In any project that did not share that layout, every lookup resolved nothing — and an empty result is indistinguishable from "no such canon exists". The plugin did not fail loudly; it quietly reported absence. Three separate path vocabularies had also drifted apart inside the plugin itself (`Places/` vs `Locations/`, `Magic/Artefacts/` vs `Items/`), which is what an unowned convention looks like after a few edits.
+**Why this is enforced rather than suggested.** Until v0.2.0 these agents addressed one vault's tree directly. In any project that did not share that layout, every lookup resolved nothing — and an empty result is indistinguishable from "no such canon exists". The plugin did not fail loudly; it quietly reported absence. Three separate path vocabularies had also drifted apart inside the plugin itself (one place had two folder names, one kind of item two more), which is what an unowned convention looks like after a few edits.
 
 The same rule covers the direct `rp-priced-stakes` prompt safeguard: its match
 language must not contain proper nouns from one campaign. The safeguard is
@@ -155,20 +155,20 @@ keys are schema keys (no root mirrors), and its participants, time and day
 (`currentDate` against the anchor's `Scene: Day N`) agree with the anchor; and every mention of a known cast member on the page (outside
 dialogue) is someone in the scene, in the anchor's `Present:` list, arriving on
 the page or sending word. The page is the prose after the beat's heading: the
-GM's working before it (a PRE-COMMIT block, its notes and STATE lines, "REDACTED648
+GM's working before it (a PRE-COMMIT block, its notes and STATE lines, "SABE
 (offstage): ...") is not the page, a heading is not, and the Keeper's input
-echoed as the PC's move ("**PC move (B4377):** ...") is read like a quotation;
+echoed as the PC's move ("**PC move (B12):** ...") is read like a quotation;
 a draft with no beat heading is the page whole. A mention is let off only when
-it is plainly not that person on the page: a possession ("Redacted1259's plans"),
-"the Redacted1264 brothers", "thinks of" or "word from", reported belief or speech
-("Redacted648 knows Redacted1264...", "Redacted648 says Redacted1264..."), or a stated absence ("is away",
+it is plainly not that person on the page: a possession ("Morwenna's plans"),
+"the Orm brothers", "thinks of" or "word from", reported belief or speech
+("Sabe knows Orm...", "Sabe says Orm..."), or a stated absence ("is away",
 "will be back", "used to"). Names come from the session frontmatter, the
 anchor, the `character` row of `Memory/canon-layout.md` (default
-`Lore/World/Characters/*.md`) and `turnGate.cast`; a character-file name that
-is also a common word ("Frost") is skipped at the start of a sentence, and in
+`Canon/Characters/*.md`) and `turnGate.cast`; a character-file name that
+is also a common word ("Gorse") is skipped at the start of a sentence, and in
 capitals ("BY THE FIRE") wherever the draft also writes it lowercase, unless it
-is in the scene or in `turnGate.cast`; an epithet ("Redacted993",
-"Redacted558", "Redacted746": a name with a lowercase
+is in the scene or in `turnGate.cast`; an epithet ("Duke of Salt Herons",
+"Perrin, the Lampwright", "New PC - Tower Novice": a name with a lowercase
 connective, a comma or a spaced dash) matches only whole, its words not being
 people, so a short form it goes by belongs in `turnGate.cast`; role labels
 (PC, NPC, GM, DM) are never names. The default leans toward flagging: a false
@@ -345,7 +345,7 @@ copy; its report is kept beside it, and `ship` and `pending` print its `reads`
 `canon_index` row names its root `index.md`; without the row, the nearest
 directory above the entity globs, the project itself included, that holds
 `.okfconfig`, `.okfignore`, the learnings marker `.okf-0.2.json` or an
-`index.md` declaring `okf_version`, `Lore/` by default), the brief reads every
+`index.md` declaring `okf_version`, `Canon/` by default), the brief reads every
 generated `index.md` in it and carries the entries whose titles the Keeper's
 input or the last three beats name: `- Title (path; where it matched):
 description`, the input's matches first, at most twelve. A multi-word title
@@ -371,7 +371,7 @@ campaign's `log_dir` (`Work/rp/<campaign>/keyed-entries.md`). One entry per
 ```markdown
 ## The north gate
 - keys: gate, the door, gatekeep*, /\bnorth (?:arch|gate)\b/
-- source: Lore/World/Places/Town.md
+- source: Canon/Places/Town.md
 - quote: "opens only at dusk"
 - quote: the toll is paid at the inner door / never at the outer
 - note: one line for the GM; a table note, never a source
@@ -389,8 +389,8 @@ harness, where the prompt hook's delivery on Copilot and OpenCode is unverified.
 ## Fresh Room at each Day Plan
 
 A Room's context grows all day: every turn leaves the GM's hand-back, the
-check's output and the reviewer's verdict in it, and on B4303 the main session
-carried about 690k tokens a call. With the brief built from disk (**GM brief**)
+check's output and the reviewer's verdict in it, and on one live beat the main
+session carried about 690k tokens a call. With the brief built from disk (**GM brief**)
 and pending reviews kept on disk (**Background review**), a turn needs nothing
 from the session's memory, so a fresh Room at each Day Plan loses nothing. The
 chair starts one on its own, through Control, whenever `resume.ready` holds
@@ -470,10 +470,10 @@ A closed file is never edited again, so its `file:line` citations stay valid.
 An open file's lines move each time a delta grows or shrinks its frontmatter,
 so cite a line only in a closed file (closed by rotation's footer; a legacy log's
 `status: closed` does not count, since `/rp:start` can reopen it). While a file is open, cite the beat
-(`B4161`), including the beat that set a header or frontmatter fact, never a
+(`B12`), including the beat that set a header or frontmatter fact, never a
 line or a header section; add the line once rotation has closed the file.
 Outside the campaign's own directory a citation is path-qualified
-(`redacted477/log/day-0197.md:12`), since every campaign has a `day-0197.md`.
+(`wystan/log/day-0197.md:12`), since every campaign has a `day-0197.md`.
 Only a footer that ends a file closes it; a footer quoted elsewhere (a "Resume
 point, verbatim") does not, and `session` warns about it.
 Each step is safe to repeat: a re-run after a crash adopts the new file,
@@ -487,7 +487,7 @@ slip) stays in the current file with a STEP-BACK flag in its heading: rotation
 only moves forward. A legacy log's day is the highest its beats reached, so a flashback's delta
 does not pull it back. The lint holds the delta's `currentDate` to the anchor's
 `Scene: Day N` (the day its leading span ends on; a clock later in the field,
-"THE CURE Day 3 of 30", is not it), and sends to review a day move the anchor
+"THE RITE Day 4 of 12", is not it), and sends to review a day move the anchor
 does not confirm (`delta_day_unanchored`) or a jump of more than 7 days
 (`delta_day_jump`); `rotate` itself refuses such a jump unless the Keeper confirms it
 (`--allow-jump`), since a typo would split the log past every day between, for good. A day
@@ -574,12 +574,12 @@ run:
   stats:                  # an integer, or "current/max"
     POW: "54/60"
   body:                   # one line of text per part, citing the beat that worked it
-    antlers: "stumps (broken D160, D162; B3328, B3709)"
+    hands: "burn scar on the left palm (B210, B212)"
   workings:               # on or off
-    FIGHTS THE BIT: on
-    HOMING: off
+    STEADY: on
+    WARDING: off
   clocks:                 # the fiction day it fires, and what fires (time optional)
-    vine-test: {day: 198, fires: "the vine test at the wall"}
+    toll-test: {day: 42, fires: "the bridge toll falls due"}
 ```
 
 The block is opt-in: without it, run state stays free text in the run state
@@ -653,7 +653,7 @@ still without a summary (`summaries_due`).
 
 `Memory/invariants.md` is a **generated projection**, not a bible: it is compiled for read-speed at turn time and is therefore lossy by construction. A claim that falls outside it is invisible to the gate rather than wrong. Treat it as a cache over authored canon — never as the only authority consulted.
 
-It holds static canon only. A snapshot of play in it goes stale within a beat and grades every later draft against the wrong world (one projection still described Day 60 at Day 195), so current state is read from the session and the run's state file at every turn instead.
+It holds static canon only. A snapshot of play in it goes stale within a beat and grades every later draft against the wrong world (one projection still described the opening days long after play had moved past them), so current state is read from the session and the run's state file at every turn instead.
 
 ## Installation
 
