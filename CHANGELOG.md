@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — write 1.13.0, rp 0.5.8: the Material rules; intimacy-arbiter retired
+
+- write: `intimacy-arbiter` is retired. Nothing called it (no recipe, command
+  or agent named it), and its two checks belong to reviewers that judge every
+  scene: whether a scene earns its place is the developmental editor's
+  scene-necessity question, and heat held to the project's declared level is a
+  voice finding in either direction (`prose-analysis` Phase 1b, register
+  enforcement). A reinstall per target removes its installed copy: Claude
+  prunes the broken link, and a full Codex, Copilot or OpenCode install
+  deletes the generated file.
+- write, rp: every agent that drafts or judges prose carries a Material
+  section. The drafters (`roleplay-gm`, `character-template`, `prose-writer`,
+  `outline-architect`) render the material at the register the project sets,
+  never softening it to make it comfortable, without moralizing, with a
+  world's norms held as its own, and without reading dark subject matter as the
+  author's state. The reviewers (`developmental-editor`, `line-editor`,
+  `prose-analysis`, `continuity-reviewer`) judge the work against the project's
+  declared intent, never subject matter or a character's beliefs by
+  themselves, and keep moral comment out of their reports. What a project
+  holds (themes, heat level, limits) stays in its voice bible or Tone Anchors.
+
 ## Unreleased — session: a standing watch is not background work a close waits on (#151)
 
 - Claude's Stop lists its running or pending background tasks in

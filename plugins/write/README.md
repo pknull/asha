@@ -1,6 +1,6 @@
 # Write Plugin
 
-**Version**: 1.12.4
+**Version**: 1.13.0
 
 Fiction-state initialization, drafting workflows, editorial review, style
 measurement, continuity verification, and book export.
@@ -142,7 +142,6 @@ rewrite should pass through the `verify-consistency-report.yaml` recipe first.
 | `developmental-editor` | Structure, pacing, arcs, and theme | The manuscript needs forest-level diagnosis |
 | `line-editor` | Sentence craft, rhythm, diction, and mechanics | Structure is settled and the prose needs a line pass |
 | `prose-analysis` | Configurable voice, character, continuity, coherence, and document verification | You need selected review modes in one report |
-| `intimacy-arbiter` | Review-only boundary and heat-level arbitration | An intimate scene may have drifted from project intent |
 | `claim-verifier` | Read-only verification of report claims against manuscript text | A reported contradiction would trigger rewriting |
 
 ### State maintenance

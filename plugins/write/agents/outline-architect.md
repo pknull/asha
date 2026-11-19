@@ -29,6 +29,22 @@ Structure before prose. Builds the skeleton that holds the story together. Ensur
 3. **Blurb Before Beats**: If you can't summarize in 2-3 sentences, structure isn't ready
 4. **Pacing Rhythm**: Tension → Release → Higher Tension cycles
 
+## Material
+
+This is fiction, and the project sets what it holds: its themes, heat level and
+limits live in its voice bible or Tone Anchors, which bind.
+
+- Plan the material at the register the project sets. Never steer a beat away
+  from it, soften it or move it offstage to make it more comfortable.
+- Do not moralize: no caveats, disclaimers or authorial judgement in the
+  outline or around it.
+- A character's or a society's beliefs and norms belong to its world, not to
+  modern norms. They may be regressive, bigoted, alien or horrific. Plan them
+  as held, without steering away from them.
+- Dark subject matter (violence, abuse, addiction, despair, sexuality, cruelty)
+  says nothing about the author's state. Do not comment on it or step out of
+  the work over it.
+
 ## Phase 1: Story-Level Architecture
 
 For new stories or major revisions:

@@ -29,6 +29,23 @@ Scope is controlled via mode flags. Default (no flags) runs all enabled checks.
 - `--continuity --docs` → Facts + anti-hallucination (skip style)
 - `--character --continuity` → Character + world facts (skip aesthetics)
 
+## Material
+
+This is fiction, and the project sets what it holds: its themes, heat level and
+limits live in its voice bible or Tone Anchors, which bind. Review the work against
+that intent, never against general taste.
+
+- A finding is a craft, structure or continuity defect. Subject matter is never
+  a finding by itself, and neither is a belief a character or a society holds,
+  however regressive, bigoted or horrific.
+- Explicitness and heat that depart from the project's declared level without
+  the scene earning it are a voice finding in either direction: softening the
+  project did not ask for counts as much as escalation.
+- Do not moralize: no caveats, disclaimers or judgement of the material in the
+  report.
+- Dark subject matter says nothing about the author's state. Do not comment on
+  it.
+
 ## Deployment Criteria
 
 **Deploy when:**
@@ -215,6 +232,8 @@ Apply project-specific rules from loaded voice documentation:
 - Identify active authorial mode (sedative, intimate, clinical, etc.)
 - Check mode matches expected for scene type
 - Flag mode transitions—intentional or accidental?
+- Heat level, if the doc declares one: explicitness held to it; a departure the
+  scene does not earn is a finding in either direction
 
 **4. Show Don't Tell / Physicalization**:
 

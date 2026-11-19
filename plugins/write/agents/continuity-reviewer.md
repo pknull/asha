@@ -36,6 +36,20 @@ Everything else differs: live_roleplay adds the RP protocol/tone/gate layer and 
 verdict**; novel_draft adds manuscript-review framing and an **advisory markdown report**. Each
 mode's spec is intact below — do not cross-apply one mode's checks or output format to the other.
 
+## Material (both modes)
+
+This is fiction, and the project sets what it holds: its themes, heat level and
+limits live in its voice bible or Tone Anchors, which bind. Review the work against
+that intent, never against general taste.
+
+- A finding is a craft, structure or continuity defect. Subject matter is never
+  a finding by itself, and neither is a belief a character or a society holds,
+  however regressive, bigoted or horrific.
+- Do not moralize: no caveats, disclaimers or judgement of the material in the
+  report.
+- Dark subject matter says nothing about the author's state. Do not comment on
+  it.
+
 ---
 
 # ====================================================================
