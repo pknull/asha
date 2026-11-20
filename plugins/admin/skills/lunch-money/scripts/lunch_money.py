@@ -841,10 +841,10 @@ def cmd_tags(client: Client, args: argparse.Namespace) -> dict[str, Any]:
     return _out(count=len(tags), tags=tags)
 
 
-ACCOUNT_KEYS = ("id", "name", "display_name", "institution_name", "type", "subtype",
-                "status", "currency", "balance", "to_base", "mask", "balance_as_of",
-                "balance_last_update", "last_fetch", "last_import",
-                "plaid_last_successful_update", "closed_on")
+ACCOUNT_FIELDS = ("id", "name", "display_name", "institution_name", "type", "subtype",
+                  "status", "currency", "balance", "to_base", "mask", "balance_as_of",
+                  "balance_last_update", "last_fetch", "last_import",
+                  "plaid_last_successful_update", "closed_on")
 
 
 def _accounts(client: Client) -> list[dict[str, Any]]:
@@ -855,7 +855,7 @@ def _accounts(client: Client) -> list[dict[str, Any]]:
         for row in rows:
             if not isinstance(row, dict) or type(row.get("id")) is not int:
                 raise ProtocolError("API returned a malformed account")
-            accounts.append({"kind": kind, **{k: row.get(k) for k in ACCOUNT_KEYS if k in row}})
+            accounts.append({"kind": kind, **{k: row.get(k) for k in ACCOUNT_FIELDS if k in row}})
     return accounts
 
 
@@ -1952,7 +1952,7 @@ def register(action: Action) -> None:
     ACTIONS[action.name] = action
 
 
-ACCOUNT_KEYS = ("account_id", "user_id", "budget_name")
+PLAN_ACCOUNT_KEYS = ("account_id", "user_id", "budget_name")
 
 
 def account_identity(client: Client) -> dict[str, Any]:
@@ -1969,7 +1969,7 @@ def account_identity(client: Client) -> dict[str, Any]:
 def _validate_account(value: Any) -> dict[str, Any] | None:
     if value is None:
         return None
-    _keys(value, ACCOUNT_KEYS, "plan account")
+    _keys(value, PLAN_ACCOUNT_KEYS, "plan account")
     _pint(value["account_id"], "account.account_id")
     _pint(value["user_id"], "account.user_id")
     _text(value["budget_name"], "account.budget_name", null=True, limit=200)

@@ -705,6 +705,48 @@ class ReadTests(HelperTestCase):
         self.assertEqual(out["categories"][0]["category_name"], "Groceries")
         self.assertTrue(all(c["method"] == "GET" for c in self.api.calls))
 
+    def test_accounts_projects_every_account_field(self):
+        """#154: a second module-level binding once shadowed the projection, so every
+        account came back as only {"kind": ...}. Full rows (spec 2.11.2 manualAccountObject
+        and plaidAccountObject) keep every projected field and drop the rest; the expected
+        rows are literal, so a shadowed or emptied field list cannot pass."""
+        self.api.manual_accounts = [{
+            "id": 611, "name": "Example Card", "institution_name": "Example Bank",
+            "display_name": "Card", "type": "credit", "subtype": "credit card",
+            "balance": "15.0000", "currency": "usd", "to_base": 15.0,
+            "balance_as_of": "2030-05-10T00:00:00.000Z", "status": "closed",
+            "closed_on": "2030-05-11", "external_id": "ext-611",
+            "custom_metadata": {"k": "v"}, "exclude_from_transactions": False,
+            "created_by_name": "Example User", "created_at": STAMP, "updated_at": STAMP}]
+        self.api.plaid_accounts = [{
+            "id": 511, "plaid_item_id": "item-511", "date_linked": "2030-01-02",
+            "linked_by_name": "Example User", "name": "Example Checking",
+            "display_name": "Checking", "type": "depository", "subtype": "checking",
+            "mask": "4321", "institution_name": "Example Credit Union", "status": "active",
+            "allow_transaction_modifications": True, "limit": 500.0,
+            "balance": "200.0000", "currency": "usd", "to_base": 200.0,
+            "balance_last_update": "2030-05-01T01:00:00.000Z",
+            "import_start_date": "2030-01-01", "last_import": "2030-05-01T02:00:00.000Z",
+            "last_fetch": "2030-05-01T03:00:00.000Z",
+            "plaid_last_successful_update": "2030-05-01T04:00:00.000Z"}]
+        code, out, err, _ = self.cli("accounts")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out["count"], 2)
+        self.assertEqual(out["accounts"], [
+            {"kind": "manual", "id": 611, "name": "Example Card", "display_name": "Card",
+             "institution_name": "Example Bank", "type": "credit", "subtype": "credit card",
+             "status": "closed", "currency": "usd", "balance": "15.0000", "to_base": 15.0,
+             "balance_as_of": "2030-05-10T00:00:00.000Z", "closed_on": "2030-05-11"},
+            {"kind": "plaid", "id": 511, "name": "Example Checking", "display_name": "Checking",
+             "institution_name": "Example Credit Union", "type": "depository",
+             "subtype": "checking", "status": "active", "currency": "usd",
+             "balance": "200.0000", "to_base": 200.0, "mask": "4321",
+             "balance_last_update": "2030-05-01T01:00:00.000Z",
+             "last_fetch": "2030-05-01T03:00:00.000Z",
+             "last_import": "2030-05-01T02:00:00.000Z",
+             "plaid_last_successful_update": "2030-05-01T04:00:00.000Z"},
+        ])
+
 
 # ---------------------------------------------------------------------------
 # Suggestions
