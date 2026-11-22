@@ -124,14 +124,54 @@ def _find_initialized_project(start: Path) -> Tuple[Optional[Path], List[dict]]:
     return None, [_err("no_memory_project", "no initialized Memory v2 project in any ancestor")]
 
 
+def _bare_chair_plane(start: Path) -> Tuple[Optional[dict], List[dict]]:
+    """Recognize only the launcher's exact, initialized non-Git chair seat.
+
+    Repository/workspace boundaries keep their ordinary resolution. Inspect
+    their filesystem markers without running Git so a successful chair save
+    can truthfully use the Git-free publisher. No mapping and no errors means
+    this is not an eligible chair; the caller keeps ordinary repo behavior.
+    """
+    try:
+        current = start.resolve(strict=True)
+        asha_home = Path(os.environ.get("ASHA_HOME") or Path.home() / ".asha")
+        chair = (asha_home / "chair").resolve()
+        if current != chair or not current.is_dir():
+            return None, []
+        # Respect repositories selected without a .git entry as well as
+        # worktrees/submodules and ancestor repositories. A directory-form
+        # Git repository requires HEAD; an empty .git directory is not one.
+        if os.environ.get("GIT_DIR") or os.environ.get("GIT_WORK_TREE"):
+            return None, []
+        for root in (current, *current.parents):
+            entry = root / ".git"
+            if os.path.lexists(entry) and (
+                    not entry.is_dir() or os.path.lexists(entry / "HEAD")):
+                return None, []
+        workspace = project_root.detect_workspace(start=current)
+        if workspace.errors:
+            return None, [error._asdict() for error in workspace.errors]
+        if workspace.root is not None:
+            return None, []
+        root, errors = _find_initialized_project(current)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return None, [_err("invalid_chair", f"cannot resolve chair save scope: {exc}")]
+    if errors:
+        return None, errors
+    if root != chair:
+        return None, [_err("no_memory_project", "standard chair has no initialized Memory v2 project")]
+    return _none_plane(chair), []
+
+
 def resolve_effective_plane(scope: Optional[str], start: Optional[Path] = None
                             ) -> Tuple[Optional[dict], List[dict]]:
     """Resolve bare/explicit save scope, checking Control ownership as needed.
 
-    ``None`` is the bare command default. A valid managed marker changes only
-    that default to ``none``. Explicit repo/workspace use the ordinary plane
-    without marker discovery. Bare and explicit none discover marker state;
-    explicit none remains a Git-free path.
+    ``None`` is the bare command default. A valid managed marker or the exact
+    initialized non-Git standard chair changes that default to ``none``.
+    Explicit repo/workspace use the ordinary plane without marker discovery.
+    Bare and explicit none discover marker state; explicit none remains a
+    Git-free path.
     """
     if scope not in (None, "repo", "workspace", "none"):
         return None, [_err("invalid_scope", f"scope must be repo|workspace|none, got {scope!r}")]
@@ -145,6 +185,10 @@ def resolve_effective_plane(scope: Optional[str], start: Optional[Path] = None
     if scope is None and managed is not None:
         root, marker = managed
         return _none_plane(root, marker), []
+    if scope is None:
+        chair, errors = _bare_chair_plane(start_path)
+        if chair is not None or errors:
+            return chair, errors
     effective = "repo" if scope is None else scope
     if effective == "none":
         if managed is not None:

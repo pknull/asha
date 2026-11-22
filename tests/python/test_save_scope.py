@@ -253,6 +253,195 @@ class CliCases(ScopeFixture):
         self.assertIn("usage", err)
 
 
+class ChairSaveCases(ScopeFixture):
+    def setUp(self):
+        super().setUp()
+        self.env = mock.patch.dict(os.environ, {"ASHA_HOME": ""})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.chair = Path(os.environ["HOME"]) / ".asha" / "chair"
+        self.chair.mkdir(parents=True)
+        memory_v2.initialize(self.chair)
+
+    # Removing automatic chair recognition must break the actual command and
+    # publisher, not merely an internal branch or a mocked collaborator.
+    def test_executable_initialized_chair_bare_save_never_invokes_git(self):
+        fake_bin = self.tmp / "chair-bin"
+        fake_bin.mkdir()
+        invoked = self.tmp / "chair-git-invoked"
+        git = fake_bin / "git"
+        git.write_text(f"#!/bin/sh\nprintf invoked >> {invoked}\nexit 99\n")
+        git.chmod(0o755)
+        env = {**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
+               "ASHA_SESSION_ID": "fixture-chair-save"}
+        result = subprocess.run([
+            sys.executable, str(TOOLS_DIR / "save_scope.py"), "resolve",
+            "--start", str(self.chair),
+        ], capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        mapping = json.loads(result.stdout)
+        self.assertEqual(mapping["scope"], "none")
+        self.assertEqual(mapping["plane_base"], str(self.chair))
+        self.assertIsNone(mapping["commit_repo"])
+        before = memory_v2.snapshot_digests(memory_v2.read_published_snapshot(self.chair))
+        active = self.tmp / "chair-active.md"
+        decisions = self.tmp / "chair-decisions.md"
+        active.write_text("# Objective\n\nFixture\n\n# State\n\nSaved.\n\n# Next\n\n- None.\n\n# Blockers\n\n- None.\n")
+        decisions.write_text("# Decisions\n\n- Preserve fixture state.\n")
+        result = subprocess.run([
+            sys.executable, str(TOOLS_DIR / "save_none.py"), "publish",
+            "--start", str(self.chair), "--active-file", str(active),
+            "--decisions-file", str(decisions),
+            "--expected-active", before["active"],
+            "--expected-decisions", before["decisions"],
+        ], capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        receipt = json.loads(result.stdout)
+        self.assertEqual(receipt["scope"], "none")
+        self.assertEqual(receipt["plane_base"], str(self.chair))
+        self.assertFalse(receipt["git_invoked"])
+        self.assertEqual((self.chair / "Memory/activeContext.md").read_text(), active.read_text())
+        self.assertEqual((self.chair / "Memory/decisions.md").read_text(), decisions.read_text())
+        self.assertEqual(receipt["current"], memory_v2.snapshot_digests(
+            memory_v2.read_published_snapshot(self.chair)))
+        self.assertFalse(invoked.exists())
+
+    # Ignoring ASHA_HOME or comparing lexical paths instead of the real chair
+    # would make a supported relocated or linked seat resolve as a repository.
+    def test_bare_chair_uses_custom_asha_home_and_canonical_path(self):
+        custom = self.tmp / "custom"
+        custom.mkdir()
+        (custom / "chair").symlink_to(self.chair, target_is_directory=True)
+        with mock.patch.dict(os.environ, {"ASHA_HOME": str(custom)}), \
+                mock.patch.object(ss.subprocess, "run", side_effect=AssertionError("Git invoked")):
+            mapping, errors = ss.resolve_effective_plane(None, start=self.chair)
+        self.assertEqual(errors, [])
+        self.assertEqual(mapping["scope"], "none")
+        self.assertEqual(mapping["plane_base"], str(self.chair))
+
+    # A broad initialized-directory fallback would swallow unrelated projects
+    # or a distinct nested project despite the launcher's exact chair seat.
+    def test_bare_non_chair_directories_are_not_inferred_from_initialization(self):
+        for path in (self.tmp / "other", self.chair / "nested"):
+            with self.subTest(path=path):
+                path.mkdir()
+                memory_v2.initialize(path)
+                with mock.patch.dict(os.environ, {"ASHA_SESSION_PROFILE": "chair", "ASHA_SEAT": "1"}):
+                    mapping, errors = ss.resolve_effective_plane(None, start=path)
+                self.assertIsNone(mapping)
+                self.assertEqual(errors[0]["code"], "no_repo")
+        mapping, errors = ss.resolve_effective_plane("none", start=self.chair / "nested")
+        self.assertEqual(errors, [])
+        self.assertEqual(mapping["plane_base"], str(self.chair / "nested"))
+
+    # Treating the seat path itself as initialization would admit invalid
+    # config or publish into an initialized ancestor of an uninitialized chair.
+    def test_bare_chair_invalid_config_fails_closed_without_git(self):
+        config = self.chair / ".asha/config.json"
+        for data in ("{", "[]", '{"memory_version":1,"project_id":"fixture"}',
+                     '{"memory_version":2,"project_id":""}'):
+            with self.subTest(data=data):
+                config.write_text(data)
+                with mock.patch.object(ss.subprocess, "run", side_effect=AssertionError("Git invoked")):
+                    mapping, errors = ss.resolve_effective_plane(None, start=self.chair)
+                self.assertIsNone(mapping)
+                self.assertEqual(errors[0]["code"], "invalid_memory_config")
+        config.unlink()
+        memory_v2.initialize(self.chair.parent)
+        mapping, errors = ss.resolve_effective_plane(None, start=self.chair)
+        self.assertIsNone(mapping)
+        self.assertEqual(errors[0]["code"], "no_memory_project")
+
+    # Chair inference before marker validation could bypass a malformed
+    # Control marker or discard valid managed ownership.
+    def test_bare_chair_preserves_control_marker_precedence(self):
+        ResolveCases._managed_marker(self, self.chair)
+        mapping, errors = ss.resolve_effective_plane(None, start=self.chair)
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(mapping["managed_task"])
+        (self.chair / ".asha/control-task.json").write_text("{}")
+        for scope in (None, "none"):
+            with self.subTest(scope=scope):
+                mapping, errors = ss.resolve_effective_plane(scope, start=self.chair)
+                self.assertIsNone(mapping)
+                self.assertEqual(errors[0]["code"], "invalid_control_task_marker")
+
+    # Automatically selecting none for every chair would change existing
+    # repository saves, including a chair nested within a Git worktree.
+    def test_bare_git_backed_chair_keeps_repository_scope(self):
+        _git("init", "-q", str(self.chair))
+        mapping, errors = ss.resolve_effective_plane(None, start=self.chair)
+        self.assertEqual(errors, [])
+        self.assertEqual(mapping["scope"], "repo")
+        self.assertEqual(mapping["commit_repo"], str(self.chair))
+        with mock.patch.object(ss.subprocess, "run", side_effect=AssertionError("Git invoked")):
+            mapping, errors = ss.resolve_effective_plane("none", start=self.chair)
+        self.assertEqual(errors, [])
+        self.assertIsNone(mapping["commit_repo"])
+
+    def test_bare_chair_inside_ancestor_repo_keeps_repository_scope(self):
+        _git("init", "-q", str(self.chair.parent))
+        mapping, errors = ss.resolve_effective_plane(None, start=self.chair)
+        self.assertEqual(errors, [])
+        self.assertEqual(mapping["scope"], "repo")
+        self.assertEqual(mapping["commit_repo"], str(self.chair.parent))
+
+    # Ignoring a gitdir file or explicit Git environment would wrongly turn
+    # these ordinary worktree saves into Git-free chair saves.
+    def test_bare_chair_with_separate_git_dir_keeps_repository_scope(self):
+        _git("init", "-q", "--separate-git-dir", str(self.tmp / "gitdir"), str(self.chair))
+        self.assertTrue((self.chair / ".git").is_file())
+        mapping, errors = ss.resolve_effective_plane(None, start=self.chair)
+        self.assertEqual(errors, [])
+        self.assertEqual(mapping["scope"], "repo")
+        self.assertEqual(mapping["commit_repo"], str(self.chair))
+
+    def test_bare_chair_with_explicit_git_environment_keeps_repository_scope(self):
+        with mock.patch.dict(os.environ, {"GIT_DIR": str(self.child / ".git"),
+                                          "GIT_WORK_TREE": str(self.chair)}):
+            mapping, errors = ss.resolve_effective_plane(None, start=self.chair)
+        self.assertEqual(errors, [])
+        self.assertEqual(mapping["scope"], "repo")
+        self.assertEqual(mapping["commit_repo"], str(self.chair))
+
+    # Changing the default for arbitrary initialized locations would also
+    # disturb the existing bare repo and workspace-child routes.
+    def test_bare_repository_and_workspace_child_keep_existing_scope(self):
+        lone = self.tmp / "ordinary"
+        lone.mkdir()
+        _git("init", "-q", str(lone))
+        for path in (lone, self.child):
+            with self.subTest(path=path):
+                mapping, errors = ss.resolve_effective_plane(None, start=path)
+                self.assertEqual(errors, [])
+                self.assertEqual(mapping["scope"], "repo")
+                self.assertEqual(mapping["commit_repo"], str(path))
+
+    # An empty directory named .git is not a Git repository. Treating it as
+    # one prevents an otherwise initialized non-Git chair from saving.
+    def test_bare_chair_ignores_empty_ancestor_git_directory(self):
+        (self.chair.parent / ".git").mkdir()
+        with mock.patch.object(ss.subprocess, "run", side_effect=AssertionError("Git invoked")):
+            mapping, errors = ss.resolve_effective_plane(None, start=self.chair)
+        self.assertEqual(errors, [])
+        self.assertEqual(mapping["scope"], "none")
+        self.assertEqual(mapping["plane_base"], str(self.chair))
+
+    # Skipping the workspace resolver at the chair would bypass its root
+    # ambiguity and malformed-manifest failures.
+    def test_bare_chair_preserves_workspace_boundary(self):
+        path = self.chair / ".asha/workspace.json"
+        path.write_text(json.dumps({"version": 1, "workspace_name": "fixture",
+                                    "repositories": [{"path": "child"}]}))
+        mapping, errors = ss.resolve_effective_plane(None, start=self.chair)
+        self.assertIsNone(mapping)
+        self.assertEqual(errors[0]["code"], "no_active_repo")
+        path.write_text("{")
+        mapping, errors = ss.resolve_effective_plane(None, start=self.chair)
+        self.assertIsNone(mapping)
+        self.assertTrue(errors)
+
+
 class ManagedBareSaveAcceptance(ScopeFixture):
     def test_executable_managed_bare_save_path_never_invokes_git(self):
         managed = self.tmp / "managed-save"

@@ -23,6 +23,13 @@ compare-and-swap and no Git seam; see `docs/session-hub.md`.
    a valid managed Control workspace becomes effective scope `none`. Explicit
    `repo` and `workspace` bypass marker discovery and keep their existing
    ordinary-plane meaning. Explicit `none` performs no Git discovery.
+   A bare save from the exact standard chair directory, `$ASHA_HOME/chair`
+   (default `~/.asha/chair`), also becomes `none` when that directory has valid
+   Memory v2 initialization and no repository or workspace boundary. The chair
+   route performs no Git discovery. Other directories, including children of
+   the chair, retain ordinary scope resolution; use explicit `none` for other
+   initialized non-Git projects. A profile environment variable alone does not
+   identify a chair, and malformed initialization fails closed.
 2. Set `TOOLS="$ASHA_ROOT/plugins/session/tools"`. Before drafting, run
    `python3 "$TOOLS/memory_v2.py" read --project-dir "$PLANE_BASE" --format json`.
    Retain both `digests.active` and `digests.decisions` as `EXPECTED_ACTIVE` and

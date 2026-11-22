@@ -23,6 +23,14 @@ For a workspace-owned handoff use `--scope workspace`. The JSON result supplies
 by passing `--scope none` to the resolver and using the no-Git executor in
 `plugins/session/commands/save.md`; do not use repository/Git discovery.
 
+For a bare save, omit `--scope`. From the initialized standard non-Git chair
+at `$ASHA_HOME/chair` (default `~/.asha/chair`), the resolver selects effective
+scope `none` without invoking Git. This recognition applies to the exact chair
+directory only; repository and workspace boundaries keep their ordinary
+behavior. Arbitrary non-Git directories require explicit `none` and valid
+Memory v2 initialization. A malformed Control marker or initialization refuses
+the save.
+
 ## 2. Author from live context
 
 Before drafting, read a coherent snapshot:
@@ -63,7 +71,7 @@ again. Recovery state remains unpublished and ignored.
 
 ## 5. Commit and push
 
-Unless the requested scope is `none`:
+Unless the effective scope is `none`:
 
 ```bash
 git -C "$COMMIT_REPO" add -- \
@@ -71,7 +79,7 @@ git -C "$COMMIT_REPO" add -- \
 git -C "$COMMIT_REPO" commit -m "Session save: $(date -u '+%Y-%m-%d %H:%M UTC')"
 ```
 
-Unless `--no-push` was requested:
+Unless the effective scope is `none` or `--no-push` was requested:
 
 ```bash
 python3 "$TOOLS/push_retry.py" ensure --project-dir "$COMMIT_REPO"
