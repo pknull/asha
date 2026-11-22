@@ -260,6 +260,14 @@ rides every transform until the next user message. Dispose invokes only
 the session-end seal path. Commands and agents remain native Markdown under
 plural `commands/` and `agents/` directories.
 
+The launcher supports an explicit experimental compact chair profile through
+`ASHA_OPENCODE_CHAIR_PROFILE=compact`, only with the `chair` session profile and
+enabled chair stance. It uses the existing instruction-array delivery seam and
+keeps operational guidance and native permissions. Full rendering remains the
+default; neither Rooms nor other harnesses adopt this profile. See
+`INSTALLER.md` for authority and selection details. Model task reliability is a
+separate qualification from rendered-artifact correctness.
+
 ## RP and workspace routing
 
 RP routing is a direct UserPromptSubmit concern, sourced from

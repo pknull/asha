@@ -495,6 +495,25 @@ launch() {
         exec "$executable" "$@"
       fi
       export ASHA_PERSONA=1
+      case "${ASHA_OPENCODE_CHAIR_PROFILE:-full}" in
+        full|compact) ;;
+        *) die "ASHA_OPENCODE_CHAIR_PROFILE must be full or compact" ;;
+      esac
+      if [[ "${ASHA_OPENCODE_CHAIR_PROFILE:-full}" == compact \
+            && "${ASHA_SESSION_PROFILE:-}" == chair ]] \
+          && asha_orchestrator_stance_enabled; then
+        instr="$ASHA_HOME/cache/instructions-opencode-chair-compact.md"
+        opencode_render_compact_chair "$instr" \
+          || die "compact OpenCode chair render failed; check identity sources and cache permissions"
+        raw_cfg="${OPENCODE_CONFIG_CONTENT:-}"
+        [[ -n "$raw_cfg" ]] || raw_cfg='{}'
+        cfg="$(jq -cn --argjson base "$raw_cfg" --arg f "$instr" \
+          '$base * {instructions: (($base.instructions // []) + [$f] | unique)}')" \
+          || die "OPENCODE_CONFIG_CONTENT is not valid OpenCode JSON"
+        export OPENCODE_CONFIG_CONTENT="$cfg"
+        info "[asha] OpenCode chair instructions: compact (explicit opt-in)"
+        exec "$executable" "$@"
+      fi
       if [[ -x "$MERGE_SCRIPT" ]] && "$MERGE_SCRIPT" "$base"; then
         # Combined render mirrors the codex branch: identity, then the
         # operational layer when it applies, then the chair brief when the

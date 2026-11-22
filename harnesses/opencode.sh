@@ -10,6 +10,44 @@
 #
 # Identity is launch-scoped in bin/asha. The installed plugin is persona-free.
 
+# Optional chair rendering lives at the same launch seam as the full identity.
+# No user identity is summarized or copied into a new persistent source file.
+# shellcheck disable=SC2016 # Backticks in printf formats are literal Markdown.
+opencode_render_compact_chair() {
+  local destination="$1" source_file temp name operational
+  source_file="$ASHA_ROOT/identity/opencode-chair-compact.md"
+  [[ -s "$source_file" ]] || return 1
+  for name in soul voice keeper; do
+    [[ -f "$ASHA_HOME/$name.md" && -s "$ASHA_HOME/$name.md" && -r "$ASHA_HOME/$name.md" ]] || return 1
+  done
+  mkdir -p "$(dirname "$destination")" || return 1
+  temp="$(mktemp "${destination}.XXXXXX")" || return 1
+  operational="$(mktemp "${destination}.operations.XXXXXX")" || { rm -f "$temp"; return 1; }
+  # Keep operator authorization and active safety guidance verbatim. Reduction
+  # changes identity/coordination delivery, never the operational authority.
+  if ! "$ASHA_ROOT/identity/operational-merge.sh" "$operational"; then
+    rm -f "$temp" "$operational"
+    return 1
+  fi
+  if {
+    cat "$source_file" &&
+    printf '\nIdentity authority: `%s/soul.md`, `%s/voice.md`, `%s/keeper.md`.\n' \
+      "$ASHA_HOME" "$ASHA_HOME" "$ASHA_HOME" &&
+    printf 'Operations: `%s/operation.md`; active learnings: `%s/learnings/`.\n' \
+      "$ASHA_HOME" "$ASHA_HOME" &&
+    printf '\n' && cat "$operational" &&
+    # An explicit custom brief remains user authority; never silently discard
+    # it just because the standard chair brief was condensed.
+    { [[ -z "${ASHA_ORCHESTRATOR_BRIEF_FILE:-}" ]] ||
+      { printf '\n'; cat "$ASHA_ORCHESTRATOR_BRIEF_FILE"; }; }
+  } > "$temp" && mv "$temp" "$destination"; then
+    rm -f "$operational"
+    return 0
+  fi
+  rm -f "$temp" "$operational"
+  return 1
+}
+
 OPENCODE_HOME="$(asha_harness_home opencode)"
 OPENCODE_SKILLS_DIR="$OPENCODE_HOME/skills"
 OPENCODE_COMMANDS_DIR="$OPENCODE_HOME/commands"
@@ -359,6 +397,8 @@ PYEOF
 
 opencode_install() {
   command -v python3 >/dev/null 2>&1 || die "python3 required for OpenCode install" 3
+  [[ -s "$MARKET_ROOT/identity/opencode-chair-compact.md" ]] \
+    || die "OpenCode compact chair source missing from checkout" 3
   opencode_check_version
   ensure_dir "$OPENCODE_SKILLS_DIR"
   asha_artifact_begin opencode

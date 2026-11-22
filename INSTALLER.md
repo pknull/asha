@@ -240,6 +240,26 @@ transcript is read. There is no automatic semantic save or idle checkpointing.
 `asha opencode` appends a combined hot-identity and operational file to
 `OPENCODE_CONFIG_CONTENT.instructions`; plain `opencode` remains persona-free.
 
+An experimental local-model chair profile can be selected deliberately for one
+launch with `ASHA_OPENCODE_CHAIR_PROFILE=compact asha opencode`. The ordinary
+no-argument wrapper enters the chair; an explicit launch must also have
+`ASHA_SESSION_PROFILE=chair`. `full` is the default. Rooms, workers and a disabled
+chair stance keep their existing instruction routes. This never selects a
+model, changes native permissions or writes production model configuration.
+
+The compact render uses `identity/opencode-chair-compact.md` in a separate cache
+file. It keeps the complete existing operational render and any explicit custom
+chair brief. Identity authority stays in the user-owned soul, voice and keeper
+files, read on demand; extended details use `asha-asha-reference`. The profile
+points to existing task skills rather than carrying another command procedure.
+Missing identity sources or a failed compact render refuse launch. Installer and
+doctor check the source; no additional global instruction file is installed.
+
+This is an opt-in evaluation surface, not a reliability claim for a model.
+The sanitized native fixture under `tests/fixtures/opencode-chair/` checks
+scope, arguments, concurrent-save recovery, readback and completion claims.
+Passing deterministic fixture or rendering tests does not qualify a live chair.
+
 ## Namespaces
 
 `namespaces.json` maps each plugin directory to the namespace used for

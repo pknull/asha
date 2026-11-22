@@ -916,6 +916,15 @@ fi
 
 if [[ "$TARGET" == "opencode" || "$TARGET" == "all" ]]; then
   section "opencode harness"
+  if [[ -s "$ASHA/identity/opencode-chair-compact.md" ]]; then
+    pass "optional compact OpenCode chair source present"
+  else
+    nope "optional compact OpenCode chair source missing"
+  fi
+  case "${ASHA_OPENCODE_CHAIR_PROFILE:-full}" in
+    full|compact) info_line "OpenCode chair profile selection: ${ASHA_OPENCODE_CHAIR_PROFILE:-full}" ;;
+    *) nope "ASHA_OPENCODE_CHAIR_PROFILE must be full or compact" ;;
+  esac
   opencode_manifest="$(asha_artifact_manifest_path opencode)"
   opencode_link="$(find "$OPENCODE/skills" -mindepth 1 -maxdepth 1 -type l -print -quit 2>/dev/null || true)"
   if [[ ! -f "$opencode_manifest" && -z "$opencode_link" ]]; then
