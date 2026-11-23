@@ -108,8 +108,15 @@ target explicitly.
   clone of every private repo of that user failed with the same error, after
   listing refs correctly. It failed the same way on each try. In
   `keybase.git.log`, look for `Cleaning deleted repo` and
-  `Done checking deleted repos`. Why the removal fails is not established.
-  What fixed it: with the user's word, move the leftover directory out of
+  `Done checking deleted repos`. Cause, found afterwards: the repo directory,
+  created in 2017, held an entry literally named `.`. Ordinary listings hide
+  it and Keybase's recursive delete skips it, so the directory can never be
+  emptied. `keybase fs ls -a -l DIR` shows it as a row named `.` (an empty
+  directory prints nothing). No stock tool removes that entry: `rm -r`,
+  `rmdir` and `keybase fs rm` all end in the same error, so once the contents
+  are deleted an empty directory remains for good. Before deleting a repo,
+  run that listing on `/keybase/private/USER/.kbfs_git/REPO`; if a `.` row is
+  there, do not delete the repo. What fixed the breakage: with the user's word, move the leftover directory out of
   `.kbfs_deleted_repos` into the user's private folder with a plain `mv`
   through the mount (`/keybase/private/USER/NAME-deleted-repo-DATE`). It is a
   rename inside one folder tree, so nothing is lost; every repo worked again
