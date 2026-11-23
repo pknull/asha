@@ -402,6 +402,53 @@ for inline_skill in \
     fail "inline-review skill and shared parser resolve: $inline_skill"
   fi
 done
+if python3 - "$SANDBOX" <<'PY_WRITE_HELPERS'
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+home = Path(sys.argv[1])
+roots = (home/'.claude/skills', home/'.codex/skills', home/'.copilot/skills',
+         home/'.config/opencode/skills')
+for index, skills in enumerate(roots):
+    project = home / f'writing-helper-smoke-{index}'
+    project.mkdir()
+    (project/'chapter.md').write_text('The latch clicked.\n', encoding='utf-8')
+    (project/'voice.md').write_text('Preserve concrete action.\n', encoding='utf-8')
+    (project/'report.md').write_text('No change requested.\n', encoding='utf-8')
+    (project/'candidate.md').write_text('She heard the latch click.\n', encoding='utf-8')
+    (project/'objective.md').write_text('Compare focus while preserving the event.\n', encoding='utf-8')
+    freshness = skills/'write-novel-state/scripts/artifact_freshness.py'
+    comparison = skills/'write-revision-pass/scripts/revision_compare.py'
+
+    def call(script, *args):
+        result = subprocess.run([sys.executable, str(script), *args, '--project', str(project)],
+                                capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            raise AssertionError(f'{skills}: {result.stdout}\n{result.stderr}')
+        return json.loads(result.stdout)
+
+    call(freshness, 'capture', '--manuscript', 'chapter.md', '--source', 'voice.md',
+         '--output', 'inputs.json')
+    call(freshness, 'record', '--snapshot', 'inputs.json', '--artifact', 'report.md',
+         '--output', 'receipt.json')
+    assert call(freshness, 'check', '--receipt', 'receipt.json')['status'] == 'unchanged'
+    packet = call(comparison, 'prepare', '--objective', 'objective.md', '--original', 'chapter.md',
+                  '--candidate', 'candidate.md', '--source', 'voice.md', '--mode', 'optional',
+                  '--output', 'comparison')
+    (project/'judgments.json').write_text(json.dumps({'packet_id': packet['packet_id'],
+        'rankings': [{'reviewer': 'fixture', 'order': packet['eligible']}]}), encoding='utf-8')
+    result = call(comparison, 'summarize', '--packet', packet['packet'], '--judgments', 'judgments.json')
+    assert result['status'] == 'preference' and result['author_decision'] is None
+    assert (project/'chapter.md').read_text(encoding='utf-8') == 'The latch clicked.\n'
+    print(f'  writing helper workflows passed through {skills}')
+PY_WRITE_HELPERS
+then
+  ok "writing helpers execute through all four installed skill mounts"
+else
+  fail "writing helpers execute through all four installed skill mounts"
+fi
 for review_surface in \
   "$SANDBOX/.claude/commands/write/review-section.md" \
   "$SANDBOX/.codex/skills/write-review-section/SKILL.md" \

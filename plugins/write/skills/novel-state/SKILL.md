@@ -1,6 +1,6 @@
 ---
 name: write-novel-state
-description: "Set up novel manuscript state: bible/state/timeline directory structure, chapter snapshots, immutable style references, and timeline tracking across sessions. Use when starting a novel project, organizing existing manuscript state, setting up chapter state snapshots, or establishing immutable style references."
+description: "Set up novel manuscript state: bible/state/timeline structure, chapter snapshots, style references, timeline tracking, and source-bound artifact receipts. Use when starting a novel project, organizing manuscript state, or checking whether a review or state snapshot still matches its declared inputs."
 license: MIT
 ---
 
@@ -215,6 +215,63 @@ The bible is **APPEND-ONLY** after initial creation:
 
 **Exceptions require human approval** with documented rationale.
 
+### Source-bound review and state receipts
+
+Use `scripts/artifact_freshness.py` for new review reports or extracted state.
+Resolve `ASHA_ROOT` as in Initialization below, and set `PROJECT_ROOT` to the
+explicit manuscript project root. All other paths must be normalized relative
+paths within that root. Use a new run name for each snapshot and receipt.
+
+Before analysis, declare every manuscript and every authority actually used:
+
+```bash
+python3 "$ASHA_ROOT/plugins/write/skills/novel-state/scripts/artifact_freshness.py" capture \
+  --project "$PROJECT_ROOT" --manuscript Drafts/ch01.md \
+  --source Work/novel/bible/voice.md --source Work/novel/bible/rules.md \
+  --source Work/review-config.md --output Work/reports/ch01-run1.inputs.json
+```
+
+Repeat `--manuscript` for prose inputs and `--source` for voice, canon, review
+configuration, prior state, or other authority. Expand configured directories
+to the actual files used. Do not include nonexistent fallback configuration.
+`--manuscript` uses the existing strict inline-review clean projection: editorial
+comments and frontmatter are excluded. If manuscript frontmatter itself carries
+authority, declare that same file with **both** `--manuscript` and `--source`.
+Raw authority hashes include frontmatter. Capture a whole file even for a
+line-range review. If analysis discovers another dependency, start a new
+snapshot with the complete list and rerun the affected analysis.
+
+After writing the report or state files, bind the captured inputs to the outputs:
+
+```bash
+python3 "$ASHA_ROOT/plugins/write/skills/novel-state/scripts/artifact_freshness.py" record \
+  --project "$PROJECT_ROOT" --snapshot Work/reports/ch01-run1.inputs.json \
+  --artifact Work/reports/ch01-run1.md --output Work/reports/ch01-run1.receipt.json
+python3 "$ASHA_ROOT/plugins/write/skills/novel-state/scripts/artifact_freshness.py" check \
+  --project "$PROJECT_ROOT" --receipt Work/reports/ch01-run1.receipt.json
+```
+
+Repeat `--artifact` for each resulting state file. `record` rechecks the captured
+inputs and refuses a receipt if they changed during analysis; it never acquires
+new input hashes to make old analysis look current. Capture and record refuse
+existing output paths. Preserve snapshots, receipts and historical reports;
+write a new run after a revision.
+
+Check a receipt before relying on its report or state. Exit 0 / `unchanged`
+means only declared input and output bytes still match. Exit 1 / `changed`
+identifies a known difference; exit 2 / `unknown` includes missing legacy
+receipts, unreadable inputs and malformed projections. For changed or unknown
+applicability, inspect the live sources and refresh the affected analysis.
+Do not turn this into a block on author edits or retroactively revoke an
+author's decision. Receipt checks neither update state/current pointers nor
+change canon. They verify no semantic truth, completeness of declared coverage,
+or author consent; claim verification and author acceptance remain separate.
+
+Logical symlinks inside the project, including `state/current`, are supported.
+Retargeting to different bytes is detected; retargeting to identical bytes is
+`unchanged`, which makes no claim about file identity. These are ordinary local
+JSON receipts, not tamper-resistant attestations or a new canonical state store.
+
 ### Context Loading
 
 For efficient context management, load only what's needed:
@@ -279,6 +336,7 @@ redirection, which replaces a file that already exists.
 |------|---------|
 | `SKILL.md` | This documentation |
 | `scripts/init_novel_state.py` | Initialize directory structure |
+| `scripts/artifact_freshness.py` | Capture inputs, record output receipts, check declared applicability |
 
 ## Related
 

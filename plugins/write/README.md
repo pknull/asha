@@ -1,6 +1,6 @@
 # Write Plugin
 
-**Version**: 1.13.1
+**Version**: 1.14.0
 
 Fiction-state initialization, drafting workflows, editorial review, style
 measurement, continuity verification, and book export.
@@ -13,6 +13,8 @@ measurement, continuity verification, and book export.
 | Review a finished scene or section | `/write:review-section` |
 | Keep local review threads inside Markdown without rewriting prose | `write-inline-review` skill |
 | Run an authority-first multi-act revision | `write-revision-pass` skill |
+| Check whether a report or state snapshot still matches its sources | `write-novel-state` source receipts |
+| Compare authorized alternatives against the original | `write-revision-pass` optional comparison |
 | Measure an exemplar or draft | `style-analyzer` skill |
 | Check grammar and mechanical style | `languagetool` skill |
 | Export a manuscript | `book-export` skill |
@@ -30,6 +32,7 @@ remain separate charges so one pass does not quietly overwrite another.
 | Claude Code | Use `/write:init-novel` and `/write:review-section`; agents and skills may also be named directly |
 | OpenAI Codex | Ask for the operation or name the rendered `write-init-novel` / `write-review-section` skill |
 | GitHub Copilot CLI | Ask for the operation or name the rendered `write-init-novel` / `write-review-section` skill |
+| OpenCode | Use `/write-init-novel` and `/write-review-section`; agents and skills may also be named directly |
 
 Examples that work as task requests on every harness:
 
@@ -186,6 +189,29 @@ commands.
 The author remains the approval boundary at every manuscript-changing
 checkpoint. Reports can recommend; they do not silently become canon.
 
+## Source applicability and revision comparison
+
+New review and extracted-state workflows capture their declared inputs before
+analysis and bind the resulting artifacts to an immutable JSON receipt. The
+`artifact_freshness.py` helper in `skills/novel-state/scripts/` supports
+`capture`, `record`, and read-only `check`. Its `unchanged`, `changed`, and
+`unknown` results concern declared bytes only. A missing legacy receipt stays
+unknown; a changed source does not revoke canon or an author's decision.
+
+Manuscript inputs use the existing clean projection, excluding editorial
+comments and frontmatter. Voice, canon and configuration inputs use raw hashes.
+Declare a chapter both ways when its frontmatter carries authority. The
+[novel-state skill](skills/novel-state/SKILL.md) gives the complete CLI workflow.
+
+For an authorized comparison, `revision_compare.py` in
+`skills/revision-pass/scripts/` prepares an anonymized packet and summarizes
+supplied rankings. Optional improvements may retain the original. Required
+changes compare already-compliant revisions and exclude the original. Invalid
+or incomplete judgments remain unknown, and preference never becomes author
+approval. The [revision-pass skill](skills/revision-pass/SKILL.md) documents
+eligibility, input binding and presentation limits. Neither helper calls a
+model or replaces manuscript text.
+
 ## Quality boundary
 
 The plugin reports descriptive style measurements and editorial findings. It
@@ -199,10 +225,13 @@ report is not a line edit. Different instruments, different cuts.
 ./install.sh --only write --target claude
 ./install.sh --only write --target codex
 ./install.sh --only write --target copilot
+./install.sh --only write --target opencode
 ```
 
 Re-run installation after changing command or agent sources because Codex and
-Copilot receive generated artifacts for those forms.
+Copilot receive generated artifacts for those forms, as does OpenCode. All four
+harnesses mount the helper scripts with their existing skill directories. The
+installer refuses an incomplete helper bundle; doctor checks the same assets.
 
 ## License
 

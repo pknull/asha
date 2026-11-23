@@ -1,6 +1,6 @@
 ---
 name: write-revision-pass
-description: Run a complete manuscript revision pass from authority-first reading through read-only act reviews, decision capture, style audit, repository-wide old-value proof, and a root commit. Use when a requested revision spans acts or sections and must prove that a superseded value is gone.
+description: Run an authority-first manuscript revision pass with read-only act reviews, decision capture, style audit, old-value proof, and optional source-bound candidate comparison. Use when a requested revision spans sections, retires a value, or needs an advisory comparison of authorized alternatives.
 ---
 
 # Revision Pass
@@ -60,6 +60,72 @@ judgment calls instead of silently inventing an answer.
 Report the authority files read, act-review verdicts, entries added to
 `DECISIONS.md`, style-audit outcome, verification commands with exit status,
 the exact empty old-value grep proof, and the resulting commit identity.
+
+## Optional candidate comparison
+
+Use this bounded protocol when the author requests comparing alternatives or
+when an authorized optional improvement merits checking against the original.
+Do not generate alternatives or expand a revision's scope merely to use it.
+The helper prepares a packet and summarizes supplied rankings; it makes no
+model calls, edits no prose, and never promotes a candidate.
+
+1. Write the concrete objective, author constraints, voice criteria and success
+   check to a new local objective file. Identify every voice/canon/configuration
+   source actually needed. Keep candidate files separate from the manuscript.
+2. Decide eligibility before asking for preferences. In `optional` mode, the
+   unchanged original is eligible. In `required` mode, it is an ineligible
+   reference; compare at least two alternatives already checked for compliance
+   with the requested change. The caller declares compliance: the helper
+   cannot establish it. A required change with only one compliant revision
+   proceeds through normal review without this comparison.
+3. Resolve `ASHA_ROOT` as in the Contract and set `PROJECT_ROOT` explicitly.
+   Prepare a new packet directory; paths are project-relative:
+
+   ```bash
+   python3 "$ASHA_ROOT/plugins/write/skills/revision-pass/scripts/revision_compare.py" prepare \
+     --project "$PROJECT_ROOT" --objective Work/revision/objective.md \
+     --original Work/revision/original.md --candidate Work/revision/alternative.md \
+     --source Work/novel/bible/voice.md --mode optional --output Work/revision/comparison1
+   ```
+
+   Repeat `--source` for actual authority files. For required changes, use
+   `--mode required` and at least two `--candidate` arguments. The packet binds
+   raw hashes of the objective, authority and candidate sources, and hashes its
+   presentation. Review prose uses the strict inline-review clean projection;
+   raw source hashes conservatively invalidate even editorial-only changes.
+4. Give each read-only reviewer only `comparison.md`, which contains the
+   objective, declared authority and shuffled candidate labels. `packet.json`
+   retains the mapping for the operator; this is anonymized presentation,
+   **not enforced blindness**. Do not claim independent judges or hide a known
+   conflict just because labels are anonymous. Retain the returned packet ID.
+5. Collect complete rankings in a local JSON file, replacing the packet ID and
+   labels below with those actually returned. Use a distinct reviewer identity
+   per supplied judgment:
+
+   ```json
+   {"packet_id": "ID_FROM_PREPARE", "rankings": [{"reviewer": "reviewer-1", "order": ["C2", "C1"]}]}
+   ```
+
+   ```bash
+   python3 "$ASHA_ROOT/plugins/write/skills/revision-pass/scripts/revision_compare.py" summarize \
+     --project "$PROJECT_ROOT" --packet Work/revision/comparison1/packet.json \
+     --judgments Work/revision/rankings.json
+   ```
+
+   Summarization rechecks declared sources and presentation. Any changed task
+   or source invalidates that comparison. Missing sources, no judgments,
+   duplicate reviewers, or invalid/duplicate/incomplete rankings stay unknown;
+   they never count as an incumbent win. Each complete ranking awards one fewer
+   point per lower position, with zero for last. A score tie has no preference.
+6. Present the preference, eligibility assumptions and reviewer reasoning to
+   the author. `author_decision: null` remains null even when a candidate wins.
+   Only the author's choice authorizes adoption within the revision's scope.
+   Keep packets and previous reports as history; use a new packet if inputs
+   change. The helper's `check --project ... --packet ...` command is read-only.
+
+For review and extracted-state applicability, use the source-receipt workflow
+in `skills/novel-state/SKILL.md`. Neither helper replaces claim verification,
+canon authority, or the author's creative decision.
 
 ## Inline manuscript threads
 

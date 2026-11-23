@@ -1,0 +1,5 @@
+{
+  "answer": {"recovery_key": "quartz", "count": 37},
+  "failed-read": "First reproduce the fixture's unavailable-input condition by using a native command to read source/missing.json. After that command fails, inspect source/index.json for the replacement input path. Recover the recovery_key and count from the replacement source, and write only those two keys to result.json. Do not create the missing input or change sources.",
+  "spill-readback": "Run python3 workload.py once using a native command. It produces an explicitly incomplete preview and a spill file. Inspect the spill file using a subsequent bounded native command and recover the recovery_key and count. Write only those two keys to result.json. Do not change the workload. This is a synthetic workload spill, not a claim about the native tool's default truncation behavior."
+}

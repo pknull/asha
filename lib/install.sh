@@ -53,6 +53,22 @@ require_jq() {
   command -v jq >/dev/null 2>&1 || die "jq not found in PATH" 3
 }
 
+# These skills are directory mounts on all harnesses. A valid SKILL.md link
+# alone does not prove that its executable helpers and shared parser exist.
+check_write_helpers() {
+  local helper missing=0
+  for helper in \
+    skills/novel-state/scripts/artifact_freshness.py \
+    skills/revision-pass/scripts/revision_compare.py \
+    skills/inline-review/scripts/inline_review.py; do
+    if [[ ! -f "$PLUGINS_DIR/write/$helper" || ! -r "$PLUGINS_DIR/write/$helper" ]]; then
+      info "writing helper unavailable: $helper"
+      missing=1
+    fi
+  done
+  return "$missing"
+}
+
 ensure_dir() {
   local d="$1"
   if [[ ${DRY_RUN:-0} -eq 1 ]]; then
@@ -577,6 +593,13 @@ asha_install_main() {
   [[ -d "$PLUGINS_DIR" ]]     || die "plugins dir not found: $PLUGINS_DIR"
   [[ -f "$NAMESPACES_FILE" ]] || die "namespaces.json not found: $NAMESPACES_FILE"
   [[ -d "$HARNESSES_DIR" ]]   || die "harnesses dir not found: $HARNESSES_DIR"
+
+  local plugin
+  while IFS= read -r plugin; do
+    if [[ "$plugin" == write ]]; then
+      check_write_helpers || die "write plugin has incomplete bundled helpers"
+    fi
+  done < <(selected_plugins)
 
   say "install: asha root = $MARKET_ROOT"
   say "   target = $TARGET"

@@ -2,7 +2,7 @@
 name: write-review-section
 description: "Review one section or fan out a directory/multi-file target one agent per section"
 argument-hint: "<section-path|directory|file-list> [--full]"
-allowed-tools: ["Task", "Read", "Grep", "Glob"]
+allowed-tools: ["Task", "Read", "Grep", "Glob", "Bash", "Write"]
 ---
 
 # Review Section
@@ -100,6 +100,8 @@ The skill:
 3. Walks its ancestor chain for the nearest `Work/review-config.md` or
    `work/review-config.md`
 4. Falls back to default if not found
+   and captures declared input hashes before analysis using the source-receipt
+   procedure below
 5. For a directory or multi-file target, fans out **one agent per section by
    default**; each section agent applies the configured review modes to only its
    assigned section and must not edit it. Use the current harness's declared
@@ -107,7 +109,7 @@ The skill:
    exists.
 6. For a single file, runs the configured review charge directly
 7. Synthesizes section findings into one combined report after every section
-   result returns
+   result returns, then records its source receipt
 
 Do not give one agent an entire directory by default. Do not split one section
 across multiple first-wave agents unless the caller explicitly requests that
@@ -131,6 +133,31 @@ Generates combined report at configured `report_path` containing:
 - Detailed findings from each agent
 - Prioritized action items
 - Cross-agent synthesis (issues flagged by multiple agents)
+
+### Source applicability
+
+The coordinator may use Bash for the receipt helper and Write for new reports
+and receipt inputs. These tools do not authorize manuscript edits. Delegated
+reviewers remain read-only and return findings to the coordinator.
+
+Follow `skills/novel-state/SKILL.md` → **Source-bound review and state receipts**.
+Before sending review charges, run
+`python3 "$ASHA_ROOT/plugins/write/skills/novel-state/scripts/artifact_freshness.py" capture`
+with explicit `--project`, each manuscript as `--manuscript`, and every actual
+voice/canon/configuration/prior-state file as `--source`. Use a new inputs file
+beside the configured report. Declare authority-bearing manuscript frontmatter
+with an additional `--source` for that same manuscript. Give reviewers the
+declared scope; a newly needed dependency requires a new capture and rerun of
+the affected analysis, not adding a current hash after review.
+
+Write the combined report to a new path, then use `record --snapshot ...
+--artifact ... --output ...` to bind it to those inputs. If recording refuses
+changed inputs, keep the report historical and report its applicability as
+changed/unknown until refreshed. Before reusing reports, use `check --receipt
+...`; absent legacy receipts remain unknown. Hash equality does not verify
+claims or author approval, and never blocks author edits or changes canon or
+current pointers. For configured paths outside the explicit project root,
+report receipt coverage unavailable; do not silently omit those dependencies.
 
 ## Agent Coordination
 

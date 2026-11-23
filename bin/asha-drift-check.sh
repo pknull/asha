@@ -548,6 +548,12 @@ for f in install.sh uninstall.sh namespaces.json INSTALLER.md harnesses/claude.s
 done
 [[ $gone -eq 0 ]] && pass "installer scripts present"
 
+if check_write_helpers; then
+  pass "writing helpers and clean-projection dependency are present"
+else
+  nope "write plugin has incomplete bundled helpers"
+fi
+
 declare_pass_tool="$ASHA/plugins/session/tools/declare-pass.sh"
 verify_pass_handler="$ASHA/plugins/session/hooks/handlers/verify-pass-complete.sh"
 verify_pass_fragment="$ASHA/plugins/session/hooks/nudges/fragments/verify-pass-complete.md"

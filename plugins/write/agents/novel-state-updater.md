@@ -19,6 +19,20 @@ Run after the section has passed the review stages selected for the project, typ
 
 Extract section identifier from filename or heading. Use for directory naming (sanitize if needed).
 
+Before extracting state, follow the source-receipt procedure in
+`skills/novel-state/SKILL.md`. Resolve `ASHA_ROOT` and the explicit manuscript
+`PROJECT_ROOT`. Check any previous state's receipt before relying on it;
+missing legacy receipts mean unknown applicability and require reading live
+sources. Capture the section with `--manuscript`, plus every actual voice,
+canon, configuration and prior-state dependency with `--source`, to a new
+`Work/novel/state/[section-id]/[run-id].inputs.json`. For authority-bearing
+manuscript frontmatter, also declare that manuscript with `--source`.
+Capture before analysis, and restart capture/analysis if dependencies expand.
+Use the prior state's concrete section path when this workflow will retarget
+`current`, so that moving the pointer does not invalidate the dependency on
+that historical state. For a repeat extraction, use a fresh version directory;
+preserve previous state artifacts and their receipts.
+
 ### 2. Create State Directory
 
 ```bash
@@ -105,14 +119,41 @@ Create these files in the new directory:
 [Repeat for narratively significant objects]
 ```
 
-### 4. Update Symlink
+### 4. Record Source Applicability
+
+After writing the extracted state, run:
+
+```bash
+python3 "$ASHA_ROOT/plugins/write/skills/novel-state/scripts/artifact_freshness.py" record \
+  --project "$PROJECT_ROOT" \
+  --snapshot Work/novel/state/ch01/run1.inputs.json \
+  --artifact Work/novel/state/ch01/situation.md \
+  --artifact Work/novel/state/ch01/characters.md \
+  --artifact Work/novel/state/ch01/knowledge.md \
+  --output Work/novel/state/ch01/run1.receipt.json
+```
+
+Substitute the actual section and new run identifier; include inventory with
+another `--artifact` when written. Inputs changed during extraction prevent
+recording a current receipt. Preserve the historical outputs, report changed
+or unknown applicability, and refresh against live sources before using the
+extraction downstream. Never overwrite an old receipt. This is evidence about
+declared bytes only; it does not accept state, validate conclusions, authorize
+manuscript changes, or change pointers. Keep author acceptance separate.
+
+If recording fails, stop this extraction before steps 5 and 6. Preserve the
+outputs as historical drafts; leave the current pointer and timeline untouched.
+Refresh from live sources under a new run, then obtain the acceptance required
+by the project before promoting that extraction.
+
+### 5. Update Symlink
 
 ```bash
 rm -f Work/novel/state/current
 ln -s [section-id] Work/novel/state/current
 ```
 
-### 5. Append to Timeline
+### 6. Append to Timeline
 
 Add events to `Work/novel/timeline/events.json`:
 
@@ -157,7 +198,8 @@ Before completing:
 - [ ] characters.md written
 - [ ] knowledge.md written
 - [ ] inventory.md written (if objects are significant)
-- [ ] Symlink updated to new section
-- [ ] Timeline events appended
+- [ ] Inputs captured before extraction; output receipt recorded, or failure reported with promotion stopped
+- [ ] Symlink updated only for the accepted extraction with a recorded receipt
+- [ ] Timeline events appended only for that accepted extraction
 - [ ] No assumptions recorded as facts
 - [ ] Knowledge boundaries clearly marked
