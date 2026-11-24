@@ -1,6 +1,6 @@
 # DevOps Plugin
 
-**Version**: 0.1.0
+**Version**: 0.1.1
 
 Portable infrastructure procedures for Claude, Codex, Copilot and OpenCode.
 One canonical source per skill; the existing Asha installer mounts them as

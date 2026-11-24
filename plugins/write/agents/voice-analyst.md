@@ -62,7 +62,11 @@ metrics = {
 
 ### 3. Per-Source Analysis Output
 
-Write one analysis file per source to `Work/novel/analysis/[source-name].md`:
+Before returning a measured analysis or proceeding to Phase 2, write one analysis
+file per source to `Work/novel/analysis/[source-name].md` using the format below.
+This step is required even for a small sample measured inline: the computation
+method changes, not the artifact requirement. Keep small-sample uncertainty in
+the analysis; do not turn sparse observations into confident voice rules.
 
 ```markdown
 # Style Analysis: [Source Title]
@@ -113,6 +117,18 @@ Write one analysis file per source to `Work/novel/analysis/[source-name].md`:
 - Dialogue ratio: ~X%
 - Prohibited: [specific patterns from analysis]
 ```
+
+Read each written file back, verify its source attribution and computed metrics,
+and include its path in the response. A response containing metrics alone does
+not complete Phase 1. If a file cannot be written or read back, report that
+blocker instead of claiming the analysis artifact exists. The separate approval
+gate for the merged bible does not defer these per-source artifacts.
+
+These paths are relative to the manuscript project's root. Keep the per-source
+files there through completion and handoff; a temporary file moved elsewhere or
+removed after readback does not satisfy this artifact contract. An explicit user
+destination overrides the default; report that actual destination and retain the
+artifact there. Confirm its final location before returning.
 
 ## Phase 2: Merge (consolidation into voice.md)
 

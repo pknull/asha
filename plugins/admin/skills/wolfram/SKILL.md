@@ -16,10 +16,30 @@ paclet).
 
 ## Setup
 
-The `asha <harness>` dispatcher sources `~/.asha/secrets.env` and exports
-`WOLFRAM_APP_ID` into the session. If the variable is unset:
+The `asha <harness>` dispatcher exports `WOLFRAM_APP_ID` from
+`~/.asha/secrets.env`. For a service-backed request, first run this local presence
+check, even when network access is forbidden. Unset or empty means missing. If
+local commands are forbidden or unavailable, report presence as unverified.
+
+```sh
+wolfram_app_status=${WOLFRAM_APP_ID:+present}
+printf 'WOLFRAM_APP_ID: %s\n' "${wolfram_app_status:-missing}"
+```
+
+Report the observed name/status. If missing, halt the operation with:
 
 > `WOLFRAM_APP_ID not set. Add it to ~/.asha/secrets.env (see ~/Code/asha/secrets.example) and relaunch via asha <harness>.`
+
+Do not read or source secrets files, print values, or request credentials in chat.
+If network access is forbidden, stop after the check even when configured and
+state that no Wolfram request was made. Presence does not verify API access.
+
+**Blocked reply:** Include the observed variable names/statuses, the setup and
+relaunch guidance above for every missing variable, and whether a service request
+was made in the final response. These requirements are cumulative when both
+configuration and network access are unavailable. Setup guidance describes a
+future authorized session; it authorizes neither credential recovery nor a
+service request. Apply the current task's permissions to any action.
 
 Get an App ID (free non-commercial tier, ~2000 calls/month at time of writing) from
 [developer.wolframalpha.com/portal/myapps](https://developer.wolframalpha.com/portal/myapps/).

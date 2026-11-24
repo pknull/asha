@@ -72,6 +72,21 @@ Look for patterns like:
 
 Combine canonical and session findings. Canonical takes precedence for conflicts.
 
+### 4. Serialize the result
+
+Finish every lookup, including an exact match or no matches, by returning the YAML
+mapping under **Output Format** or **Not Found Response** below. Use the fields in
+the applicable form, retaining empty lists. Prose paragraphs or Markdown bullets
+do not replace this result.
+
+Keep canonical findings in `canonical` and unratified facts in `session_additions`,
+with their `[Session-Pending]` labels and session references. A pending-only match
+uses `found: true` and `canonical: null`; it does not promote pending facts into
+canon. When neither source matches, return `found: false`, `searched`, `suggestions`
+and `session_context`. In `searched`, record only indexes, globs and session files
+actually searched and identify register versus fallback paths. Include `searched`
+on a found result too when fallback search was used, as required above.
+
 ## Output Format
 
 ```yaml
@@ -193,5 +208,5 @@ Results return to GM for synthesis. The GM decides how to use or expand the info
 - Read the directory index before any Glob or Grep: one small file names every note and what it settles
 - Use Glob before Grep (faster for file discovery)
 - Limit content reads to relevant sections
-- Return early on exact match
+- Stop searching on an exact match once both source checks are complete, then complete Step 4
 - Cache nothing (stateless agent)

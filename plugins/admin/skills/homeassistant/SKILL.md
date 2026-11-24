@@ -18,9 +18,35 @@ The `asha <harness>` dispatcher exports these from `~/.asha/secrets.env`:
 - `HOMEASSISTANT_URL`: base URL with no `/api` and no trailing slash (e.g. `https://home.example.com`)
 - `HOMEASSISTANT_TOKEN`: a long-lived access token (user profile, Security tab)
 
-If either is missing, halt and say which. Do not read `~/.asha/secrets.env` with `cat` or Read,
-never print the token, and never ask for it in chat. A session started before the keys were
-added does not have them: relaunch, or load them into a single subprocess without echoing:
+For a service-backed request, first run this local presence check, even when
+network access is forbidden. Unset or empty means missing. If local commands
+are forbidden or unavailable, report presence as unverified.
+
+```sh
+homeassistant_url_status=${HOMEASSISTANT_URL:+present}
+homeassistant_token_status=${HOMEASSISTANT_TOKEN:+present}
+printf 'HOMEASSISTANT_URL: %s\n' "${homeassistant_url_status:-missing}"
+printf 'HOMEASSISTANT_TOKEN: %s\n' "${homeassistant_token_status:-missing}"
+```
+
+Report the observed names/statuses. If either is missing, halt the operation and
+tell the user to set it in `~/.asha/secrets.env` and relaunch via `asha <harness>`.
+Do not read or source secrets files during this diagnostic. If network access is
+forbidden, stop after the check even when configured and state that no Home
+Assistant request was made. Presence does not verify API access or device state.
+
+**Blocked reply:** Include the observed variable names/statuses, the setup and
+relaunch guidance above for every missing variable, and whether a service request
+was made in the final response. These requirements are cumulative when both
+configuration and network access are unavailable. Setup guidance describes a
+future authorized session; it authorizes neither credential recovery nor a
+service request. Apply the current task's permissions to any action.
+
+Do not read `~/.asha/secrets.env` with `cat` or Read, never print the token, and
+never ask for it in chat. A session started before the keys were added does not
+have them: relaunch, or load them into a single subprocess without echoing. The
+loading alternative is outside the diagnostic and must not run when credential
+recovery is forbidden:
 
 ```bash
 bash -s <<'EOF'

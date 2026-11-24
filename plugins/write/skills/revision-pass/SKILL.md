@@ -15,27 +15,40 @@ judgment calls instead of silently inventing an answer.
    project instructions, manuscript plan, canon/state sources, and style or
    voice document before editing any manuscript text. Treat live manuscript
    and authority files as stronger evidence than summaries or review notes.
+   Open and read each binding file's contents before the first edit: listing
+   paths, copying files, or hashing them in a receipt does not satisfy this
+   step. A reviewer's later read cannot satisfy the writer's pre-edit read.
 2. **Define the pass.** State the old value being retired, the intended new
    value when one exists, the acts/sections in scope, and the acceptance proof.
    Resolve `ASHA_ROOT` from the wrapper environment or
    `${ASHA_HOME:-$HOME/.asha}/config.json`, then run
    `"$ASHA_ROOT/plugins/session/tools/declare-pass.sh" OLD [NEW]` when that
    tool is available so the end-of-turn hook can recheck the declaration.
-3. **Revise in manuscript order.** Preserve facts and language outside the
-   stated pass. Do not broaden into an unrelated rewrite.
-4. **Review every act independently.** Read
+3. **Preserve originals, then revise in manuscript order.** Before editing,
+   save byte-for-byte copies of the in-scope manuscripts in a new directory
+   under the project's `Work/reports/`, for example `<pass>/originals/`. Keep
+   earlier copies intact. Use these copies for before/after comparisons and
+   preservation proofs. Preserve facts and language outside the stated pass;
+   do not broaden into an unrelated rewrite.
+4. **Capture, review and bind every act.** Before dispatching reviews, follow
+   **Review receipts** below to capture the revised manuscript, saved originals
+   used for comparison, and every authority actually used. Read
    `harnesses/capabilities.json`, select the current harness's `subagents`
    surface, and assign exactly one read-only review agent to each act. Agents
    may run in parallel when that surface exists. If no usable subagent surface
    exists, perform the same read-only act reviews sequentially. A reviewer may
-   report findings but must not edit manuscript or authority files.
+   report findings but must not edit manuscript or authority files. Persist the
+   combined report, then record and check its source receipt. These operations
+   apply to an ordinary revision; candidate comparison is not required.
 5. **Do not ask clarifying questions.** Resolve mechanical ambiguity from the
    authority sources. Append every genuine creative or continuity judgment
    call to the manuscript project's `DECISIONS.md`, following its existing
    format, before relying on that decision in prose.
 6. **Audit the revision against style.** Re-read the authoritative style or
    voice document, then audit your own changed prose against it. Fix confirmed
-   deviations; do not substitute generic preferences for project rules.
+   deviations; do not substitute generic preferences for project rules. If a
+   fix changes a reviewed input, repeat the affected review under a new capture
+   and report; do not attach current hashes to the previous findings.
 7. **Prove the old value is gone.** From the repository root, run a scoped
    repository-wide fixed-string search. It excludes `.git`, `.jj`, the notes
    under `Work`, and every `DECISIONS.md` (step 5 records the old value there
@@ -59,7 +72,43 @@ judgment calls instead of silently inventing an answer.
 
 Report the authority files read, act-review verdicts, entries added to
 `DECISIONS.md`, style-audit outcome, verification commands with exit status,
-the exact empty old-value grep proof, and the resulting commit identity.
+the exact empty old-value grep proof, report/snapshot/receipt paths and the
+receipt check result with any uncovered inputs, and the resulting commit
+identity when a commit was requested.
+
+## Review receipts
+
+Use the existing source-receipt procedure in
+`$ASHA_ROOT/plugins/write/skills/novel-state/SKILL.md` for every new revision
+review report. Resolve `ASHA_ROOT` from the wrapper environment or
+`${ASHA_HOME:-$HOME/.asha}/config.json` in each consuming tool call. The helper
+is `$ASHA_ROOT/plugins/write/skills/novel-state/scripts/artifact_freshness.py`;
+it does not require Git or initialized Asha project metadata.
+
+Before analysis, run `capture` with explicit `--project`, each revised act as
+`--manuscript`, and every saved original and authority actually used as
+`--source`. Original manuscripts used to prove that unrelated bytes were
+preserved are review dependencies too. Give reviewers the declared project
+paths, using the saved originals for comparisons. Include
+authority-bearing manuscript frontmatter through an additional `--source`
+declaration for that same file. Use a new snapshot name under the manuscript
+project's `Work/reports/`, then give the reviewers the declared scope.
+
+After the reviews, write the report inside that same project and run `record
+--project ... --snapshot ... --artifact ... --output ...`, followed by
+`check --project ... --receipt ...`. Paths other than `--project` are normalized
+project-relative paths. Keep old reports and receipts; if inputs change or a
+review needs another source, take a new complete capture and rerun affected
+analysis. Do not silently omit dependencies. If an input must remain outside
+the project and current permissions prevent preserving a project-local copy,
+an explicit report destination is outside the project, or the helper cannot run,
+honor that constraint and name the uncovered path and coverage limit in both
+the saved report and final response. A successful `check` verifies only declared
+inputs; it cannot prove that the declaration is complete or bind an unsupported
+external artifact. Do not claim complete review applicability while relying on
+uncovered inputs. The old-value
+declaration helper failing does not make this independent receipt helper
+unavailable.
 
 ## Optional candidate comparison
 
@@ -123,9 +172,8 @@ model calls, edits no prose, and never promotes a candidate.
    Keep packets and previous reports as history; use a new packet if inputs
    change. The helper's `check --project ... --packet ...` command is read-only.
 
-For review and extracted-state applicability, use the source-receipt workflow
-in `skills/novel-state/SKILL.md`. Neither helper replaces claim verification,
-canon authority, or the author's creative decision.
+Neither comparison nor receipt helpers replace claim verification, canon
+authority, or the author's creative decision.
 
 ## Inline manuscript threads
 

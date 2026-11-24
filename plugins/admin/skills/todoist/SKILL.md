@@ -11,15 +11,30 @@ Direct REST API access for Todoist task create/find/update/complete. Replaces th
 
 ## Setup
 
-The token is loaded from `~/.asha/secrets.env` automatically when you launch
-through `asha <harness>`. The dispatcher sources `bin/asha-env-bootstrap.sh`,
-which exports any `KEY=VALUE` defined in that file into the session.
+The `asha <harness>` dispatcher exports `TODOIST_API_TOKEN` from
+`~/.asha/secrets.env`. For a service-backed request, first run this local presence
+check, even when network access is forbidden. Unset or empty means missing. If
+local commands are forbidden or unavailable, report presence as unverified.
 
-If `$TODOIST_API_TOKEN` is unset when this skill runs, halt with a clear message:
+```sh
+todoist_token_status=${TODOIST_API_TOKEN:+present}
+printf 'TODOIST_API_TOKEN: %s\n' "${todoist_token_status:-missing}"
+```
+
+Report the observed name/status. If missing, halt the operation with:
 
 > `TODOIST_API_TOKEN not set. Add it to ~/.asha/secrets.env (see secrets.example in the asha repo) and relaunch via asha <harness>.`
 
-Do **not** prompt the user to paste the token into chat — that puts it in conversation history. Do **not** read `~/.asha/secrets.env` directly with `cat` or Read; the env var is what the user expects you to use, and reading the file leaks the value into your context.
+Do not read or source secrets files, print values, or request credentials in chat.
+If network access is forbidden, stop after the check even when configured and
+state that no Todoist request was made. Presence does not verify API access.
+
+**Blocked reply:** Include the observed variable names/statuses, the setup and
+relaunch guidance above for every missing variable, and whether a service request
+was made in the final response. These requirements are cumulative when both
+configuration and network access are unavailable. Setup guidance describes a
+future authorized session; it authorizes neither credential recovery nor a
+service request. Apply the current task's permissions to any action.
 
 Tokens come from Todoist Settings → Integrations → Developer.
 

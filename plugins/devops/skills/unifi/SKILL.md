@@ -6,25 +6,49 @@ description: "Read UniFi Network controller inventory, topology and health witho
 # UniFi read-only operations
 
 Controller records establish network presence, not machine ownership or shell
-access. Read the private infrastructure inventory/runbook first. Restrict every
-request to the authorized controller and site; do not scan subnets or probe
-unknown clients. No adoptions, reconnects, provisioning, port toggles, firmware,
+access. Before querying a controller, read the private infrastructure
+inventory/runbook. Restrict every request to the authorized controller and site;
+do not scan subnets or probe unknown clients. No adoptions, reconnects,
+provisioning, port toggles, firmware,
 firewall, reservations or policy changes.
 
 ## Access
 
-Use the Asha wrapper's environment, shared by Claude and Codex:
+Use the Asha wrapper's environment:
 
 - `UNIFI_BASE_URL`: documented legacy site base, for example
   `https://controller.example/proxy/network/api/s/default`.
 - `UNIFI_API_KEY`: existing authorized local controller key.
 - `UNIFI_CA_CERT`: optional approved CA/certificate bundle path for TLS trust.
 
-Never read the secrets file into model context, print keys, put tokens in argv,
-search Claude auto-memory, or ask for credentials in chat. If the environment is
-not provisioned, report that dependency. Prefer a read-only-scoped key where
-supported; a write-capable key does not authorize writes. Do not create/rotate
-keys or migrate secret storage without direction.
+For a service-backed request, first run this local presence check, even when
+network access is forbidden. Unset or empty means missing. If local commands
+are forbidden or unavailable, report presence as unverified.
+
+```sh
+unifi_url_status=${UNIFI_BASE_URL:+present}
+unifi_key_status=${UNIFI_API_KEY:+present}
+printf 'UNIFI_BASE_URL: %s\n' "${unifi_url_status:-missing}"
+printf 'UNIFI_API_KEY: %s\n' "${unifi_key_status:-missing}"
+```
+
+Report the observed names/statuses. If either is missing, halt the operation and
+tell the user to provision it through the existing Asha wrapper and relaunch via
+`asha <harness>`. If network access is forbidden, stop after the check even when
+configured and state that no controller was reached. Presence does not verify
+API access or site health.
+
+**Blocked reply:** Include the observed variable names/statuses, the setup and
+relaunch guidance above for every missing variable, and whether a controller was
+reached in the final response. These requirements are cumulative when both
+configuration and network access are unavailable. Setup guidance describes a
+future authorized session; it authorizes neither credential recovery nor a
+service request. Apply the current task's permissions to any action.
+
+Never read or source secrets files, print values, put tokens in argv,
+search Claude auto-memory, or ask for credentials in chat. Prefer a read-only-scoped
+key where supported; a write-capable key does not authorize writes. Do not
+create/rotate keys or migrate secret storage without direction.
 
 Verify TLS normally. No insecure mode is provided. A self-signed certificate
 requires independently verified trust configured by the Keeper, not silent

@@ -78,7 +78,12 @@ or bot).
    character dropped before acting, a slog, and a lone boss swamped by action
    economy.
 6. **Report.** The roster, labelled invented; the ladder rows that justify
-   it; the tactics assumed; and what was not modelled.
+   it; the tactics assumed; and a **Not modelled** sentence or list carrying
+   the actual exclusions from step 2. This remains part of a concise answer
+   or a numerical artifact: successful simulation rows do not describe the
+   model's limits. For a fully specified invented scenario, state that the
+   result covers only its supplied combat rules; do not invent additional
+   mechanics or imply a full game's encounter balance was checked.
 
 ## Example
 

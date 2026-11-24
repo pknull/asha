@@ -17,7 +17,29 @@ The `asha <harness>` dispatcher exports these variables from
 - `BOOKSTACK_BASE_URL` — full base, including `/api` (e.g. `https://wiki.example.com/bookstack/api`)
 - `BOOKSTACK_API_TOKEN` — combined `id:secret` from BookStack → Edit Profile → API Tokens
 
-If either is missing, halt and tell the user to set them. Do **not** read `~/.asha/secrets.env` directly.
+For a service-backed request, first run this local presence check, even when
+network access is forbidden. Unset or empty means missing. If local commands
+are forbidden or unavailable, report presence as unverified.
+
+```sh
+bookstack_url_status=${BOOKSTACK_BASE_URL:+present}
+bookstack_token_status=${BOOKSTACK_API_TOKEN:+present}
+printf 'BOOKSTACK_BASE_URL: %s\n' "${bookstack_url_status:-missing}"
+printf 'BOOKSTACK_API_TOKEN: %s\n' "${bookstack_token_status:-missing}"
+```
+
+Report the observed names/statuses. If either is missing, halt the operation and
+tell the user to set it in `~/.asha/secrets.env` and relaunch via `asha <harness>`.
+Do not read or source secrets files, print values, or request credentials in chat.
+If network access is forbidden, stop after the check even when configured and
+state that no BookStack request was made. Presence does not verify API access.
+
+**Blocked reply:** Include the observed variable names/statuses, the setup and
+relaunch guidance above for every missing variable, and whether a service request
+was made in the final response. These requirements are cumulative when both
+configuration and network access are unavailable. Setup guidance describes a
+future authorized session; it authorizes neither credential recovery nor a
+service request. Apply the current task's permissions to any action.
 
 ## API basics
 

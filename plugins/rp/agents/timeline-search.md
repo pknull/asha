@@ -92,7 +92,26 @@ Within files, look for:
 
 ### 4. Extract Timeline
 
-Build chronological event list from matches.
+Build chronological event list from matches. Preserve the distinction between an
+event and later evidence of its result (for example, acquisition versus later
+possession). Use `null` for an unknown fiction or session date; do not infer a
+calendar date from a day number or a later mention. Keep the source reference.
+
+### 5. Serialize the result
+
+Finish every ordinary search, including an exact match or no matches, by returning
+the YAML mapping under **Output Format** or **No Results Response** below. Populate
+its fields from the evidence actually read; an empty result uses `results.events`
+as an empty list and search metadata for the search performed. Prose paragraphs or
+Markdown bullets do not replace this result.
+
+Retain every key in the applicable form. An ordinary found result with no
+continuity observations still includes `continuity_notes: []`. Check the result
+against that form before returning it; unknown values stay `null`.
+
+There are two query-specific forms: **DAY SUMMARY** returns the Markdown specified
+below; **Continuity check** returns the `continuity_check` YAML mapping under
+**Continuity Verification**. Use that form instead of the ordinary event mapping.
 
 ## Output Format
 
@@ -230,6 +249,6 @@ Results return to GM for synthesis. The GM uses timeline data to maintain narrat
 
 - Search summaries before full sessions (faster)
 - Use date filters in file patterns when possible
-- Return early on exact match for simple queries
+- Stop searching on an exact match for simple queries, then complete Step 5
 - Limit excerpts to relevant portions
 - Sort results chronologically by fiction date

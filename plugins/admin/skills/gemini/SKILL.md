@@ -11,10 +11,30 @@ Single-purpose skill: ask Gemini a question, get back an answer plus the web sou
 
 ## Setup
 
-The `asha <harness>` dispatcher sources `~/.asha/secrets.env` and exports
-`GEMINI_API_KEY` into the session. If the variable is unset:
+The `asha <harness>` dispatcher exports `GEMINI_API_KEY` from
+`~/.asha/secrets.env`. For a service-backed request, first run this local presence
+check, even when network access is forbidden. Unset or empty means missing. If
+local commands are forbidden or unavailable, report presence as unverified.
+
+```sh
+gemini_key_status=${GEMINI_API_KEY:+present}
+printf 'GEMINI_API_KEY: %s\n' "${gemini_key_status:-missing}"
+```
+
+Report the observed name/status. If missing, halt the operation with:
 
 > `GEMINI_API_KEY not set. Add it to ~/.asha/secrets.env (see secrets.example in the asha repo) and relaunch via asha <harness>.`
+
+Do not read or source secrets files, print values, or request credentials in chat.
+If network access is forbidden, stop after the check even when configured and
+state that no Gemini search was made. Presence does not verify API access.
+
+**Blocked reply:** Include the observed variable names/statuses, the setup and
+relaunch guidance above for every missing variable, and whether a service request
+was made in the final response. These requirements are cumulative when both
+configuration and network access are unavailable. Setup guidance describes a
+future authorized session; it authorizes neither credential recovery nor a
+service request. Apply the current task's permissions to any action.
 
 Tokens come from [Google AI Studio](https://aistudio.google.com/app/apikey).
 

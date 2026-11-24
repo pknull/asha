@@ -111,6 +111,12 @@ source of canon.
 
 ### Step 4: Assemble and write once
 
+Read the current UTC date from the execution clock, for example with
+`date -u +%F`, and use that observed value for `last_extraction`. Do not copy
+an earlier extraction date, use an example date, or infer today's date. If the
+clock cannot be read, preserve the existing file and report the blocker rather
+than claim a fresh extraction.
+
 Assemble the complete replacement in memory before writing. Its YAML
 frontmatter must include:
 
@@ -143,22 +149,34 @@ back unchanged (you read it in Step 2) and report the hit under
 extraction means the `last_extraction` frontmatter date is wrong. Exit 2 means
 the file was not written.
 
+Also compare the written `last_extraction` with the clock value observed in
+Step 4. Gate success alone does not verify this date when no run-state date is
+available.
+
 ### Step 6: Return the summary
 
-Return:
+The final response must include one YAML block with every key below, populated
+from the reads, writes and verification actually performed. Keep empty lists;
+prose or bullets do not replace the structured summary. Return this same block
+when locked live state stops extraction in Step 2 or Step 3, or requires restoring
+the previous file in Step 5: set `sections_updated: []`, list every blocking hit
+under `locked_live_state`, and do not claim a completed extraction.
 
 ```yaml
 sources_read: 0
 sections_updated: []
 keeper_locked_preserved: []
-locked_live_state: []   # locked sections holding live state; nothing was written
+locked_live_state: []   # blocking hits; previous file preserved or restored
 live_state_excluded: []  # live-state claims found in the sources and left out
 conflicts_flagged: []
 new_canon_detected: []
 empty_globs: []
 ```
 
-Highlight conflicts and new canon for Keeper review. Then recommend:
+After the YAML, highlight conflicts and new canon for Keeper review. If blocked
+by locked live state, state that the previous file is unchanged and ask the Keeper
+to retire the named sections as Step 2 specifies. After a successful extraction,
+recommend:
 
 > **Recommendation**: Open `Memory/invariants.md` and skim. Any section that
 > should not be auto-overwritten on the next extraction can be marked

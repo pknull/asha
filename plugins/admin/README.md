@@ -1,6 +1,6 @@
 # Admin Plugin
 
-**Version**: 0.4.0
+**Version**: 0.4.1
 
 Direct integrations for personal administration, grounded search, computation, and knowledge management.
 

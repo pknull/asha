@@ -136,17 +136,7 @@ not duplicate the same content under phase-number and semantic-name keys.
    targeted research only when a named evidence gap blocks the decision.
 6. **Synthesize and decide**: compare viable options, record material dissent,
    apply the decision rule, and state confidence without false precision.
-7. **Complete**: resolve the decision's trust fields first, never by hand:
-
-   ```bash
-   ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"
-   ACTOR="$(python3 "$ASHA_ROOT/plugins/okf/tools/okf_update.py" --plugin panel --print-actor)"; NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-   echo "ACTOR: $ACTOR"; echo "NOW: $NOW"
-   ```
-
-   Then write `decision.md` with `generated.by` ACTOR and `generated.at` NOW,
-   set state to `completed`, run the record step when the panels are a bundle,
-   and return the decision's path.
+7. **Complete** using **Completion (every mode)** below.
 
 ### Quick
 
@@ -157,7 +147,8 @@ decomposition and clarification were intentionally skipped.
 ### Think
 
 Initialize state, run `thinker`, store the numbered decomposition and decision
-points, write them to `decision.md`, and mark the run completed. Do not recruit
+points, then use **Completion (every mode)** to write `decision.md` and complete.
+Do not recruit
 or deliberate. Branches may be represented inside the decomposition object;
 they do not create extra files.
 
@@ -170,11 +161,35 @@ they do not create extra files.
 4. On `REVISE`, resume questioning around the named gaps. On `REFRAME`, stop
    for user confirmation. On `SOUND`, `codifier` writes `seed.yaml` from the
    canonical template.
-5. Write `decision.md` with the verdict, settled requirements, open questions,
-   and seed path; then mark the run completed.
+5. Use **Completion (every mode)** to write `decision.md` with the verdict,
+   settled requirements, open questions and seed path, then complete.
 
 The Questioner gathers requirements and never proposes solutions. The Codifier
 must not invent requirements absent from the saved Q&A.
+
+### Completion (every mode)
+
+Full, Quick, Think and Interview all use this procedure. Resolve attribution
+from the installed panel plugin before writing the final decision, even when
+the project has no Asha metadata or panels bundle index:
+
+```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved" >&2; exit 1; }
+ACTOR="$(python3 "$ASHA_ROOT/plugins/okf/tools/okf_update.py" --plugin panel --print-actor)" || exit "$?"
+[[ -n "$ACTOR" ]] || { echo "ERROR: panel actor unresolved" >&2; exit 1; }
+NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit "$?"
+printf 'ACTOR: %s\nNOW: %s\n' "$ACTOR" "$NOW"
+```
+
+Use the observed ACTOR and NOW for `generated.by` and `generated.at`; never
+substitute the harness name or guess a version. If resolution fails, preserve
+the accumulated work and report the blocker without marking the run completed.
+Otherwise write `decision.md`, keep `ratified: null`, run the record step when
+the panels are a bundle, and record completion with any gate failure disclosed.
+Return the decision path. No bundle index skips only the record step, not
+attribution. Separate tool calls must use the observed values explicitly;
+shell variables from a previous call may not exist.
 
 ## Deliberation standards
 

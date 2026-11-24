@@ -1,6 +1,6 @@
 # RPG Plugin
 
-**Version**: 0.2.0
+**Version**: 0.2.1
 
 Tabletop RPG tooling: managing the game library, and help with rules and
 mechanics for any system. The mechanics skills reason from how mechanics
