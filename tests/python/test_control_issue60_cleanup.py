@@ -43,6 +43,25 @@ class Issue60CleanupContractTests(unittest.TestCase):
                 self.assertEqual(verifier, wanted)
                 self.assertNotIn("doctor:tmux", verifier)
 
+    def test_copilot_activity_claims_match_the_installed_bridge(self) -> None:
+        capabilities = json.loads(
+            (ROOT / "harnesses/capabilities.json").read_text(encoding="utf-8")
+        )
+        copilot = capabilities["harnesses"]["copilot"]["capabilities"]
+        session_profile = " ".join(
+            copilot["session-profile"]["limitations"]
+        )
+        session_close = " ".join(copilot["session-close"]["limitations"])
+        project_memory = " ".join(
+            copilot["project-memory"]["limitations"]
+        )
+
+        self.assertIn("control-event.sh", copilot["control-status"]["surface"])
+        self.assertNotIn("No Control session events are claimed", session_profile)
+        self.assertNotIn("No Stop seam or activity hooks", session_close)
+        self.assertNotIn("activity is unobserved", copilot["session-close"]["surface"])
+        self.assertNotIn("no native activity bridge", project_memory)
+
 
 if __name__ == "__main__":
     unittest.main()

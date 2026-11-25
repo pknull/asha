@@ -382,16 +382,16 @@
           "verifier": "tests:test-session-profiles + tests:test-session-hub-hooks",
           "limitations": [
             "Installed Asha skills, commands and agents stay discoverable in a worker; only the automatic context injection is removed",
-            "No Control session events are claimed: control-event.sh is not wired into Copilot's hook file, so a hub session's activity stays unknown until the worker reports explicitly",
-            "Screen scraping is deliberately not used to fill that gap"
+            "Hub-session lifecycle events are wired; Copilot has no turn-end/Stop event, so activity remains partial; see control-status for its observation limits",
+            "Screen scraping is deliberately not used to infer missing turn-end events"
           ]
         },
         "session-close": {
           "support": "partial",
-          "surface": "session close -> best-effort: queued hub message and one typed pointer line (activity is unobserved); bounded wait, then termination labelled saved or unsaved",
+          "surface": "session close -> best-effort: queued hub message and one typed pointer line (no turn-end/idle signal); bounded wait, then termination labelled saved or unsaved",
           "verifier": "python test_control_session_closure/test_session_publication_rows/test_session_emitted_at; tests:test-session-hub-hooks",
           "limitations": [
-            "No Stop seam or activity hooks: the pointer is typed without an observed idle boundary",
+            "No Stop or turn-end seam: the pointer is typed without an observed idle boundary",
             "Fixture evidence is not a paid native probe"
           ]
         },
@@ -413,7 +413,7 @@
             "Controller/scripted fixtures are not native finish-save-idle delivery proof; no paid native probe performed",
             "Every successful save records a publication row (explicit save, close, handoff or no-durable-update attestation); saved is read from those rows only",
             "No Git publication, transcript extraction, chair context, or native permission bypass",
-            "Memory publication and finished reporting supported; no native activity bridge, so rows read unknown; structured transport unsupported"
+            "Memory publication and finished reporting are supported; lifecycle callbacks report partial Control activity, but there is no native turn-end signal; structured transport unsupported"
           ]
         }
       }

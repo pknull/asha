@@ -32,6 +32,8 @@ from unittest import mock
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlsplit
 
+import yaml
+
 
 SCRIPT = (
     Path(__file__).parents[2]
@@ -4165,6 +4167,15 @@ class AshaHomeTests(RemovalFixture):
             for number, line in enumerate(text.splitlines(), 1):
                 self.assertNotRegex(line, OLD_PRIVATE_PATH,
                                     f"{path.relative_to(root)}:{number}")
+
+
+class CopilotSkillDescriptionTests(unittest.TestCase):
+    def test_lunch_money_description_fits_copilots_1024_character_limit(self):
+        skill = SCRIPT.parents[1] / "SKILL.md"
+        frontmatter = skill.read_text(encoding="utf-8").split("---", 2)[1]
+        description = yaml.safe_load(frontmatter)["description"]
+
+        self.assertLessEqual(len(description), 1024, f"description is {len(description)} characters")
 
 
 # ---------------------------------------------------------------------------

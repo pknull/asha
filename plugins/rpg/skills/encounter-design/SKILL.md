@@ -85,6 +85,14 @@ or bot).
    result covers only its supplied combat rules; do not invent additional
    mechanics or imply a full game's encounter balance was checked.
 
+### Damage reporting
+
+For any exact incoming-damage total, name the receiving side, target
+allocation or targeting policy, action order, and round horizon. Count only
+attacks that resolve before each foe is defeated. Never state an exact total
+unless the chosen script reports it or the deterministic action sequence and
+these inputs make it auditable; otherwise say the total is unavailable.
+
 ## Example
 
 *Four characters, each 24 hit points, hitting 3 in 5 for 1d8+3. Goblins have

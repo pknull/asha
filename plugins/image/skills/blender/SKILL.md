@@ -150,6 +150,9 @@ A run worked only when all of these hold:
 4. For a Cycles render, the `Path tracing on:` entry names the intended
    device.
 
+If the Blender process is missing or not run, a render/export is not
+successful; report it as not run or blocked.
+
 ## Scripts
 
 - `scripts/cycles_devices.py`: probe Cycles backends and enable one in this

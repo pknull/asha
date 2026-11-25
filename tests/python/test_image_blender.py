@@ -11,6 +11,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import struct
 import subprocess
 import sys
@@ -304,6 +305,16 @@ class SkillTextTests(unittest.TestCase):
     """The skill must work on any machine: no host paths or one machine's GPU."""
 
     MACHINE_SPECIFIC = ("/home/", "/Users/", "C:\\", "~/Applications", "RX 7800", "gfx1101", "i7-8700K")
+
+    def test_unrun_blender_process_cannot_be_reported_as_successful_render_or_export(self):
+        text = re.sub(r"\s+", " ", (SKILL / "SKILL.md").read_text(encoding="utf-8"))
+        matched = re.search(
+            r"(?is)(?:if|when)\s+(?:the\s+)?(?:Blender\s+)?process\s+"
+            r"(?:is\s+)?(?:missing|not\s+run|never\s+started)[^.]{0,120}"
+            r"(?:render|export)[^.]{0,80}(?:not|cannot|must\s+not)[^.]{0,40}successful",
+            text,
+        )
+        self.assertIsNotNone(matched, "an absent Blender run must not count as a successful render/export")
 
     def test_no_machine_specifics_in_skill_files(self):
         for path in sorted(SKILL.rglob("*")):
