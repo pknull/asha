@@ -5,11 +5,11 @@
 # harness adapter; this file owns only the data shared across lifecycle phases.
 
 asha_harnesses() {
-  printf '%s\n' claude codex copilot opencode
+  printf '%s\n' claude codex copilot opencode pi
 }
 
 asha_harness_exists() {
-  case "${1:-}" in claude|codex|copilot|opencode) return 0 ;; *) return 1 ;; esac
+  case "${1:-}" in claude|codex|copilot|opencode|pi) return 0 ;; *) return 1 ;; esac
 }
 
 asha_target_exists() {
@@ -19,7 +19,7 @@ asha_target_exists() {
 
 asha_expand_target() {
   case "${1:-}" in
-    claude|codex|copilot|opencode) printf '%s\n' "$1" ;;
+    claude|codex|copilot|opencode|pi) printf '%s\n' "$1" ;;
     both) printf '%s\n' claude codex ;;
     all) asha_harnesses ;;
     *) return 1 ;;
@@ -31,6 +31,7 @@ asha_harness_home() {
     claude) printf '%s\n' "${CLAUDE_HOME:-$HOME/.claude}" ;;
     codex) printf '%s\n' "${CODEX_HOME:-$HOME/.codex}" ;;
     copilot) printf '%s\n' "${COPILOT_HOME:-$HOME/.copilot}" ;;
+    pi) printf '%s\n' "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}" ;;
     opencode) printf '%s\n' "${ASHA_OPENCODE_HOME:-${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}}" ;;
     *) return 1 ;;
   esac
@@ -41,6 +42,7 @@ asha_harness_executable() {
     claude) printf '%s\n' "${ASHA_CLAUDE_CMD:-claude}" ;;
     codex) printf '%s\n' "${ASHA_CODEX_CMD:-codex}" ;;
     copilot) printf '%s\n' "${ASHA_COPILOT_CMD:-copilot}" ;;
+    pi) printf '%s\n' "${ASHA_PI_CMD:-pi}" ;;
     opencode) printf '%s\n' "${ASHA_OPENCODE_CMD:-opencode}" ;;
     *) return 1 ;;
   esac
@@ -66,6 +68,7 @@ asha_harness_native_config() {
     codex) printf '%s\n' "$home/config.toml" ;;
     copilot) printf '%s\n' "$home/hooks/asha-guardrails.json" ;;
     opencode) printf '%s\n' "$home/opencode.json" ;;
+    pi) printf '%s\n' "$home/settings.json" ;;
   esac
 }
 

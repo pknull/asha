@@ -59,6 +59,7 @@ SCRUBBED_ROLE_ENV = (
 )
 HARNESS_COMMAND_ENV = {
     "claude": "ASHA_CLAUDE_CMD", "codex": "ASHA_CODEX_CMD",
+    "pi": "ASHA_PI_CMD",
     "copilot": "ASHA_COPILOT_CMD", "opencode": "ASHA_OPENCODE_CMD",
 }
 MAX_NAME_BYTES = 120
@@ -205,6 +206,8 @@ def room_launch_argv(
             raise RoomError("invalid native session ID")
         if selected == 'claude':
             resume = ['--resume', resume_id]
+        elif selected == 'pi':
+            resume = ['--session', resume_id]
         elif selected == 'codex':
             # `codex resume ID` takes its own -m/-c options after the ID.
             resume = ['resume', '--no-daemon', resume_id]
@@ -219,6 +222,7 @@ def room_launch_argv(
         "codex": [*(resume or ['--no-daemon']), *flags, text],
         "copilot": [*flags, "--interactive", text],
         "opencode": [*flags, "--prompt", text],
+        "pi": [*flags, *resume, "--", "\n" + text if text.startswith("@") else text],
     }[selected]
     return [str(launcher), selected, *tail]
 
@@ -741,7 +745,7 @@ def open_room(
     if resume_id is not None:
         if not isinstance(resume_id, str) or not resume_id or resume_id.startswith('-') or len(resume_id) > 512 or not resume_id.isprintable():
             raise RoomError('invalid native session ID')
-        if harness not in {'claude', 'codex'}:
+        if harness not in {'claude', 'codex', 'pi'}:
             raise RoomError('native resume is not verified for this harness; open a new session')
     room_name, slug = _room_name(name)
     text = _prompt(prompt)

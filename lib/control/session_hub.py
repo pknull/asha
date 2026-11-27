@@ -64,7 +64,7 @@ STALE_REPORT_SECONDS = 30
 HOOK_SILENCE_SECONDS = 90
 # Only these harnesses have a native hook bridge into the hub; Copilot and
 # OpenCode sessions report explicitly and are never "hooks not reporting".
-HOOK_REPORTING_HARNESSES = frozenset({'claude', 'codex'})
+HOOK_REPORTING_HARNESSES = frozenset({'claude', 'codex', 'pi'})
 # A SessionStart whose payload names one of these sources starts a new native
 # conversation in the pane (Claude and Codex /clear), so it may take over the
 # generation's binding (F6). A nested `claude -p` starts as ``startup``.
@@ -223,7 +223,7 @@ def native_binding(row, event, native_id, cwd, source=None):
     if not native_id or native_id == bound:
         return None
     if bound is not None and not (event == 'session-start'
-                                  and (source in REBIND_SOURCES or binding.get('ended'))):
+                                  and (source in REBIND_SOURCES or (row['harness'] == 'pi' and source in {'pinew', 'piresume', 'pifork'}) or binding.get('ended'))):
         raise StoreError('hook event names another native conversation than this session bound')
     if _outside_project(row, cwd):
         raise StoreError("hook cwd is outside this session's project and names another conversation")
@@ -231,17 +231,20 @@ def native_binding(row, event, native_id, cwd, source=None):
 
 
 def same_conversation(row, caller):
-    """Refuse an actor verb from another Claude conversation than the generation bound (#149).
+    """Refuse actor verbs from another Claude or Pi conversation than the bound generation.
 
     Claude Code gives every Bash tool and hook process ``CLAUDE_CODE_SESSION_ID``,
     the ``session_id`` its hooks carry. A different value is positive evidence
     of another conversation carrying this session's environment: one Claude Code
     moved to a background session, which keeps the first Room's environment, or
     a nested ``claude -p``. An absent value, no binding for this generation, and
-    other harnesses (whose panes may inherit a Claude value) change nothing.
+    Pi uses its native PI_SESSION_ID for the same check. Other harnesses
+    ignore inherited Claude values.
     """
     binding = row.get('native_binding') or {}
     bound = binding.get('native_id') if binding.get('generation') == row['generation'] else None
+    if row['harness'] == 'pi' and caller and bound and caller != bound:
+        raise StoreError('this Pi conversation (PI_SESSION_ID) differs from the bound native conversation')
     if row['harness'] == 'claude' and caller and bound and caller != bound:
         raise StoreError('this Claude conversation (CLAUDE_CODE_SESSION_ID) is another native conversation '
                          'than this session bound; a conversation Claude Code moved to a background session '
@@ -628,7 +631,7 @@ class Hub:
         with self.database() as db, db.transaction() as c:
             row['pending_messages'] = c.execute("SELECT COUNT(*) FROM hub_messages WHERE session_id=? AND state='queued'", (sid,)).fetchone()[0]
         row['capabilities'] = {'attach': 'native-terminal', 'send': 'queued-until-read',
-                               'permissions': 'native', 'resume': row['harness'] in {'claude', 'codex'},
+                               'permissions': 'native', 'resume': row['harness'] in {'claude', 'codex', 'pi'},
                                'close': 'stop-hook-final-turn' if row['harness'] in closure.STOP_HOOK_HARNESSES else 'queued-request-only'}
         self._present_session(row, refresh_usage=refresh_usage)
         return row
@@ -1193,7 +1196,7 @@ class Hub:
             row = self.get(sid)
         if row['lifecycle'] not in {'stopped', 'closed'}:
             raise StoreError('stop the previous session before resuming')
-        if row['native_id'] and row['harness'] not in {'claude', 'codex'}:
+        if row['native_id'] and row['harness'] not in {'claude', 'codex', 'pi'}:
             raise StoreError('native resume unavailable for this harness; launch a new conversation')
         if not row['native_id']:
             prompt = ('Previous assignment:\n' + row['prompt'] +
@@ -1315,7 +1318,7 @@ class Hub:
         ``native_binding`` judges it, so /clear can still rebind.
         """
         row = self.actor()
-        same_conversation(row, self.env.get('CLAUDE_CODE_SESSION_ID'))
+        same_conversation(row, self.env.get('PI_SESSION_ID' if row['harness'] == 'pi' else 'CLAUDE_CODE_SESSION_ID'))
         return row
 
     def observe(self, event, *, native_id=None, state=None, body=None, cwd=None, background_tasks=None,

@@ -105,7 +105,7 @@ def _tmux_probe(config) -> Probe:
 
 
 def _harness_probe(config, *, required_harnesses=None) -> Probe:
-    names = required_harnesses if required_harnesses is not None else ("claude", "codex", "copilot", "opencode")
+    names = required_harnesses if required_harnesses is not None else ("claude", "codex", "copilot", "opencode", "pi")
     resolved = [name for name in names if shutil.which(name) is not None]
     missing = [name for name in names if name not in resolved]
     detail = (
@@ -430,7 +430,7 @@ def run_doctor(
 ) -> dict[str, Any]:
     if required_harnesses is not None:
         if (not isinstance(required_harnesses, (tuple, list)) or not required_harnesses
-                or any(name not in ("claude", "codex", "copilot", "opencode") for name in required_harnesses)):
+                or any(name not in ("claude", "codex", "copilot", "opencode", "pi") for name in required_harnesses)):
             raise ValueError("required harnesses must name supported execution harnesses")
     selected = DEFAULT_PROBES if probes is None else probes
     results: list[Probe] = []

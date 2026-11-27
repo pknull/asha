@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Mapping, Any
 
 
-HARNESSES = frozenset({"claude", "codex", "copilot", "opencode"})
+HARNESSES = frozenset({"claude", "codex", "copilot", "opencode", "pi"})
 MAX_CONFIG_BYTES = 64 * 1024
 _PERCENT = re.compile(r"(?:[1-9][0-9]?|100)%")
 _SESSION_PREFIX = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30})?")

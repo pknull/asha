@@ -77,7 +77,7 @@ user_prompt_submit_final_prompt() {
 pretooluse_ask() {
     local reason="$1"
     case "$(asha_harness)" in
-        codex|opencode)
+        codex|opencode|pi)
             # FINDING (Codex hooks docs, 2026-09-02): PreToolUse ask is "parsed but not supported yet. Codex marks the hook run as failed, reports the error, and continues the tool call".
             # "PermissionRequest accepts only allow|deny." Do not emit
             # the inert ask shape. Preserve the existing conservative contract
@@ -109,7 +109,7 @@ pretooluse_policy_ask() {
     local reason="$2"
     local override_hint="${3:-}"
     case "$(asha_harness)" in
-        codex|opencode)
+        codex|opencode|pi)
             pretooluse_deny "BLOCKED by Asha policy [$policy_id]: ${reason}${override_hint}"
             ;;
         *)

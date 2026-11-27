@@ -26,6 +26,7 @@ from .store import StoreError
 
 FIELDS = ("model", "effort")
 HARNESS_EFFORTS = {
+    "pi": ("off", "minimal", "low", "medium", "high", "xhigh", "max"),
     "claude": ("low", "medium", "high", "xhigh", "max"),
     "copilot": ("none", "minimal", "low", "medium", "high", "xhigh", "max"),
 }
@@ -83,6 +84,11 @@ def terminal_flags(harness, selection) -> list[str]:
             flags += ["-m", model]
         if effort is not None:
             flags += ["-c", f'model_reasoning_effort="{effort}"']
+    elif harness == "pi":
+        if model is not None:
+            flags += ["--model", model]
+        if effort is not None:
+            flags += ["--thinking", effort]
     elif harness == "opencode":
         if model is not None:
             flags += ["-m", model]

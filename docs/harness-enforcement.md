@@ -7,7 +7,7 @@ status: stable
 
 # Harness Enforcement and Memory Delivery
 
-Asha installs one source corpus into four harness-native surfaces. The shared
+Asha installs one source corpus into five harness-native surfaces. The shared
 contract is portability of behavior, not identical primitives.
 
 ## Capability matrix
@@ -297,3 +297,31 @@ Session experience capture, review and adoption, with their native review gate,
 were retired on 2026-10-07 (subtraction N2); see
 [the session hub](session-hub.md#retired-session-experience-capture). Selected
 guidance remains.
+
+## Pi
+
+The adapter targets Pi 1.6.1. Native skills mount under the agent directory,
+commands render into `prompts/`, and `extensions/asha.ts` translates lifecycle
+and tool events. `PI_CODING_AGENT_DIR` overrides `~/.pi/agent`; `ASHA_PI_CMD`
+overrides the executable. Newer versions are reported as unqualified.
+
+Identity is appended only by the Asha launcher. Chair and Room profiles carry
+identity and operations; only the chair adds its coordination brief. Workers
+carry no automatic Asha context. Published project Memory is read through the
+shared reader; the extension does not import recovery hints or transcripts.
+
+Control observes `agent_settled`, not intermediate `agent_end`, as idle.
+Aborted runs can settle but never imply task success. Close uses the existing
+queued request and bounded, ownership-checked pointer mechanism, not a Stop
+block. Explicit saves retain the Room. Native session switches can rebind only
+through Pi-specific lifecycle sources; nested startup cannot take ownership.
+
+Pi has no built-in sandbox or per-call approval gate. Tool calls pass through
+the existing policy and secret-file guards. Explicit denial blocks; policy ask
+is conservatively denied. Handler errors fail open, matching existing partial
+guardrail contracts. Extensions, user shell commands, and other execution paths
+are not a containment boundary. Delegated agents, structured RPC utilities,
+usage accounting, and completion nudges are not implemented.
+
+`tests/test-pi.sh` covers adapter contracts and mocked lifecycle wiring. These
+tests are not live provider or Control delivery evidence.

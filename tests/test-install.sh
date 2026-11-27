@@ -1497,7 +1497,7 @@ fi
 if python3 - "$REPO_ROOT" "$SANDBOX" <<'PY_U8_INSTALL'
 import json, os, pathlib, site, subprocess, sys, tempfile, unittest
 ROOT, WORK = map(pathlib.Path, sys.argv[1:])
-HARNESSES = ('claude', 'codex', 'copilot', 'opencode')
+HARNESSES = ('claude', 'codex', 'copilot', 'opencode', 'pi')
 ENV = {'PATH': os.environ['PATH'], 'USER': os.environ.get('USER', 'test'),
        'PYTHONPATH': site.getusersitepackages()}
 
@@ -1717,7 +1717,7 @@ surface_check() {
 import hashlib, json, re, sys
 from pathlib import Path
 registry, home, record, phase = json.load(open(sys.argv[1])), Path(sys.argv[2]), Path(sys.argv[3]), sys.argv[4]
-homes = {'claude': '.claude', 'codex': '.codex', 'copilot': '.copilot', 'opencode': '.config/opencode'}
+homes = {'claude': '.claude', 'codex': '.codex', 'copilot': '.copilot', 'opencode': '.config/opencode', 'pi': '.pi/agent'}
 def declared():
     for harness, entry in registry['harnesses'].items():
         for feature in ('hooks', 'guardrails'):

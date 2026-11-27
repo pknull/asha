@@ -311,7 +311,7 @@ def dispatch(argv, *, env):
         parser.add_argument('--project', required=True)
         parser.add_argument('--prompt', '--intent', dest='prompt', required=True)
         parser.add_argument('--name')
-        parser.add_argument('--harness', default='claude', choices=['claude', 'codex', 'copilot', 'opencode'])
+        parser.add_argument('--harness', default='claude', choices=['claude', 'codex', 'copilot', 'opencode', 'pi'])
         parser.add_argument('--profile', default='worker', choices=['worker', 'room'])
         parser.add_argument('--session-id')
         parser.add_argument('--transport', default='terminal', choices=['terminal', 'structured'])

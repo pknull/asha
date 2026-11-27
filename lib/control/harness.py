@@ -11,7 +11,7 @@ from typing import Any
 
 
 
-HARNESSES = frozenset({"claude", "codex", "copilot", "opencode"})
+HARNESSES = frozenset({"claude", "codex", "copilot", "opencode", "pi"})
 
 # Harnesses whose Asha launches run commands inside a native sandbox (Codex
 # Rooms, workers and chair; subtraction panel E5). Claude, Copilot and OpenCode

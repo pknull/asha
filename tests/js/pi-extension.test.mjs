@@ -1,0 +1,32 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+const root = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-extension-'));
+try {
+  const handlers = path.join(root, 'plugins/session/hooks/handlers');
+  await fs.mkdir(handlers, {recursive:true});
+  const log = path.join(root, 'events');
+  await fs.writeFile(path.join(handlers,'control-event.sh'), '#!/bin/sh\nprintf "%s\\n" "$1" >> "'+log+'"\ncat >/dev/null\n', {mode:0o755});
+  await fs.writeFile(path.join(handlers,'pi-policy-adapter.sh'), '#!/bin/sh\ncat >/dev/null\necho "fixture denial" >&2\nexit 2\n', {mode:0o755});
+  const source = (await fs.readFile(new URL('../../harnesses/pi-extension.ts',import.meta.url),'utf8')).replace('__ASHA_ROOT__',JSON.stringify(root));
+  const {default:register} = await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
+  const events = new Map();
+  process.env.ASHA_HUB_SESSION_ID='fixture';
+  process.env.ASHA_SESSION_PROFILE='worker';
+  register({on:(name,callback)=>events.set(name,callback)});
+  const ctx={cwd:root,sessionManager:{getSessionId:()=> 'native-1'}};
+  await events.get('session_start')({reason:'startup'},ctx);
+  assert.equal(await events.get('before_agent_start')({systemPrompt:'native'},ctx),undefined);
+  assert.equal(events.has('agent_end'),false);
+  await events.get('agent_start')({},ctx);
+  await events.get('tool_execution_start')({},ctx);
+  const denied=await events.get('tool_call')({toolName:'bash',input:{command:'fixture'}},ctx);
+  assert.deepEqual(denied,{block:true,reason:'fixture denial'});
+  await events.get('tool_execution_end')({},ctx);
+  await events.get('agent_settled')({aborted:true},ctx);
+  await events.get('session_shutdown')({reason:'reload'},ctx);
+  await events.get('session_shutdown')({reason:'quit'},ctx);
+  assert.deepEqual((await fs.readFile(log,'utf8')).trim().split('\n'),['SessionStart','UserPromptSubmit','PreToolUse','PostToolUse','Stop','SessionEnd']);
+  console.log('Pi extension lifecycle and policy tests passed');
+} finally { await fs.rm(root,{recursive:true,force:true}); }

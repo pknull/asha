@@ -52,7 +52,7 @@ Follow these gates in order:
    path escapes, symlinks, Git LFS pointers, and executable support files.
    Unsupported frontmatter is a blocker, not a field to discard. An
    `allowed-tools` promise is also a blocker because Asha cannot enforce one
-   permission grammar consistently across all four harnesses.
+   permission grammar consistently across all supported harnesses.
 5. **Print the dry run.** Show the exact destination, file hashes, modes, and
    lockfile write without changing the store:
 

@@ -14,6 +14,7 @@ installed or rendered into native surfaces for:
 - OpenAI Codex
 - GitHub Copilot CLI
 - OpenCode stable v1
+- Pi (single-agent terminal integration)
 
 Portability means equivalent intent at each harness's real seam. It does not
 mean copying Claude primitives into every target unchanged.
@@ -118,7 +119,7 @@ first use offers to configure the target; non-interactive first use requires
 `--yes` or `ASHA_YES=1`. Claude and Codex must already have their harness-owned
 native config files, which Asha deliberately does not fabricate.
 
-Plain `claude`, `codex`, `copilot`, and `opencode` remain persona-free. Installed
+Plain `claude`, `codex`, `copilot`, `opencode`, and `pi` remain persona-free. Installed
 skills and hooks still exist because the plain and wrapped commands share the
 same harness home.
 

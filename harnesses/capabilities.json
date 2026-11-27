@@ -21,7 +21,8 @@
       "claude": true,
       "codex": false,
       "copilot": false,
-      "opencode": false
+      "opencode": false,
+      "pi": false
     }
   },
   "harnesses": {
@@ -542,6 +543,122 @@
             "Every successful save records a publication row (explicit save, close, handoff or no-durable-update attestation); saved is read from those rows only",
             "No Git publication, transcript extraction, chair context, or native permission bypass",
             "Memory publication and finished reporting supported; no native activity bridge, so rows read unknown; structured transport unsupported"
+          ]
+        }
+      }
+    },
+    "pi": {
+      "executable": "pi",
+      "home_env": "PI_CODING_AGENT_DIR",
+      "capabilities": {
+        "commands": {
+          "support": "rendered",
+          "surface": "prompts/<namespace>-<command>.md",
+          "verifier": "tests:test-pi + test_control_pi",
+          "limitations": [
+            "Claude tool vocabulary is adapted by instruction; no delegated agents"
+          ]
+        },
+        "skills": {
+          "support": "native",
+          "surface": "skills/<skill>/SKILL.md",
+          "verifier": "tests:test-pi + test_control_pi",
+          "limitations": []
+        },
+        "agents": {
+          "support": "unsupported",
+          "surface": "",
+          "verifier": "tests:test-pi + test_control_pi",
+          "limitations": [
+            "No agent definitions installed"
+          ]
+        },
+        "subagents": {
+          "support": "unsupported",
+          "surface": "",
+          "verifier": "tests:test-pi + test_control_pi",
+          "limitations": [
+            "Single-agent integration; mandatory independent review remains unavailable"
+          ]
+        },
+        "hooks": {
+          "support": "partial",
+          "surface": "extensions/asha.ts",
+          "verifier": "tests:test-pi + test_control_pi",
+          "limitations": [
+            "Only the mapped native lifecycle and tool events are supported"
+          ]
+        },
+        "guardrails": {
+          "support": "partial",
+          "surface": "extensions/asha.ts",
+          "verifier": "tests:test-pi + test_control_pi",
+          "limitations": [
+            "Native user permissions, no sandbox; policy ask becomes deny; handler failures fail open"
+          ]
+        },
+        "persona": {
+          "support": "native",
+          "surface": "launch-only --append-system-prompt",
+          "verifier": "tests:test-pi + test_control_pi",
+          "limitations": [
+            "Plain pi is persona-free"
+          ]
+        },
+        "workspace": {
+          "support": "partial",
+          "surface": "Memory v2 startup-context",
+          "verifier": "tests:test-pi + test_control_pi",
+          "limitations": [
+            "Published project Memory only; no automatic recovery or transcript import"
+          ]
+        },
+        "session-profile": {
+          "support": "native",
+          "surface": "chair / room / worker",
+          "verifier": "tests:test-pi + test_control_pi",
+          "limitations": [
+            "Workers omit automatic Asha context; telemetry remains active"
+          ]
+        },
+        "control-status": {
+          "support": "partial",
+          "surface": "session_start, agent_start, tool_execution_start/end, agent_settled, session_shutdown",
+          "verifier": "tests:test-pi + test_control_pi",
+          "limitations": [
+            "No permission dialog or usage accounting integration; idle is not task completion"
+          ]
+        },
+        "session-close": {
+          "support": "partial",
+          "surface": "queued request and owned pointer line",
+          "verifier": "tests:test-pi + test_control_pi",
+          "limitations": [
+            "No Stop-block continuation; bounded close can end unsaved"
+          ]
+        },
+        "project-memory": {
+          "support": "partial",
+          "surface": "explicit handoff and publication rows",
+          "verifier": "tests:test-pi + test_control_pi",
+          "limitations": [
+            "No automatic semantic publication; save leaves Room open"
+          ]
+        },
+        "verify-pass-complete": {
+          "support": "unsupported",
+          "surface": "",
+          "verifier": "tests:test-pi + test_control_pi",
+          "limitations": [
+            "No completion nudge bridge in this release"
+          ]
+        },
+        "session-guidance": {
+          "support": "partial",
+          "surface": "Existing launch-time worker guidance",
+          "verifier": "python test_experience_automatic_guidance/test_experience_retired",
+          "limitations": [
+            "Guidance delivery is not proof of model use; no managed RPC transport"
           ]
         }
       }

@@ -50,7 +50,7 @@ skill-name/
 
 **Descriptions and names (asha addition):** An asha skill description says what the skill does, then when to use it in a sentence that starts "Use when ..." (or "Use for ..."), instead of the third-person form above; `./tests/validate-plugins.sh` rejects a description without such a sentence. Put trigger phrases in the description: asha's installer and validators do not read `metadata.triggers`. A plugin skill declares `name: <namespace>-<directory>`, with the namespace from `namespaces.json` (`panel` maps to `panel-system`), and uses only the frontmatter keys `name`, `description`, `license`, `allowed-tools`, `metadata` and `compatibility`.
 
-**Harness neutrality (asha addition):** Asha installs skills into Claude Code, Codex, Copilot CLI and OpenCode, so read "Claude" in this text as the running agent, and name a harness in a skill only where its behaviour differs, with the exact tested harness qualifier.
+**Harness neutrality (asha addition):** Asha installs skills into Claude Code, Codex, Copilot CLI, OpenCode and Pi, so read "Claude" in this text as the running agent, and name a harness in a skill only where its behaviour differs, with the exact tested harness qualifier.
 
 #### Bundled Resources (optional)
 

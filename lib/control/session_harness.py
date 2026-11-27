@@ -41,6 +41,7 @@ CAPABILITIES = {
               "transport": "app-server-stdio", "actor_tools": True},
     "copilot": {"managed": False, "reason": "no verified managed adapter"},
     "opencode": {"managed": False, "reason": "no verified managed adapter"},
+    "pi": {"managed": False, "reason": "Pi supports terminal sessions only; RPC adapter not implemented"},
 }
 
 

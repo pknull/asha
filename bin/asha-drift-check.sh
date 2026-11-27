@@ -5,7 +5,7 @@
 # `asha doctor` is the front door for this script (lib/doctor.sh).
 #
 # Usage:
-#   asha-drift-check.sh [--target {claude,codex,copilot,opencode,all}] [--with-canary] [--fix]
+#   asha-drift-check.sh [--target {claude,codex,copilot,opencode,pi,all}] [--with-canary] [--fix]
 #
 # Default target is 'all'. Per-target flags scope the checks.
 # Optional plugins are checked only when --with-canary is present, matching the
@@ -579,7 +579,7 @@ assert caps["harnesses"]
 allowed = {"native", "rendered", "partial", "unsupported"}
 for name, harness in caps["harnesses"].items():
     assert set(harness) == {"executable", "home_env", "capabilities"}
-    assert harness["home_env"].endswith("_HOME") and harness["capabilities"]
+    assert re.fullmatch(schema["$defs"]["harness"]["properties"]["home_env"]["pattern"], harness["home_env"]) and harness["capabilities"]
     for feature, item in harness["capabilities"].items():
         assert set(item) == {"support", "surface", "verifier", "limitations"}
         assert item["support"] in allowed and isinstance(item["limitations"], list)
@@ -917,6 +917,20 @@ if [[ "$TARGET" == "copilot" || "$TARGET" == "all" ]]; then
 fi
 
 # ===========================================================================
+# Pi harness checks
+# ===========================================================================
+if [[ "$TARGET" == pi || "$TARGET" == all ]]; then
+  section "pi harness"
+  source "$ASHA/harnesses/pi.sh"
+  if [[ -f "$(asha_artifact_manifest_path pi)" || -e "$PI_HOME/extensions/asha.ts" || -L "$PI_HOME/extensions/asha.ts" || -n "$(find "$PI_HOME/skills" -maxdepth 1 -type l -lname "$ASHA/plugins/*" -print -quit 2>/dev/null)" ]]; then
+    check_dangling "$PI_HOME" pi skills:1
+    check_skill_links "$PI_HOME" pi
+    if pi_drift_check; then pass "Pi artifacts match current source"; else nope "Pi artifact drift (reinstall pi)"; fi
+  else
+    pass "pi not configured by Asha (skipping Pi checks)"
+  fi
+fi
+
 # OpenCode harness checks
 # ===========================================================================
 

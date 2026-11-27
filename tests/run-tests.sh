@@ -208,6 +208,13 @@ else
 fi
 echo ""
 
+# Pi integration contracts
+if "$SCRIPT_DIR/test-pi.sh"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+
 # Test Suite 13: JavaScript Engine Tests (if node available)
 echo -e "${BLUE}--- Test Suite 13: JavaScript Engine Tests ---${NC}"
 if command -v node &>/dev/null; then

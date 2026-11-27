@@ -4,7 +4,7 @@
 # Grammar:  asha [VERB] [HARNESS] [PASSTHROUGH...]
 #   VERB     install | uninstall | build | doctor | init-repo
 #                                            (optional; absent => launch)
-#   HARNESS  claude | codex | copilot | opencode (launch); also both|all for verbs
+#   HARNESS  claude | codex | copilot | opencode | pi (launch); also both|all for verbs
 #            (absent on launch => default_harness from ~/.asha/config.json, else claude)
 #   PASSTHROUGH  forwarded to the harness CLI (launch) or to the engine (verb)
 #
@@ -473,6 +473,10 @@ launch() {
     copilot)
       exec_copilot "$@"
       ;;
+    pi)
+      source "$ASHA_ROOT/harnesses/pi.sh"
+      pi_launch "$@"
+      ;;
     opencode)
       command -v "$executable" >/dev/null 2>&1 || die "OpenCode executable not found: $executable"
       # shellcheck source=../harnesses/opencode.sh
@@ -583,11 +587,11 @@ asha — cross-agent dispatcher
 
 Usage:
   asha [HARNESS] [args...]         launch a harness (default: configured default, else claude)
-  asha install   <target> [...]    provision Asha for a harness (claude|codex|copilot|opencode|both|all)
+  asha install   <target> [...]    provision Asha for a harness (claude|codex|copilot|opencode|pi|both|all)
   asha uninstall <target> [...]    remove Asha from a harness
   asha build copilot [...]         package plugins for Copilot-native distribution
                                    (--only ns,.. --out DIR --version X.Y.Z --dry-run --force)
-  asha doctor [target] [--fix]     audit install health (claude|codex|copilot|opencode|all)
+  asha doctor [target] [--fix]     audit install health (claude|codex|copilot|opencode|pi|all)
                                    (Claude Code's native doctor: asha claude doctor)
   asha workspace status [...]      inspect workspace state and active repository
   asha workspace init|discover|doctor [...]
@@ -611,7 +615,7 @@ Usage:
                                    (--dry-run | --check for CI | --force)
   asha-<harness> [args...]         shim form (launch that harness)
 
-Harnesses: claude | codex | copilot | opencode
+Harnesses: claude | codex | copilot | opencode | pi
 Flags:
   --yes, -y        skip the first-run configure prompt (or set ASHA_YES=1)
 

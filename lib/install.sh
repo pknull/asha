@@ -89,6 +89,7 @@ _asha_managed_artifact_under() {
     codex-*) harness=codex ;;
     copilot-*) harness=copilot ;;
     opencode-*) harness=opencode ;;
+    pi-*) harness=pi ;;
     *) return 1 ;;
   esac
   manifest="$(asha_artifact_manifest_path "$harness")"
@@ -305,14 +306,14 @@ install.sh / `asha install` — symlink-mount installer (multi-harness).
 
 Usage:
   ./install.sh [--target T] [--bin B] [--default D] [--only ns,...] [--with-canary] [--dry-run] [--force] [--verbose]
-  asha install <claude|codex|copilot|opencode|both|all> [--bin B] [--default D] [--only ...] [--with-canary] [--dry-run] [--force]
+  asha install <claude|codex|copilot|opencode|pi|both|all> [--bin B] [--default D] [--only ...] [--with-canary] [--dry-run] [--force]
 
 Targets (--target or positional after `asha install`):
-  claude | codex | copilot | opencode | both (claude+codex) | all (all four)
+  claude | codex | copilot | opencode | pi | both (claude+codex) | all (all five)
 
 Bin:
-  --bin <claude|codex|copilot|opencode|all> install ~/.local/bin/asha dispatcher + harness shims
-  --default <claude|codex|copilot|opencode> default harness for bare `asha` (persisted to ~/.asha/config.json)
+  --bin <claude|codex|copilot|opencode|pi|all> install ~/.local/bin/asha dispatcher + harness shims
+  --default <claude|codex|copilot|opencode|pi> default harness for bare `asha` (persisted to ~/.asha/config.json)
 
 Other:
   --only ns1,ns2   limit to named plugin dirs

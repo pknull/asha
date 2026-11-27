@@ -2,7 +2,7 @@
 
 **Description**: A multi-harness agent toolkit. Persistent identity, session memory, and domain-focused plugins for Claude Code, OpenAI Codex, GitHub Copilot CLI, and OpenCode.
 
-Asha renders or mounts skills, agents, commands, and hooks into each harness's native surfaces, ships a single `asha` dispatcher that injects a shared persona, and maintains one explicit compact Memory contract across all four CLIs.
+Asha renders or mounts skills, agents, commands, and hooks into each harness's native surfaces, ships a single `asha` dispatcher that injects a shared persona, and maintains one explicit compact Memory contract across all five CLIs.
 
 ---
 
@@ -58,7 +58,7 @@ boundaries:
 
 ---
 
-## Install model: native rendering across four harnesses
+## Install model: native rendering across five harnesses
 
 Plugins live in `plugins/<name>/`. The installer symlinks byte-compatible primitives and renders harness-specific forms where required:
 
@@ -76,7 +76,7 @@ Install commands:
 ./install.sh --target codex                 # mount into ~/.codex/*
 ./install.sh --target copilot               # mount into ~/.copilot/*
 ./install.sh --target opencode              # mount into ~/.config/opencode/*
-./install.sh --target all                   # mount into all four
+./install.sh --target all                   # mount into all five
 ./install.sh --bin all --default claude     # install the asha dispatcher + harness shims in ~/.local/bin
 ./uninstall.sh                              # remove asha-tagged symlinks/entries
 ```
@@ -86,10 +86,10 @@ After `./install.sh --bin all` you'll have:
 | Command | Effect |
 |---|---|
 | `asha` | the chair: launch the default harness seated at `~/.asha/chair` with the orchestrator stance (no-argument launches only; arguments keep your cwd) |
-| `asha <harness>` | launch `claude`/`codex`/`copilot`/`opencode`; interactive first use offers to configure a missing or stale target |
-| `asha install <target>` | provision a harness (`claude`/`codex`/`copilot`/`opencode`/`both`/`all`) |
+| `asha <harness>` | launch `claude`/`codex`/`copilot`/`opencode`/`pi`; interactive first use offers to configure a missing or stale target |
+| `asha install <target>` | provision a harness (`claude`/`codex`/`copilot`/`opencode`/`pi`/`both`/`all`) |
 | `asha uninstall <target>` | remove Asha from a harness |
-| `asha-claude` · `asha-codex` · `asha-copilot` · `asha-opencode` | harness shims (each ≡ `asha <harness>`) |
+| `asha-claude` · `asha-codex` · `asha-copilot` · `asha-opencode` · `asha-pi` | harness shims (each ≡ `asha <harness>`) |
 
 Grammar is positional: launch as `asha [--yes] [harness] [args…]`, and put an
 Asha management verb before its target (`asha install codex`, `asha doctor
@@ -139,11 +139,11 @@ and the retired evidence.
 
 ## Harness support & behavior
 
-Asha drives four agent CLIs from **one source corpus** (`plugins/<ns>/`). They don't support the same things, and each mounts the same primitive differently. First-class support means native rendering at each harness seam, not fake parity: see `harnesses/capabilities.json` for the machine-readable contract.
+Asha drives five agent CLIs from **one source corpus** (`plugins/<ns>/`). They don't support the same things, and each mounts the same primitive differently. First-class support means native rendering at each harness seam, not fake parity: see `harnesses/capabilities.json` for the machine-readable contract.
 
 > **The full per-capability matrix — current status, mounting method, live-test findings, and caveats — is the single source of truth in [docs/harness-enforcement.md](docs/harness-enforcement.md).** This section explains *why* the behaviors differ (the mechanics, which rarely change); for current *status*, defer to that doc.
 
-At a glance: skills, agents, persona, the operational layer, explicit `/session:save`, and bounded recovery work across all four harnesses, but through different forms. Asha command workflows are rendered as skills on Codex/Copilot and native command Markdown on OpenCode. Codex agents are generated TOML, Copilot agents are generated `.agent.md`, OpenCode agents are generated Markdown subagents, and Claude agents retain the source Markdown. Every harness requires explicit semantic publication; clean exit only seals unpublished recovery.
+At a glance: all five harnesses support skills, launch-scoped persona, operational context, and explicit Memory publication. Claude, Codex, Copilot, and OpenCode also install agent definitions and recovery hooks. Pi is single-agent, renders commands as prompt templates, and reads published project Memory without importing recovery hints. See the capability matrix for each harness's verified limits.
 
 ### Why the behaviors differ
 
@@ -197,7 +197,7 @@ or startup-item budget overflow rejects that voice start while leaving text
 available. Native permissions still govern tools; identity delivery is not an
 enforcement boundary.
 
-**The operational layer reaches all four.** `~/.asha/operation.md` plus a
+**The operational layer reaches all five.** `~/.asha/operation.md` plus a
 capped rendering of active `~/.asha/learnings/` records load at session start.
 Candidates and retired records are never injected as instructions. Claude receives the layer through SessionStart, Codex through
 `developer_instructions`, Copilot through its custom instructions directory,
@@ -434,7 +434,7 @@ The legacy `/plugin marketplace add` flow is retired. Installation is now a dire
 git clone https://github.com/pknull/asha.git ~/some/dir/asha
 cd ~/some/dir/asha
 
-# Install primitives into all four harnesses + launch wrappers into ~/.local/bin
+# Install primitives into all five harnesses + launch wrappers into ~/.local/bin
 ./install.sh --target all --bin all --default claude
 ```
 
@@ -484,7 +484,7 @@ so their own TUI or one-shot behavior remains intact.
 ```
 asha/
 ├── bin/                          # asha dispatcher, drift-check, env bootstrap
-├── harnesses/                    # per-harness adapters (claude/codex/copilot/opencode)
+├── harnesses/                    # per-harness adapters (claude/codex/copilot/opencode/pi)
 ├── identity/                     # persona system prompt + identity/operational merge scripts
 ├── lib/                          # install/uninstall/doctor/build/init-repo engines
 ├── namespaces.json               # plugin dir → command namespace map (panel → panel-system)
@@ -593,3 +593,19 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 
 The historical release record lives in [CHANGELOG.md](CHANGELOG.md). Plugin
 versions live only in their owning plugin README files.
+
+## Pi
+
+Pi 1.6.1 is supported as a single-agent native terminal harness. Install Pi
+separately, then run `asha install pi --bin pi` and `asha pi`. The existing
+default harness is unchanged. `asha doctor pi` and
+`bin/asha-drift-check.sh --target pi` verify installed artifacts.
+
+Skills are native; commands become `/namespace-command` prompt templates.
+Control supports Pi terminal jobs, Rooms, native resume and explicit Memory
+checkpoints. Delegated agents and managed RPC utilities are unsupported.
+Pi runs with the user's permissions; Asha tool checks are partial guardrails,
+not a sandbox. Plain `pi` remains persona-free.
+
+Configure providers through Pi's `models.json` and `settings.json`; the Asha
+installer never changes provider credentials or model defaults.

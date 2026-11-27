@@ -2,7 +2,7 @@
 # lib/doctor.sh — `asha doctor` verb: thin adapter over bin/asha-drift-check.sh
 # (the diagnostic engine; kept at its path for cron/systemd users).
 #
-# Usage:  asha doctor [claude|codex|copilot|opencode|all] [--with-canary] [--fix]
+# Usage:  asha doctor [claude|codex|copilot|opencode|pi|all] [--with-canary] [--fix]
 # Exit:   0 clean, 1 one-or-more failures, 2 usage error.
 #
 # Note: `asha claude doctor` still reaches Claude Code's OWN doctor (launch
@@ -33,7 +33,7 @@ asha_doctor_main() {
   local target="all" fix=0 with_canary=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      claude|codex|copilot|opencode|all) target="$1" ;;
+      claude|codex|copilot|opencode|pi|all) target="$1" ;;
       # Value validated BEFORE the shift: with the flag as last arg, the
       # loop-bottom shift would fail under bin/asha's set -e wrap and die
       # silently with rc=1 — doctor's "findings" code (review pass 2).
@@ -47,7 +47,7 @@ asha_doctor_main() {
 asha doctor — audit the asha install for drift.
 
 Usage:
-  asha doctor [claude|codex|copilot|opencode|all] [--with-canary] [--fix]
+  asha doctor [claude|codex|copilot|opencode|pi|all] [--with-canary] [--fix]
 
 Targets default to 'all'. --with-canary audits optional plugins; --fix
 self-heals stale command-skills and drifted guardrails. Exit: 0 clean,

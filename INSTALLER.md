@@ -38,7 +38,7 @@ list|show|export` only reads retired initiative evidence. See
 ├── bin/                  # installed via --bin
 │   └── asha              # unified dispatcher + launcher
 │                         #   grammar: asha [install|uninstall] [harness] [args…]
-│                         #   shims ~/.local/bin/asha-{claude,codex,copilot,opencode} → asha
+│                         #   shims ~/.local/bin/asha-{claude,codex,copilot,opencode,pi} → asha
 ├── identity/             # repo-owned identity assertion + merge scripts
 │   ├── asha-identity-system-prompt.md
 │   ├── identity-merge.sh # assertion + three hot user files → cached instructions
@@ -54,15 +54,15 @@ list|show|export` only reads retired initiative evidence. See
 
 ```bash
 # Primitives (skills/agents/commands/hooks)
-./install.sh   --target {claude,codex,copilot,opencode,both,all} [--only ns1,ns2] [--with-canary] [--dry-run] [--force] [--verbose]
-./uninstall.sh --target {claude,codex,copilot,opencode,both,all}                   [--dry-run] [--verbose]
+./install.sh   --target {claude,codex,copilot,opencode,pi,both,all} [--only ns1,ns2] [--with-canary] [--dry-run] [--force] [--verbose]
+./uninstall.sh --target {claude,codex,copilot,opencode,pi,both,all}                   [--dry-run] [--verbose]
 
 # Dispatcher + per-harness shims (the `asha` shell command)
-./install.sh --bin {claude,codex,copilot,opencode,all} [--default {claude,codex,copilot,opencode}]
+./install.sh --bin {claude,codex,copilot,opencode,pi,all} [--default {claude,codex,copilot,opencode,pi}]
 
 # Equivalent through the dispatcher itself (positional grammar):
-asha install   {claude,codex,copilot,opencode,both,all} [flags]
-asha uninstall {claude,codex,copilot,opencode,both,all} [flags]
+asha install   {claude,codex,copilot,opencode,pi,both,all} [flags]
+asha uninstall {claude,codex,copilot,opencode,pi,both,all} [flags]
 ```
 
 `--target` defaults to `claude` (single-harness back-compat). `--bin all`
@@ -157,7 +157,7 @@ The operational layer has one budget for every harness,
 `plugins/session/hooks/handlers/operational-budget.sh`: `operation.md` is capped
 at 4000 UTF-8 bytes and active learnings at 3000, cut on a character boundary
 with a `[Truncated: …]` notice. Claude's SessionStart hook and
-`operational-merge.sh` both source it, so all four harnesses receive the same
+`operational-merge.sh` both source it, so all five harnesses receive the same
 text. `asha doctor` fails when `operation.md` exceeds its budget.
 
 Plain `codex` and `asha codex` share `~/.codex/`. The only behavioral
@@ -326,8 +326,8 @@ the `asha-reference` skill and remain private task context.
 path for cron/systemd users. Exits 0 if clean, 1 on drift, 2 on usage error.
 
 ```bash
-asha doctor [claude|codex|copilot|opencode|all] [--with-canary] [--fix] # default: all
-asha-drift-check.sh --target {claude,codex,copilot,opencode,all} [--with-canary] # same engine
+asha doctor [claude|codex|copilot|opencode|pi|all] [--with-canary] [--fix] # default: all
+asha-drift-check.sh --target {claude,codex,copilot,opencode,pi,all} [--with-canary] # same engine
 ```
 
 Default audits exclude plugins listed in `namespaces.json` under `_optional`,
